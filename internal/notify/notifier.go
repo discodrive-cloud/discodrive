@@ -45,7 +45,7 @@ func New(q *db.Queries, email Channel) *Notifier {
 }
 
 // projectURL is the public project link shown in the footer of every email.
-const projectURL = "https://github.com/kosmosoid/discodrive"
+const projectURL = "https://discodrive.app"
 
 // settingEnabled reads a boolean setting (defaults to def if missing; "false" → false).
 func (n *Notifier) settingEnabled(ctx context.Context, key string, def bool) bool {

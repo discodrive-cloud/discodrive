@@ -14,7 +14,7 @@ DiscoDrive — це self-hosted заміна набору підписок і з
 
 Кросплатформність закладена в основу: Apple, Windows, Linux та Android.
 
-**Завантажити застосунки:** збірки для десктопа (macOS/Windows/Linux) та Android доступні на [сторінці релізів](https://github.com/kosmosoid/discodrive-apps/releases/latest); застосунок для iOS збирається з вихідного коду. Усі клієнти — у [discodrive-apps](https://github.com/kosmosoid/discodrive-apps).
+**Завантажити застосунки:** збірки для десктопа (macOS/Windows/Linux) та Android доступні на [сторінці релізів](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); застосунок для iOS збирається з вихідного коду. Усі клієнти — у [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
 
 ---
 
@@ -114,7 +114,7 @@ DiscoDrive — це один сервер плюс PostgreSQL. Перед ним
 **Потрібно:** git, Docker та Docker Compose.
 
 ```sh
-git clone https://github.com/kosmosoid/discodrive.git
+git clone https://github.com/discodrive-cloud/discodrive.git
 cd discodrive
 cp .env.example .env
 # відредагуй .env: задай JWT_SECRET, SETTINGS_ENCRYPTION_KEY, BASE_DOMAIN,
@@ -229,11 +229,11 @@ DiscoDrive поширюється як **source-available** за ліцензі�
 
 ## ❤️ Підтримати проєкт
 
-DiscoDrive створює й розвиває одна людина. Відгуки та пропозиції вітаються — пиши на [info@discodrive.app](mailto:info@discodrive.app).
+DiscoDrive розвивається власними силами, без інвестицій. Відгуки та пропозиції вітаються — пиши на [info@discodrive.app](mailto:info@discodrive.app).
 
 А якщо тобі подобається DiscoDrive і хочеться, щоб він ріс і далі — підтримай проєкт:
 
-- **[Постав зірку на GitHub](https://github.com/kosmosoid/discodrive)** ⭐
+- **[Постав зірку на GitHub](https://github.com/discodrive-cloud/discodrive)** ⭐
 - **[Ko-fi](https://ko-fi.com/kosmosoid)**
 - **[Boosty](https://boosty.to/kosmosoid/donate)**
 - **[Криптовалюта](https://nowpayments.io/donation?api_key=7P893T0-48B4KZH-Q6PXBBT-D79X9TK)** — через NOWPayments

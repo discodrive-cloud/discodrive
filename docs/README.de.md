@@ -14,7 +14,7 @@ Dateien werden als ganz normale Dateien in ganz normalen Ordnern auf der Festpla
 
 Plattformübergreifend von Grund auf: Apple, Windows, Linux und Android.
 
-**Apps herunterladen:** Desktop-Builds (macOS/Windows/Linux) und Android stehen auf der [Releases-Seite](https://github.com/kosmosoid/discodrive-apps/releases/latest); die iOS-App wird aus dem Quellcode gebaut. Alle Clients unter [discodrive-apps](https://github.com/kosmosoid/discodrive-apps).
+**Apps herunterladen:** Desktop-Builds (macOS/Windows/Linux) und Android stehen auf der [Releases-Seite](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); die iOS-App wird aus dem Quellcode gebaut. Alle Clients unter [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
 
 ---
 
@@ -114,7 +114,7 @@ Der einfachste Weg: ein einziges `docker compose up` startet Server, Datenbank u
 **Benötigt:** git, Docker und Docker Compose.
 
 ```sh
-git clone https://github.com/kosmosoid/discodrive.git
+git clone https://github.com/discodrive-cloud/discodrive.git
 cd discodrive
 cp .env.example .env
 # .env bearbeiten: JWT_SECRET, SETTINGS_ENCRYPTION_KEY, BASE_DOMAIN,
@@ -229,11 +229,11 @@ Du brauchst kommerzielle Nutzung? Eine separate kommerzielle Lizenz ist verfügb
 
 ## ❤️ Das Projekt unterstützen
 
-DiscoDrive wird von einer einzigen Person gebaut und gepflegt. Rückmeldungen und Vorschläge sind willkommen — schreib an [info@discodrive.app](mailto:info@discodrive.app).
+DiscoDrive wird aus eigener Kraft entwickelt, ohne Investitionen. Rückmeldungen und Vorschläge sind willkommen — schreib an [info@discodrive.app](mailto:info@discodrive.app).
 
 Und wenn dir DiscoDrive gefällt und du möchtest, dass es weiter wächst — unterstütze das Projekt:
 
-- **[Gib ihm einen Stern auf GitHub](https://github.com/kosmosoid/discodrive)** ⭐
+- **[Gib ihm einen Stern auf GitHub](https://github.com/discodrive-cloud/discodrive)** ⭐
 - **[Ko-fi](https://ko-fi.com/kosmosoid)**
 - **[Boosty](https://boosty.to/kosmosoid/donate)**
 - **[Kryptowährung](https://nowpayments.io/donation?api_key=7P893T0-48B4KZH-Q6PXBBT-D79X9TK)** — über NOWPayments

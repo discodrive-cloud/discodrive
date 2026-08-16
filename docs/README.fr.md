@@ -14,7 +14,7 @@ Vos fichiers sont stockés comme des fichiers ordinaires, dans des dossiers ordi
 
 Multiplateforme par conception : Apple, Windows, Linux et Android.
 
-**Télécharger les applications :** les versions de bureau (macOS/Windows/Linux) et Android sont sur la [page des releases](https://github.com/kosmosoid/discodrive-apps/releases/latest) ; l'application iOS se compile depuis les sources. Tous les clients sur [discodrive-apps](https://github.com/kosmosoid/discodrive-apps).
+**Télécharger les applications :** les versions de bureau (macOS/Windows/Linux) et Android sont sur la [page des releases](https://github.com/discodrive-cloud/discodrive-apps/releases/latest) ; l'application iOS se compile depuis les sources. Tous les clients sur [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
 
 ---
 
@@ -114,7 +114,7 @@ La méthode la plus simple : une seule commande `docker compose up` lance le ser
 **Prérequis :** git, Docker et Docker Compose.
 
 ```sh
-git clone https://github.com/kosmosoid/discodrive.git
+git clone https://github.com/discodrive-cloud/discodrive.git
 cd discodrive
 cp .env.example .env
 # modifiez .env : renseignez JWT_SECRET, SETTINGS_ENCRYPTION_KEY, BASE_DOMAIN,
@@ -229,11 +229,11 @@ Besoin d'un usage commercial ? Une licence commerciale distincte est disponible 
 
 ## ❤️ Soutenir le projet
 
-DiscoDrive est conçu et maintenu par une seule personne. Les retours et suggestions sont les bienvenus — écrivez à [info@discodrive.app](mailto:info@discodrive.app).
+DiscoDrive est développé par ses propres moyens, sans investisseurs. Les retours et suggestions sont les bienvenus — écrivez à [info@discodrive.app](mailto:info@discodrive.app).
 
 Et si DiscoDrive vous plaît et que vous souhaitez le voir grandir — soutenez le projet :
 
-- **[Mettez une étoile sur GitHub](https://github.com/kosmosoid/discodrive)** ⭐
+- **[Mettez une étoile sur GitHub](https://github.com/discodrive-cloud/discodrive)** ⭐
 - **[Ko-fi](https://ko-fi.com/kosmosoid)**
 - **[Boosty](https://boosty.to/kosmosoid/donate)**
 - **[Cryptomonnaie](https://nowpayments.io/donation?api_key=7P893T0-48B4KZH-Q6PXBBT-D79X9TK)** — via NOWPayments

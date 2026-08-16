@@ -14,7 +14,7 @@ Your files are stored as ordinary files in ordinary folders on disk. If you ever
 
 Cross-platform by design: Apple, Windows, Linux and Android.
 
-**Get the apps:** desktop (macOS/Windows/Linux) and Android builds are on the [releases page](https://github.com/kosmosoid/discodrive-apps/releases/latest); the iOS app is built from source. See [discodrive-apps](https://github.com/kosmosoid/discodrive-apps) for all clients.
+**Get the apps:** desktop (macOS/Windows/Linux) and Android builds are on the [releases page](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); the iOS app is built from source. See [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps) for all clients.
 
 ---
 
@@ -114,7 +114,7 @@ The simplest path: a single `docker compose up` brings up the server, database a
 **You need:** git, Docker and Docker Compose.
 
 ```sh
-git clone https://github.com/kosmosoid/discodrive.git
+git clone https://github.com/discodrive-cloud/discodrive.git
 cd discodrive
 cp .env.example .env
 # edit .env: set JWT_SECRET, SETTINGS_ENCRYPTION_KEY, BASE_DOMAIN,
@@ -229,11 +229,11 @@ Need commercial use? A separate commercial license is available — write to [in
 
 ## ❤️ Support the project
 
-DiscoDrive is built and maintained by one person. Feedback and suggestions are welcome — write to [info@discodrive.app](mailto:info@discodrive.app).
+DiscoDrive is developed independently, with no outside investment. Feedback and suggestions are welcome — write to [info@discodrive.app](mailto:info@discodrive.app).
 
 And if you enjoy DiscoDrive and want to see it keep growing — support the project:
 
-- **[Star it on GitHub](https://github.com/kosmosoid/discodrive)** ⭐
+- **[Star it on GitHub](https://github.com/discodrive-cloud/discodrive)** ⭐
 - **[Ko-fi](https://ko-fi.com/kosmosoid)**
 - **[Boosty](https://boosty.to/kosmosoid/donate)**
 - **[Cryptocurrency](https://nowpayments.io/donation?api_key=7P893T0-48B4KZH-Q6PXBBT-D79X9TK)** — via NOWPayments

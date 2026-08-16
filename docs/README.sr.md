@@ -14,7 +14,7 @@ DiscoDrive је self-hosted замена за гомилу претплата и
 
 Вишеплатформски од темеља: Apple, Windows, Linux и Android.
 
-**Преузми апликације:** десктоп билдови (macOS/Windows/Linux) и Android налазе се на [страници издања](https://github.com/kosmosoid/discodrive-apps/releases/latest); iOS апликација се компајлира из изворног кода. Сви клијенти на [discodrive-apps](https://github.com/kosmosoid/discodrive-apps).
+**Преузми апликације:** десктоп билдови (macOS/Windows/Linux) и Android налазе се на [страници издања](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); iOS апликација се компајлира из изворног кода. Сви клијенти на [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
 
 ---
 
@@ -114,7 +114,7 @@ DiscoDrive је један сервер плус PostgreSQL. Испред њег
 **Потребно:** git, Docker и Docker Compose.
 
 ```sh
-git clone https://github.com/kosmosoid/discodrive.git
+git clone https://github.com/discodrive-cloud/discodrive.git
 cd discodrive
 cp .env.example .env
 # уреди .env: постави JWT_SECRET, SETTINGS_ENCRYPTION_KEY, BASE_DOMAIN,
@@ -229,11 +229,11 @@ DiscoDrive се дистрибуира као **source-available** под лиц
 
 ## ❤️ Подржи пројекат
 
-DiscoDrive прави и одржава једна особа. Повратне информације и предлози су добродошли — пиши на [info@discodrive.app](mailto:info@discodrive.app).
+DiscoDrive се развија сопственим снагама, без инвестиција. Повратне информације и предлози су добродошли — пиши на [info@discodrive.app](mailto:info@discodrive.app).
 
 А ако ти се DiscoDrive свиђа и желиш да расте и даље — подржи пројекат:
 
-- **[Дај звездицу на GitHub-у](https://github.com/kosmosoid/discodrive)** ⭐
+- **[Дај звездицу на GitHub-у](https://github.com/discodrive-cloud/discodrive)** ⭐
 - **[Ko-fi](https://ko-fi.com/kosmosoid)**
 - **[Boosty](https://boosty.to/kosmosoid/donate)**
 - **[Криптовалуте](https://nowpayments.io/donation?api_key=7P893T0-48B4KZH-Q6PXBBT-D79X9TK)** — преко NOWPayments
