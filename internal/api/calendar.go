@@ -49,11 +49,58 @@ func (s *Server) resolveCal(r *http.Request, calID string) (string, bool) {
 	return db.UUIDString(c.ID), true
 }
 
+// propText returns a property value with the iCalendar TEXT escaping undone.
+// Prop.Value is the raw line content, where a comma, a semicolon, a backslash and a
+// newline are backslash-escaped: handing that out shows the backslashes to the user
+// and, once the value is sent back in a form, escapes them into the file a second time
+// (SUMMARY:a\\, b), which repeats with every edit. Prop.Text() is not used because it
+// also splits on commas — a client that wrote an unescaped one would lose the tail —
+// and because it rejects the non-TEXT properties read through here (RRULE, PRIORITY);
+// those never contain a backslash, so unescapeText leaves them alone.
 func propText(comp *ical.Component, name string) string {
+	if p := comp.Props.Get(name); p != nil {
+		return unescapeText(p.Value)
+	}
+	return ""
+}
+
+// propRaw returns a property value as it stands in the file, without undoing the TEXT
+// escaping. For the UID: the value stored in the uid column, and looked up by every
+// handler that fetches an object, is the raw one (see dav.parseICal), so a UID that
+// carries an escape sequence has to be handed out and taken back in that same form.
+func propRaw(comp *ical.Component, name string) string {
 	if p := comp.Props.Get(name); p != nil {
 		return p.Value
 	}
 	return ""
+}
+
+// unescapeText reverses the TEXT escaping of RFC 5545 §3.3.11. A backslash that starts
+// no valid sequence is kept as it is: the value came from another client, and dropping
+// it would change the text.
+func unescapeText(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		i++
+		switch s[i] {
+		case 'n', 'N':
+			b.WriteByte('\n')
+		case '\\', ';', ',':
+			b.WriteByte(s[i])
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 func isAllDay(comp *ical.Component) bool {
@@ -131,7 +178,7 @@ func expandEvents(cal *ical.Calendar, rangeStart, rangeEnd time.Time, loc *time.
 		if comp.Name != ical.CompEvent {
 			continue
 		}
-		uid := propText(comp, ical.PropUID)
+		uid := propRaw(comp, ical.PropUID)
 		if comp.Props.Get(ical.PropRecurrenceID) != nil {
 			t, e := comp.Props.DateTime(ical.PropRecurrenceID, loc)
 			if e != nil {
@@ -158,7 +205,7 @@ func expandEvents(cal *ical.Calendar, rangeStart, rangeEnd time.Time, loc *time.
 		})
 	}
 	for _, m := range masters {
-		uid := propText(m, ical.PropUID)
+		uid := propRaw(m, ical.PropUID)
 		ev := &ical.Event{Component: m}
 		dtstart, err := ev.DateTimeStart(loc)
 		if err != nil {

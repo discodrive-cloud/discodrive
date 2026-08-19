@@ -555,7 +555,7 @@ useModalEscape(computed(() => share.open), () => { share.open = false })
           </div>
           <div class="mb-3">
             <label class="mb-1 block text-xs font-medium text-muted">{{ t('calendar.field_description') }}</label>
-            <textarea v-model="form.description" class="input min-h-16 resize-y" :placeholder="t('calendar.field_description_ph')" />
+            <textarea v-model="form.description" class="input min-h-32 resize-y" :placeholder="t('calendar.field_description_ph')" />
           </div>
           <div class="mb-3 flex items-center gap-2">
             <input id="allDay" v-model="form.all_day" type="checkbox" class="h-4 w-4 accent-accent" />

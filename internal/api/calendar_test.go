@@ -207,3 +207,113 @@ func TestAllDayKeepsItsDate(t *testing.T) {
 		t.Fatalf("all-day form: %+v", f)
 	}
 }
+
+// TEXT properties are escaped in the file (RFC 5545 §3.3.11); the API must hand out
+// the plain text. Returning the raw value showed the backslashes to the client and,
+// because an edit sends the form back, escaped them into the file once more each time.
+func TestEventTextIsUnescapedOnRead(t *testing.T) {
+	const txt = `раз, два; три\четыре`
+	form := eventForm{Summary: txt, Description: txt, Location: txt,
+		Start: "2026-06-12T10:00:00Z", End: "2026-06-12T11:00:00Z"}
+
+	// write: what the create and the update handler both do
+	cal := ical.NewCalendar()
+	cal.Props.SetText(ical.PropProductID, "-//t//EN")
+	cal.Props.SetText(ical.PropVersion, "2.0")
+	ev := ical.NewEvent()
+	ev.Props.SetText(ical.PropUID, "esc1")
+	ev.Props.SetDateTime(ical.PropDateTimeStamp, time.Date(2026, 6, 11, 0, 0, 0, 0, time.UTC))
+	applyEventForm(ev, form)
+	cal.Children = append(cal.Children, ev.Component)
+	var b strings.Builder
+	if err := ical.NewEncoder(&b).Encode(cal); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if !strings.Contains(b.String(), `SUMMARY:раз\, два\; три\\четыре`) {
+		t.Fatalf("the file must carry the escaped text once:\n%s", b.String())
+	}
+
+	// read: the form, and the occurrences of the list endpoint
+	dec, err := ical.NewDecoder(strings.NewReader(b.String())).Decode()
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := eventToForm("esc1", dec)
+	if got.Summary != txt || got.Description != txt || got.Location != txt {
+		t.Fatalf("read back: summary=%q description=%q location=%q, want %q",
+			got.Summary, got.Description, got.Location, txt)
+	}
+	start, _ := time.Parse(time.RFC3339, "2026-06-12T00:00:00Z")
+	end, _ := time.Parse(time.RFC3339, "2026-06-13T00:00:00Z")
+	occ := expandEvents(dec, start, end, time.UTC)
+	if len(occ) != 1 || occ[0].Summary != txt || occ[0].Location != txt {
+		t.Fatalf("occurrences: %+v, want the plain text %q", occ, txt)
+	}
+
+	// an edit sends the value read back: the escaping must not grow a second layer
+	for _, c := range dec.Children {
+		if c.Name == ical.CompEvent {
+			applyEventForm(&ical.Event{Component: c}, eventForm{Summary: got.Summary,
+				Description: got.Description, Location: got.Location,
+				Start: form.Start, End: form.End, Alarm: "keep"})
+		}
+	}
+	var b2 strings.Builder
+	if err := ical.NewEncoder(&b2).Encode(dec); err != nil {
+		t.Fatalf("re-encode: %v", err)
+	}
+	if b2.String() != b.String() {
+		t.Fatalf("a read-modify-write changed the file:\nbefore:\n%s\nafter:\n%s", b.String(), b2.String())
+	}
+}
+
+func TestUnescapeText(t *testing.T) {
+	for in, want := range map[string]string{
+		`plain`:        "plain",
+		`a\, b`:        "a, b",
+		`a\; b`:        "a; b",
+		`C:\\path`:     `C:\path`,
+		`line1\nline2`: "line1\nline2",
+		`a, b`:         "a, b", // an unescaped comma is text, not a list separator
+		`FREQ=WEEKLY`:  "FREQ=WEEKLY",
+		`50% \q kept`:  `50% \q kept`, // no valid escape: left as it is
+		`trailing\`:    `trailing\`,
+	} {
+		if got := unescapeText(in); got != want {
+			t.Errorf("unescapeText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The UID is the key the object is stored and looked up under, and dav.parseICal takes
+// it from the file as it stands. Undoing the escaping here would hand the client a UID
+// that no longer resolves — and would break the match between a series and its override.
+func TestUIDKeepsItsEscaping(t *testing.T) {
+	const uid = `ev\,1`
+	raw := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\n" +
+		"BEGIN:VEVENT\r\nUID:" + uid + "\r\nDTSTAMP:20260611T000000Z\r\n" +
+		"DTSTART:20260612T100000Z\r\nDTEND:20260612T110000Z\r\nSUMMARY:Series\r\n" +
+		"RRULE:FREQ=DAILY;COUNT=2\r\nEND:VEVENT\r\n" +
+		"BEGIN:VEVENT\r\nUID:" + uid + "\r\nDTSTAMP:20260611T000000Z\r\n" +
+		"RECURRENCE-ID:20260613T100000Z\r\nDTSTART:20260613T140000Z\r\nDTEND:20260613T150000Z\r\n" +
+		`SUMMARY:Moved\, later` + "\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+	cal, err := ical.NewDecoder(strings.NewReader(raw)).Decode()
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	start, _ := time.Parse(time.RFC3339, "2026-06-12T00:00:00Z")
+	end, _ := time.Parse(time.RFC3339, "2026-06-20T00:00:00Z")
+	occ := expandEvents(cal, start, end, time.UTC)
+	if len(occ) != 2 {
+		t.Fatalf("expected 2 occurrences, got %d: %+v", len(occ), occ)
+	}
+	for _, o := range occ {
+		if o.UID != uid {
+			t.Errorf("uid = %q, want the raw %q", o.UID, uid)
+		}
+	}
+	// the override was found under that same uid, and its summary is unescaped
+	if occ[1].RecurrenceID == "" || occ[1].Summary != "Moved, later" {
+		t.Fatalf("override not applied: %+v", occ[1])
+	}
+}

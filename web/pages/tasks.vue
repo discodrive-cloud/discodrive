@@ -234,7 +234,7 @@ useModalEscape(modalOpen, () => { modalOpen.value = false })
 
           <div>
             <label class="mb-1 block text-xs font-medium text-muted">{{ t('tasks.notes') }}</label>
-            <textarea v-model="form.notes" class="input min-h-16 resize-y" :placeholder="t('tasks.notes_ph')" />
+            <textarea v-model="form.notes" class="input min-h-32 resize-y" :placeholder="t('tasks.notes_ph')" />
           </div>
         </div>
 
