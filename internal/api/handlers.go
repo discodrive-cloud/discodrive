@@ -794,18 +794,34 @@ func (s *Server) serveFileContent(w http.ResponseWriter, r *http.Request, name, 
 	http.ServeContent(w, r, name, fi.ModTime(), f)
 }
 
-// POST /upload/init {parent_id?, name, size?} → initiates a resumable upload session.
-// size is the file's full length: Complete refuses to publish unless the staged chunks
-// add up to it. Older clients that omit it keep working, without that check.
+// POST /upload/init {parent_id?, name, size?, modified_at?} → initiates a resumable upload
+// session. size is the file's full length: Complete refuses to publish unless the staged
+// chunks add up to it. Older clients that omit it keep working, without that check.
+//
+// A sync client addresses the file by {path, base_version?} instead of parent_id + name:
+// path is resolved exactly as PUT /sync/file resolves it (relative to the daemon's scope
+// when X-Discodrive-Scope is sent, folder chain created on the way), and base_version is
+// the version the client edited — Complete then answers with the same `conflicted` a
+// sync PUT would, saving a conflict copy rather than overwriting a newer server version.
 func (s *Server) handleUploadInit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ParentID   *string `json:"parent_id"`
-		Name       string  `json:"name"`
-		Size       int64   `json:"size"`
-		ModifiedAt string  `json:"modified_at"`
+		ParentID    *string `json:"parent_id"`
+		Name        string  `json:"name"`
+		Path        string  `json:"path"`
+		BaseVersion *int64  `json:"base_version"`
+		Size        int64   `json:"size"`
+		ModifiedAt  string  `json:"modified_at"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.Path != "" && (req.Name != "" || req.ParentID != nil) {
+		writeError(w, http.StatusBadRequest, "path cannot be combined with name or parent_id")
+		return
+	}
+	if req.Path == "" && req.BaseVersion != nil {
+		writeError(w, http.StatusBadRequest, "base_version needs path")
 		return
 	}
 	mtime, err := clientModTime(req.ModifiedAt)
@@ -813,8 +829,19 @@ func (s *Server) handleUploadInit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid modified_at, expected RFC3339")
 		return
 	}
-	id, err := s.uploads.Init(r.Context(), auth.UserID(r.Context()), req.ParentID, req.Name, req.Size,
-		storage.PushMeta{ModifiedAt: mtime})
+	var id string
+	if req.Path != "" {
+		rel, err := s.scopedPushPath(r, req.Path)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		id, err = s.uploads.InitByPath(r.Context(), auth.UserID(r.Context()), rel, req.BaseVersion, req.Size,
+			storage.PushMeta{ModifiedAt: mtime})
+	} else {
+		id, err = s.uploads.Init(r.Context(), auth.UserID(r.Context()), req.ParentID, req.Name, req.Size,
+			storage.PushMeta{ModifiedAt: mtime})
+	}
 	if err != nil {
 		writeStorageErr(w, err)
 		return

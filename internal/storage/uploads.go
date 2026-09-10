@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"path"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,15 +29,21 @@ var (
 )
 
 type uploadSession struct {
-	mu         sync.Mutex
-	userID     string
-	parentID   *string
-	name       string
-	tmpRel     string
-	total      int64     // size the client declared at Init; 0 = not declared
-	modifiedAt time.Time // content date the client declared at Init; zero = use server time
-	nextChunk  int
-	lastTouch  time.Time
+	mu       sync.Mutex
+	userID   string
+	parentID *string
+	name     string
+	// relPath, when set, is where the file lands, resolved the way PUT /sync/file resolves
+	// its path (folder chain created on the way); parentID and name are then unused.
+	relPath string
+	// baseVersion is the version the client edited, nil when it does not care; a mismatch
+	// at Complete makes the upload a conflict copy rather than an overwrite.
+	baseVersion *int64
+	tmpRel      string
+	total       int64     // size the client declared at Init; 0 = not declared
+	modifiedAt  time.Time // content date the client declared at Init; zero = use server time
+	nextChunk   int
+	lastTouch   time.Time
 }
 
 // Uploads manages resumable chunked uploads: sessions are held in memory,
@@ -72,6 +81,21 @@ func uid(userID string) (pgtype.UUID, error) {
 // meta carries optional client metadata (its zero value means none) and is applied by
 // Complete, since that is where the file is actually published.
 func (u *Uploads) Init(ctx context.Context, userID string, parentID *string, name string, total int64, meta PushMeta) (string, error) {
+	return u.init(ctx, userID, parentID, name, "", nil, total, meta)
+}
+
+// InitByPath opens a session that lands at relPath (user-relative, scope already applied)
+// the way PUT /sync/file would, with an optional base version for conflict detection.
+// This is the sync engines' transport for files too large to send in one request.
+func (u *Uploads) InitByPath(ctx context.Context, userID, relPath string, baseVersion *int64, total int64, meta PushMeta) (string, error) {
+	rel := strings.Trim(filepath.ToSlash(relPath), "/")
+	if rel == "" {
+		return "", ErrNotFound
+	}
+	return u.init(ctx, userID, nil, path.Base(rel), rel, baseVersion, total, meta)
+}
+
+func (u *Uploads) init(ctx context.Context, userID string, parentID *string, name, relPath string, baseVersion *int64, total int64, meta PushMeta) (string, error) {
 	if err := validateName(name); err != nil {
 		return "", err
 	}
@@ -92,6 +116,7 @@ func (u *Uploads) Init(ctx context.Context, userID string, parentID *string, nam
 	id := randomHex()
 	u.mu.Lock()
 	u.m[id] = &uploadSession{userID: userID, parentID: parentID, name: name,
+		relPath: relPath, baseVersion: baseVersion,
 		tmpRel: ".uploads/" + id, total: total,
 		modifiedAt: meta.ModifiedAt, lastTouch: time.Now()}
 	u.mu.Unlock()
@@ -271,8 +296,14 @@ func (u *Uploads) Complete(ctx context.Context, id, userID string) (PushResult, 
 		s.mu.Unlock()
 		return PushResult{}, err
 	}
-	res, err := u.fs.PushWithMeta(ctx, s.userID, s.parentID, s.name, nil, "", f,
-		PushMeta{ModifiedAt: s.modifiedAt})
+	var res PushResult
+	if s.relPath != "" {
+		res, err = u.fs.PushByPathWithMeta(ctx, s.userID, s.relPath, s.baseVersion, f,
+			PushMeta{ModifiedAt: s.modifiedAt})
+	} else {
+		res, err = u.fs.PushWithMeta(ctx, s.userID, s.parentID, s.name, s.baseVersion, "", f,
+			PushMeta{ModifiedAt: s.modifiedAt})
+	}
 	_ = f.Close()
 	if err != nil {
 		s.mu.Unlock()
