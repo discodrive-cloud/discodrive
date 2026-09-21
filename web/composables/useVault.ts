@@ -2,14 +2,15 @@
  * useVault.ts — state and navigation for a Cryptomator vault (read-only).
  * Keys live in memory only (ref) and are never sent to the server.
  */
+import { mapConcurrent } from '../lib/mapConcurrent'
 import {
   openVault,
   WrongPasswordError,
   decryptName,
   dirIdHash,
   decryptContent,
-} from '~/lib/cryptomator/index.js'
-import type { VaultKeys } from '~/lib/cryptomator/index.js'
+} from '../lib/cryptomator/index.js'
+import type { VaultKeys } from '../lib/cryptomator/index.js'
 
 export interface Node {
   id: string
@@ -89,11 +90,11 @@ export function useVault() {
    * resolveStoragePath — traverse path segments "d/XX/YYYY…" starting from vaultFolderId.
    * Returns the id of the last folder in the chain.
    */
-  async function resolveStoragePath(startFolderId: string, path: string): Promise<string> {
+  async function resolveStoragePath(startFolderId: string, path: string, rootChildren?: Node[]): Promise<string> {
     const segments = path.split('/')
     let currentId = startFolderId
     for (const seg of segments) {
-      const children = await listNodes(currentId)
+      const children = currentId === startFolderId && rootChildren ? rootChildren : await listNodes(currentId)
       const found = children.find((n) => n.name === seg && n.is_dir)
       if (!found) throw new Error(`Path segment "${seg}" not found`)
       currentId = found.id
@@ -105,40 +106,38 @@ export function useVault() {
    * listDir — populate entries for a vault dirId.
    * dirId='' means the vault root.
    */
-  async function listDir(dirId: string, displayName: string): Promise<void> {
+  async function listDir(dirId: string, displayName: string, rootChildren?: Node[]): Promise<void> {
     if (!keys.value) throw new Error('Vault is locked')
     const k = keys.value
     const vfId = vaultFolderId.value
 
     const path = await dirIdHash(k, dirId)
-    const leafFolderId = await resolveStoragePath(vfId, path)
+    const leafFolderId = await resolveStoragePath(vfId, path, rootChildren)
     const rawEntries = await listNodes(leafFolderId)
 
-    const result: VaultEntry[] = []
-
-    for (const child of rawEntries) {
+    const result = await mapConcurrent(rawEntries, 6, async (child): Promise<VaultEntry | undefined> => {
       // skip internal metadata files
-      if (child.name === 'dirid.c9r') continue
+      if (child.name === 'dirid.c9r') return undefined
 
       if (child.name.endsWith('.c9r')) {
         if (!child.is_dir) {
           // file
           const plain = await decryptName(k, child.name, dirId)
-          result.push({ name: plain, isDir: false, nodeId: child.id })
+          return { name: plain, isDir: false, nodeId: child.id }
         } else {
           // subdirectory: fetch dir.c9r to get subDirId
           const subChildren = await listNodes(child.id)
           const dirC9r = subChildren.find((c) => c.name === 'dir.c9r')
-          if (!dirC9r) continue
+          if (!dirC9r) return undefined
           const plain = await decryptName(k, child.name, dirId)
           const subDirId = (await fetchText(dirC9r.id)).trim()
-          result.push({ name: plain, isDir: true, dirId: subDirId })
+          return { name: plain, isDir: true, dirId: subDirId }
         }
       } else if (child.name.endsWith('.c9s') && child.is_dir) {
         // long name: fetch name.c9s to get the full encrypted name
         const subChildren = await listNodes(child.id)
         const nameC9s = subChildren.find((c) => c.name === 'name.c9s')
-        if (!nameC9s) continue
+        if (!nameC9s) return undefined
         const fullEnc = (await fetchText(nameC9s.id)).trim()
         const plain = await decryptName(k, fullEnc, dirId)
 
@@ -147,14 +146,14 @@ export function useVault() {
 
         if (dirC9r) {
           const subDirId = (await fetchText(dirC9r.id)).trim()
-          result.push({ name: plain, isDir: true, dirId: subDirId })
+          return { name: plain, isDir: true, dirId: subDirId }
         } else if (contentsC9r) {
-          result.push({ name: plain, isDir: false, nodeId: contentsC9r.id })
+          return { name: plain, isDir: false, nodeId: contentsC9r.id }
         }
       }
-    }
+    })
 
-    entries.value = result
+    entries.value = result.filter((entry): entry is VaultEntry => entry !== undefined)
   }
 
   /** Unlock the vault */
@@ -176,8 +175,9 @@ export function useVault() {
     const masterkeyNode = children.find((n) => !n.is_dir && n.name === 'masterkey.cryptomator')
     if (!vaultNode || !masterkeyNode) throw new Error('Vault configuration files not found')
 
-    const vaultJwt = (await fetchText(vaultNode.id)).trim()
-    const masterkeyJson = await fetchText(masterkeyNode.id)
+    const [vaultJwt, masterkeyJson] = await Promise.all([
+      fetchText(vaultNode.id), fetchText(masterkeyNode.id),
+    ])
 
     try {
       const k = await openVault(masterkeyJson, vaultJwt, password)
@@ -186,7 +186,7 @@ export function useVault() {
       keys.value = k
       vaultFolderId.value = folderId
       dirStack.value = [{ dirId: '', name: vaultFolder.name }]
-      await listDir('', vaultFolder.name)
+      await listDir('', vaultFolder.name, children)
     } catch (e) {
       if (e instanceof WrongPasswordError) {
         if (import.meta.client) {

@@ -18,7 +18,8 @@ import { openVault, dirIdHash, decryptName, decryptContent, WrongPasswordError }
 // Path to the fixture relative to web/
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const VAULT_DIR = join(__dirname, '../../../daemon/internal/vault/testdata/cmvault');
+// The daemon fixture may live in a separate discodrive-apps checkout.
+const VAULT_DIR = process.env.CRYPTOMATOR_TEST_VAULT ?? join(__dirname, '../../../daemon/internal/vault/testdata/cmvault');
 
 describe('Cryptomator JS reader — interop against a real vault', () => {
   it('openVault — opens with correct password', async () => {
