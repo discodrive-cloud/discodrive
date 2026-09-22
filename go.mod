@@ -24,6 +24,8 @@ require (
 	github.com/nwaples/rardecode v1.1.3
 	github.com/pdfcpu/pdfcpu v0.13.0
 	github.com/pquerna/otp v1.5.0
+	github.com/smallstep/pkcs7 v0.2.3
+	github.com/smallstep/scep v0.0.0-20260331191114-261f960a40d1
 	github.com/tcolgate/mp3 v0.0.0-20170426193717-e79c5a46d300
 	github.com/teambition/rrule-go v1.8.2
 	github.com/testcontainers/testcontainers-go v0.42.0

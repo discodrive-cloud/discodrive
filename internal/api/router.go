@@ -4,6 +4,7 @@ package api
 import (
 	"io/fs"
 	"net/http"
+	"os"
 
 	"discodrive/internal/appleprofile"
 	"discodrive/internal/auth"
@@ -23,7 +24,9 @@ import (
 
 // Server holds the dependencies for the HTTP layer.
 type Server struct {
+	enrollmentOn bool
 	profiles     appleprofile.Tickets
+	enrollments  appleprofile.Enrollments
 	auth         *auth.Service
 	q            *db.Queries
 	files        *storage.FileService
@@ -77,6 +80,13 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 
 	// authenticated (Bearer JWT, scoped by user_id/tenant_id)
 	prot := authSvc.Middleware
+	s.enrollmentOn = os.Getenv("DISCODRIVE_APPLE_ENROLLMENT") == "1"
+	mux.Handle("GET /me/apple-enrollment", prot(http.HandlerFunc(s.handleAppleEnrollmentStatus)))
+	if s.enrollmentOn {
+		mux.Handle("POST /me/apple-enrollment", prot(http.HandlerFunc(s.rateLimited(s.handleAppleEnrollment))))
+		mux.HandleFunc("GET /apple-enrollment/{ticket}/{stage}", s.handleAppleEnrollmentExchange)
+		mux.HandleFunc("POST /apple-enrollment/{ticket}/{stage}", s.handleAppleEnrollmentExchange)
+	}
 	mux.Handle("GET /me", prot(http.HandlerFunc(s.handleMe)))
 	mux.Handle("POST /me/apple-profile", prot(http.HandlerFunc(s.handleAppleProfile)))
 	mux.Handle("GET /me/storage", prot(http.HandlerFunc(s.handleMeStorage)))
