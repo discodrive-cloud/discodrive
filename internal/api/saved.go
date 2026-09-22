@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -14,7 +13,10 @@ import (
 
 	"discodrive/internal/auth"
 	"discodrive/internal/db"
+	"discodrive/internal/fetchguard"
 	"discodrive/internal/saved"
+	"discodrive/internal/secret"
+	"discodrive/internal/storage"
 )
 
 // maxSavedURLLen keeps (user_id, url, kind) well under the btree index tuple limit.
@@ -121,6 +123,10 @@ func (s *Server) handleSavedCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	item, err := s.saved.Create(r.Context(), uid, req.URL, req.Kind, req.Title, req.ContentHTML, req.Cookie)
+	if errors.Is(err, secret.ErrNoKey) || errors.Is(err, fetchguard.ErrBlocked) {
+		writeError(w, http.StatusBadRequest, "Authenticated downloads require HTTPS and configured secret encryption")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -254,7 +260,7 @@ func (s *Server) handleSavedContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	f, err := os.Open(filepath.Join(s.storageRoot, p))
+	f, err := storage.NewLocalDisk(s.storageRoot).Open(p)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not found")
 		return

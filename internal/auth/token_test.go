@@ -8,7 +8,7 @@ import (
 func TestIssueMFA_CarriesPurpose(t *testing.T) {
 	iss := NewTokenIssuer("secret", time.Hour)
 
-	mfa, err := iss.IssueMFA("11111111-1111-1111-1111-111111111111", "t1")
+	mfa, err := iss.IssueMFA("11111111-1111-1111-1111-111111111111", "t1", 0)
 	if err != nil {
 		t.Fatalf("IssueMFA: %v", err)
 	}

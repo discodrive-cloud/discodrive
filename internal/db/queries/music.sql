@@ -11,7 +11,7 @@ ON CONFLICT (user_id) DO UPDATE SET enabled = EXCLUDED.enabled,
 RETURNING *;
 
 -- name: SetMusicCredentials :exec
-UPDATE music_settings SET password_cipher = $2, api_key = $3, updated_at = now()
+UPDATE music_settings SET password_cipher = $2, api_key = $3, token_version = $4, updated_at = now()
 WHERE user_id = $1;
 
 -- name: ClearMusicCredentials :exec
@@ -19,7 +19,8 @@ UPDATE music_settings SET password_cipher = NULL, api_key = NULL, updated_at = n
 WHERE user_id = $1;
 
 -- name: GetMusicSettingsByApiKey :one
-SELECT * FROM music_settings WHERE api_key = $1;
+SELECT s.* FROM music_settings s JOIN users u ON u.id = s.user_id
+WHERE s.api_key = $1 AND s.token_version = u.token_version AND NOT u.must_change_password;
 
 -- name: EnabledMusicUsers :many
 SELECT user_id, folder_node_id FROM music_settings WHERE enabled = true AND folder_node_id IS NOT NULL;

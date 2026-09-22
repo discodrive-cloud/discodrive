@@ -3,7 +3,6 @@ package ebook
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"discodrive/internal/db"
+	"discodrive/internal/storage"
 )
 
 // Indexer upserts book rows (and their authors/tags/covers) for a given user.
@@ -37,7 +37,12 @@ func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath strin
 		return err
 	}
 
-	meta, err := ReadMeta(diskPath)
+	file, source, err := storage.NewLocalDisk(ix.storageRoot).Pin(diskPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	meta, err := readMeta(diskPath, source)
 	if err != nil {
 		return err
 	}
@@ -50,7 +55,7 @@ func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath strin
 
 	// File size from disk.
 	var sizePg pgtype.Int8
-	if fi, serr := os.Stat(diskPath); serr == nil {
+	if fi, serr := file.Stat(); serr == nil {
 		sizePg = pgtype.Int8{Int64: fi.Size(), Valid: true}
 	}
 

@@ -56,7 +56,9 @@ type Meta struct {
 // ReadMeta extracts metadata from an e-book file at path. Format and
 // ContentType are derived from the file extension. Title falls back to the
 // filename (without extension) when the parsed value is empty.
-func ReadMeta(path string) (Meta, error) {
+func ReadMeta(path string) (Meta, error) { return readMeta(path, path) }
+
+func readMeta(path, source string) (Meta, error) {
 	ext := bookExt(path)
 	ct, ok := bookExtensions[ext]
 	if !ok {
@@ -69,17 +71,19 @@ func ReadMeta(path string) (Meta, error) {
 	)
 	switch ext {
 	case "epub":
-		m, err = parseEPUB(path)
+		m, err = parseEPUB(source)
 	case "fb2":
-		m, err = parseFB2(path)
+		m, err = parseFB2(source)
 	case "fb2.zip":
-		m, err = parseFB2Zip(path)
-	case "cbz", "cbr":
-		m, err = parseComic(path)
+		m, err = parseFB2Zip(source)
+	case "cbz":
+		m, err = parseCBZ(source)
+	case "cbr":
+		m, err = parseCBR(source)
 	case "pdf":
-		m, err = parsePDF(path)
+		m, err = parsePDF(source)
 	case "mobi", "azw", "azw3":
-		m, err = parseMOBI(path)
+		m, err = parseMOBI(source)
 	default:
 		return Meta{}, errors.New("ebook: unsupported format: " + ext)
 	}

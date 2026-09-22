@@ -1637,7 +1637,7 @@ func (q *Queries) GetEpisodeForUser(ctx context.Context, arg GetEpisodeForUserPa
 }
 
 const getMusicSettings = `-- name: GetMusicSettings :one
-SELECT user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, tag_edit_versioning FROM music_settings WHERE user_id = $1
+SELECT user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, tag_edit_versioning, token_version FROM music_settings WHERE user_id = $1
 `
 
 func (q *Queries) GetMusicSettings(ctx context.Context, userID pgtype.UUID) (MusicSetting, error) {
@@ -1652,12 +1652,14 @@ func (q *Queries) GetMusicSettings(ctx context.Context, userID pgtype.UUID) (Mus
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.TagEditVersioning,
+		&i.TokenVersion,
 	)
 	return i, err
 }
 
 const getMusicSettingsByApiKey = `-- name: GetMusicSettingsByApiKey :one
-SELECT user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, tag_edit_versioning FROM music_settings WHERE api_key = $1
+SELECT s.user_id, s.enabled, s.folder_node_id, s.password_cipher, s.api_key, s.created_at, s.updated_at, s.tag_edit_versioning, s.token_version FROM music_settings s JOIN users u ON u.id = s.user_id
+WHERE s.api_key = $1 AND s.token_version = u.token_version AND NOT u.must_change_password
 `
 
 func (q *Queries) GetMusicSettingsByApiKey(ctx context.Context, apiKey pgtype.Text) (MusicSetting, error) {
@@ -1672,6 +1674,7 @@ func (q *Queries) GetMusicSettingsByApiKey(ctx context.Context, apiKey pgtype.Te
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.TagEditVersioning,
+		&i.TokenVersion,
 	)
 	return i, err
 }
@@ -2996,7 +2999,7 @@ func (q *Queries) SetEpisodeStatus(ctx context.Context, arg SetEpisodeStatusPara
 }
 
 const setMusicCredentials = `-- name: SetMusicCredentials :exec
-UPDATE music_settings SET password_cipher = $2, api_key = $3, updated_at = now()
+UPDATE music_settings SET password_cipher = $2, api_key = $3, token_version = $4, updated_at = now()
 WHERE user_id = $1
 `
 
@@ -3004,10 +3007,16 @@ type SetMusicCredentialsParams struct {
 	UserID         pgtype.UUID `json:"user_id"`
 	PasswordCipher pgtype.Text `json:"password_cipher"`
 	ApiKey         pgtype.Text `json:"api_key"`
+	TokenVersion   int64       `json:"token_version"`
 }
 
 func (q *Queries) SetMusicCredentials(ctx context.Context, arg SetMusicCredentialsParams) error {
-	_, err := q.db.Exec(ctx, setMusicCredentials, arg.UserID, arg.PasswordCipher, arg.ApiKey)
+	_, err := q.db.Exec(ctx, setMusicCredentials,
+		arg.UserID,
+		arg.PasswordCipher,
+		arg.ApiKey,
+		arg.TokenVersion,
+	)
 	return err
 }
 
@@ -3593,7 +3602,7 @@ ON CONFLICT (user_id) DO UPDATE SET enabled = EXCLUDED.enabled,
     folder_node_id = EXCLUDED.folder_node_id,
     tag_edit_versioning = EXCLUDED.tag_edit_versioning,
     updated_at = now()
-RETURNING user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, tag_edit_versioning
+RETURNING user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, tag_edit_versioning, token_version
 `
 
 type UpsertMusicSettingsParams struct {
@@ -3620,6 +3629,7 @@ func (q *Queries) UpsertMusicSettings(ctx context.Context, arg UpsertMusicSettin
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.TagEditVersioning,
+		&i.TokenVersion,
 	)
 	return i, err
 }

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -105,4 +106,38 @@ func NewClient(timeout time.Duration) *http.Client {
 			return ValidateURL(req.URL.String())
 		},
 	}
+}
+
+// WithCookie returns a per-download client. Never copy browser credentials to a
+// different origin, and never downgrade a credential-bearing request to HTTP.
+func WithCookie(client *http.Client, req *http.Request, cookie string) (*http.Client, error) {
+	if req.URL.Scheme != "https" || req.URL.User != nil {
+		return nil, fmt.Errorf("%w: cookies require HTTPS", ErrBlocked)
+	}
+	origin := *req.URL
+	req.Header.Set("Cookie", cookie)
+	copyClient := *client
+	previous := client.CheckRedirect
+	copyClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("too many redirects")
+		}
+		if next.URL.Scheme != "https" {
+			return fmt.Errorf("%w: credential redirect requires HTTPS", ErrBlocked)
+		}
+		// net/http may restore initial headers on later redirects: explicitly remove
+		// cookies after any cross-origin hop, even when the chain returns home.
+		same := strings.EqualFold(next.URL.Host, origin.Host) && next.URL.User == nil
+		for _, hop := range via {
+			same = same && strings.EqualFold(hop.URL.Host, origin.Host) && hop.URL.Scheme == "https"
+		}
+		if !same {
+			next.Header.Del("Cookie")
+		}
+		if previous != nil {
+			return previous(next, via)
+		}
+		return nil
+	}
+	return &copyClient, nil
 }

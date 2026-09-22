@@ -6,14 +6,22 @@
 package config
 
 import (
+	"net"
 	"os"
+	"path/filepath"
 	"strconv"
+
+	"discodrive/internal/httpsecurity"
 )
 
 // Config holds the process configuration.
 type Config struct {
-	// Host is the listen interface (empty = all interfaces).
+	// Host is the listen interface (defaults to loopback; Docker overrides it).
 	Host string
+	// TrustedProxyCIDRs identifies the immediate peers allowed to assert HTTPS.
+	TrustedProxyCIDRs string
+	// AllowInsecureHTTP is an explicit loopback-only development exception.
+	AllowInsecureHTTP bool
 	// Port is the HTTP server TCP port.
 	Port string
 	// DatabaseURL is the Postgres connection string (postgres://...).
@@ -26,6 +34,8 @@ type Config struct {
 	BaseDomain string
 	// StorageRoot is the root data directory on disk (mirror of user trees).
 	StorageRoot string
+	// SetupTokenFile stores the one-time bootstrap secret, outside user file trees.
+	SetupTokenFile string
 	// VersionKeep is how many file versions to retain (extras are pruned by the GC job).
 	VersionKeep int
 	// TrashDays is the number of days after which a tombstone is physically removed by the GC job.
@@ -63,13 +73,16 @@ func (c Config) DefaultUserQuotaBytes() int64 { return int64(c.DefaultUserQuotaG
 // Load reads configuration from the environment, applying defaults.
 func Load() Config {
 	return Config{
-		Host:                  os.Getenv("APP_HOST"),
+		Host:                  getenv("APP_HOST", "127.0.0.1"),
+		TrustedProxyCIDRs:     getenv("TRUSTED_PROXY_CIDRS", httpsecurity.DefaultTrustedProxies),
+		AllowInsecureHTTP:     getenvBool("ALLOW_INSECURE_HTTP", false),
 		Port:                  getenv("APP_PORT", "8080"),
 		DatabaseURL:           os.Getenv("DATABASE_URL"),
 		JWTSecret:             os.Getenv("JWT_SECRET"),
 		SettingsEncryptionKey: os.Getenv("SETTINGS_ENCRYPTION_KEY"),
 		BaseDomain:            os.Getenv("BASE_DOMAIN"),
 		StorageRoot:           getenv("STORAGE_ROOT", "/data"),
+		SetupTokenFile:        getenv("SETUP_TOKEN_FILE", filepath.Join(getenv("STORAGE_ROOT", "/data"), ".bootstrap", "setup-token")),
 		VersionKeep:           getenvInt("VERSION_KEEP", 10),
 		TrashDays:             getenvInt("TRASH_DAYS", 30),
 		RescanSeconds:         getenvInt("RESCAN_SECONDS", 30),
@@ -82,7 +95,7 @@ func Load() Config {
 
 // Addr returns the address string for http.Server (host:port).
 func (c Config) Addr() string {
-	return c.Host + ":" + c.Port
+	return net.JoinHostPort(c.Host, c.Port)
 }
 
 func getenv(key, def string) string {

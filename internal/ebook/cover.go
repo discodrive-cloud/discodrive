@@ -1,8 +1,10 @@
 package ebook
 
 import (
-	"os"
+	"bytes"
 	"path/filepath"
+
+	"discodrive/internal/storage"
 )
 
 // mimeToExt maps common image MIME types to file extensions.
@@ -24,18 +26,11 @@ func WriteCover(storageRoot, bookID string, data []byte, mimeType string) (strin
 		ext = "jpg"
 	}
 
-	dir := filepath.Join(storageRoot, ".covers", "ebooks")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	rel := filepath.Join(".covers", "ebooks", bookID+"."+ext)
+	if _, _, err := storage.NewLocalDisk(storageRoot).WriteFile(rel, bytes.NewReader(data)); err != nil {
 		return "", err
 	}
-
-	filename := bookID + "." + ext
-	dst := filepath.Join(dir, filename)
-	if err := os.WriteFile(dst, data, 0o644); err != nil {
-		return "", err
-	}
-
-	return filepath.Join(".covers", "ebooks", filename), nil
+	return rel, nil
 }
 
 // RemoveCover deletes a cached cover file at <storageRoot>/<relPath>.
@@ -44,9 +39,5 @@ func RemoveCover(storageRoot, relPath string) error {
 	if relPath == "" {
 		return nil
 	}
-	err := os.Remove(filepath.Join(storageRoot, relPath))
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
+	return storage.NewLocalDisk(storageRoot).Remove(relPath)
 }

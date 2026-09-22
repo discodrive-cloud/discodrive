@@ -7,9 +7,12 @@ package saved
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -17,6 +20,7 @@ import (
 	"discodrive/internal/db"
 	"discodrive/internal/fetchguard"
 	"discodrive/internal/quota"
+	"discodrive/internal/secret"
 	"discodrive/internal/storage"
 )
 
@@ -60,7 +64,8 @@ type Service struct {
 	st          storage.Storage
 	maxDownload int64 // bytes; 0 = unlimited
 	// quota bounds what the item's owner may write; nil = no limits configured.
-	quota *quota.Checker
+	quota  *quota.Checker
+	cipher *secret.Cipher
 
 	Client   *http.Client
 	Validate func(string) error
@@ -80,6 +85,61 @@ func NewService(q *db.Queries, st storage.Storage, maxDownloadMB int) *Service {
 // SetQuota installs the quota checker. Called once at startup, before processing runs.
 func (s *Service) SetQuota(c *quota.Checker) { s.quota = c }
 
+// SetCipher enables encrypted, temporary cookies for authenticated downloads.
+func (s *Service) SetCipher(c *secret.Cipher) { s.cipher = c }
+
+// cookiePayload binds ciphertext to one user and URL so copying DB values cannot
+// send credentials to another destination.
+type cookiePayload struct {
+	Cookie string
+	User   string
+	URL    string
+}
+
+func (s *Service) sealCookie(userID pgtype.UUID, rawURL, cookie string) (string, error) {
+	if cookie == "" {
+		return "", nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.User != nil {
+		return "", fetchguard.ErrBlocked
+	}
+	if s.cipher == nil {
+		return "", secret.ErrNoKey
+	}
+	data, err := json.Marshal(cookiePayload{cookie, db.UUIDString(userID), rawURL})
+	if err != nil {
+		return "", err
+	}
+	encrypted, err := s.cipher.Encrypt(string(data))
+	if err != nil {
+		return "", err
+	}
+	return "enc:v1:" + encrypted, nil
+}
+
+func (s *Service) openCookie(item db.SavedItem) (string, error) {
+	if !item.CookieHeader.Valid || item.CookieHeader.String == "" {
+		return "", nil
+	}
+	if s.cipher == nil || !item.CookieExpiresAt.Valid || !time.Now().Before(item.CookieExpiresAt.Time) {
+		return "", errors.New("download credentials expired; submit the download again")
+	}
+	encrypted, ok := strings.CutPrefix(item.CookieHeader.String, "enc:v1:")
+	if !ok {
+		return "", errors.New("invalid download credentials")
+	}
+	data, err := s.cipher.Decrypt(encrypted)
+	if err != nil {
+		return "", errors.New("invalid download credentials")
+	}
+	var payload cookiePayload
+	if json.Unmarshal([]byte(data), &payload) != nil || payload.User != db.UUIDString(item.UserID) || payload.URL != item.Url {
+		return "", errors.New("invalid download credentials")
+	}
+	return payload.Cookie, nil
+}
+
 // budget is how many bytes the item's owner may still receive. Saved items land
 // straight on disk (the node row appears at the next rescan), so the quota has to be
 // enforced here — nothing else on this path checks it.
@@ -95,13 +155,17 @@ func (s *Service) budget(ctx context.Context, item db.SavedItem) (int64, error) 
 // cookieHeader (downloads only) is the browser session for login-protected
 // sites — the worker attaches it to the download request.
 func (s *Service) Create(ctx context.Context, userID pgtype.UUID, url, kind, title, contentHTML, cookieHeader string) (db.SavedItem, error) {
+	encryptedCookie, err := s.sealCookie(userID, url, cookieHeader)
+	if err != nil {
+		return db.SavedItem{}, err
+	}
 	item, err := s.q.UpsertSavedItem(ctx, db.UpsertSavedItemParams{
 		UserID:       userID,
 		Url:          url,
 		Kind:         kind,
 		Title:        title,
 		ContentHtml:  pgtype.Text{String: contentHTML, Valid: contentHTML != ""},
-		CookieHeader: pgtype.Text{String: cookieHeader, Valid: cookieHeader != ""},
+		CookieHeader: pgtype.Text{String: encryptedCookie, Valid: encryptedCookie != ""},
 	})
 	if err != nil {
 		return db.SavedItem{}, err
@@ -172,6 +236,9 @@ func (s *Service) CleanupDownloads(ctx context.Context) error {
 // ProcessPending is the worker tick job: it claims and processes pending items
 // missed by Kickoff (server restarted mid-queue, or the kickoff goroutine died).
 func (s *Service) ProcessPending(ctx context.Context) error {
+	if err := s.q.ClearExpiredSavedCookies(ctx); err != nil {
+		return err
+	}
 	items, err := s.q.ListPendingSavedItems(ctx, pendingBatch)
 	if err != nil {
 		return err

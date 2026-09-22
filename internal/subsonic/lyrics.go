@@ -64,7 +64,7 @@ func getLyricsBySongId(h *Handler, c *reqCtx) {
 		return
 	}
 
-	raw, _ := music.ReadLyrics(absPath)
+	raw, _ := music.ReadStoredLyrics(h.storageRoot, absPath)
 	if raw == "" {
 		c.ok(map[string]any{"lyricsList": map[string]any{}})
 		return
@@ -138,7 +138,7 @@ func getLyrics(h *Handler, c *reqCtx) {
 	}
 
 	absPath := filepath.Join(h.storageRoot, node.DiskPath.String)
-	raw, _ := music.ReadLyrics(absPath)
+	raw, _ := music.ReadStoredLyrics(h.storageRoot, absPath)
 	if raw == "" {
 		emptyResp()
 		return

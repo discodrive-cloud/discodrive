@@ -105,7 +105,12 @@ func (e *TagEditor) Read(ctx context.Context, userID, nodeID string) (TagInfo, e
 	if w == nil {
 		return TagInfo{}, ErrNotAudio
 	}
-	tags, hasCover, err := w.Read(abs)
+	f, source, err := storage.NewLocalDisk(e.storageRoot).Pin(abs)
+	if err != nil {
+		return TagInfo{}, err
+	}
+	defer f.Close()
+	tags, hasCover, err := w.Read(source)
 	if err != nil {
 		return TagInfo{}, err
 	}
@@ -122,7 +127,12 @@ func (e *TagEditor) Cover(ctx context.Context, userID, nodeID string) ([]byte, s
 	if w == nil {
 		return nil, "", false, ErrNotAudio
 	}
-	data, mime, ok := w.Cover(abs)
+	f, source, err := storage.NewLocalDisk(e.storageRoot).Pin(abs)
+	if err != nil {
+		return nil, "", false, err
+	}
+	defer f.Close()
+	data, mime, ok := w.Cover(source)
 	return data, mime, ok, nil
 }
 
@@ -263,7 +273,7 @@ func (e *TagEditor) Write(ctx context.Context, userID, nodeID string, t tagwrite
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 
-	src, err := os.Open(abs)
+	src, err := storage.NewLocalDisk(e.storageRoot).OpenAbsolute(abs)
 	if err != nil {
 		tmp.Close()
 		return err

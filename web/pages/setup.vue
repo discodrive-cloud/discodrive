@@ -2,6 +2,7 @@
 definePageMeta({ layout: 'auth' })
 
 const { t } = useI18n()
+const token = ref('')
 const email = ref('')
 const password = ref('')
 const password2 = ref('')
@@ -10,18 +11,24 @@ const busy = ref(false)
 
 async function submit() {
   error.value = ''
+  if (location.protocol !== 'https:') {
+    error.value = t('setup.error_https')
+    return
+  }
   if (password.value !== password2.value) {
     error.value = t('setup.error_mismatch')
     return
   }
   busy.value = true
   try {
-    await apiFetch('/setup/admin', { method: 'POST', body: { email: email.value, password: password.value } })
-    await login(email.value, password.value)
+    await apiFetch('/setup/admin', { method: 'POST', body: { token: token.value.trim(), email: email.value, password: password.value } })
+    token.value = ''
     useSetupNeeded().value = false
+    await login(email.value, password.value)
     await navigateTo('/admin')
   } catch (e: any) {
-    error.value = e?.data?.error || t('setup.error_create')
+    const status = e?.status || e?.statusCode
+    error.value = status === 401 ? t('setup.error_token') : status === 409 ? t('setup.error_closed') : t('setup.error_create')
   } finally {
     busy.value = false
   }
@@ -36,6 +43,11 @@ async function submit() {
     </div>
     <p class="mb-6 text-sm text-muted">{{ t('setup.subtitle') }}</p>
     <form class="space-y-4" @submit.prevent="submit">
+      <div>
+        <label for="setup-token" class="mb-1 block text-xs text-muted">{{ t('setup.token_label') }}</label>
+        <input id="setup-token" v-model="token" type="password" autocomplete="off" spellcheck="false" required maxlength="64" class="input" aria-describedby="setup-token-help" />
+        <p id="setup-token-help" class="mt-1 text-xs text-muted">{{ t('setup.token_hint') }}</p>
+      </div>
       <div>
         <label class="mb-1 block text-xs text-muted">Email</label>
         <input v-model="email" type="email" autocomplete="username" class="input" placeholder="you@host" />

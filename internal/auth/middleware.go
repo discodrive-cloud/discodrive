@@ -14,6 +14,8 @@ const (
 	ctxUserID ctxKey = iota
 	ctxTenantID
 	ctxRole
+	ctxDeviceID
+	ctxTokenVersion
 )
 
 // Middleware requires a valid Bearer JWT and injects user_id/tenant_id/role into the context.
@@ -75,7 +77,7 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 				return
 			}
 			dev, derr := s.q.GetDevice(r.Context(), did)
-			if derr != nil || db.UUIDString(dev.UserID) != claims.Subject || !dev.TokenHash.Valid {
+			if derr != nil || db.UUIDString(dev.UserID) != claims.Subject || !dev.TokenHash.Valid || dev.TokenVersion != claims.Ver {
 				writeUnauthorized(w, "device has been revoked")
 				return
 			}
@@ -104,6 +106,8 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), ctxUserID, claims.Subject)
 		ctx = context.WithValue(ctx, ctxTenantID, claims.TenantID)
 		ctx = context.WithValue(ctx, ctxRole, u.Role)
+		ctx = context.WithValue(ctx, ctxDeviceID, claims.DeviceID)
+		ctx = context.WithValue(ctx, ctxTokenVersion, claims.Ver)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -138,4 +142,11 @@ func writeUnauthorized(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte(`{"error":"` + msg + `"}` + "\n"))
+}
+
+// DeviceID and TokenVersion preserve the authority of the session that began a request.
+func DeviceID(ctx context.Context) string { v, _ := ctx.Value(ctxDeviceID).(string); return v }
+func TokenVersion(ctx context.Context) (int64, bool) {
+	v, ok := ctx.Value(ctxTokenVersion).(int64)
+	return v, ok
 }

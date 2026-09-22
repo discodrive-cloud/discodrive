@@ -29,7 +29,7 @@ func TestNewWebAuthn(t *testing.T) {
 
 func TestWebAuthnSessionTokenRoundTrip(t *testing.T) {
 	iss := NewTokenIssuer("secret", time.Hour)
-	tok, err := iss.IssueWebAuthnSession("user-1", "ZGF0YQ==")
+	tok, err := iss.IssueWebAuthnSession("user-1", "ZGF0YQ==", 0)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -87,7 +87,8 @@ func TestWebAuthnRegisterBeginAndCRUD(t *testing.T) {
 	svc := NewService(pool, NewTokenIssuer("secret", time.Hour), nil)
 	q := db.New(pool)
 	tenant, _ := q.CreateTenant(ctx, "t")
-	u, err := q.CreateUser(ctx, db.CreateUserParams{TenantID: tenant.ID, Email: "wa@test.local", PasswordHash: "x", Role: "user"})
+	passwordHash, _ := HashPassword("test-password")
+	u, err := q.CreateUser(ctx, db.CreateUserParams{TenantID: tenant.ID, Email: "wa@test.local", PasswordHash: passwordHash, Role: "user"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -101,7 +102,11 @@ func TestWebAuthnRegisterBeginAndCRUD(t *testing.T) {
 	// With a relying party, begin produces options (carrying a challenge) + a parseable token.
 	wa, _ := NewWebAuthn("disco.example.com")
 	svc.SetWebAuthn(wa)
-	opts, sessionToken, err := svc.BeginWebAuthnRegistration(ctx, userID)
+	approval, err := svc.ApprovePasskeyWithPassword(ctx, userID, "test-password", "", "register")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, sessionToken, err := svc.BeginWebAuthnRegistration(ctx, userID, approval)
 	if err != nil {
 		t.Fatalf("BeginWebAuthnRegistration: %v", err)
 	}

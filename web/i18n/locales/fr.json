@@ -46,6 +46,11 @@
     "passkey_error": "Échec de la connexion avec une passkey"
   },
   "setup": {
+    "token_label": "Jeton de configuration",
+    "token_hint": "Récupérez le jeton à usage unique dans la console du serveur et saisissez-le ici.",
+    "error_token": "Veuillez vérifier le jeton de configuration.",
+    "error_closed": "La configuration initiale est déjà terminée. Veuillez vous connecter.",
+    "error_https": "Veuillez ouvrir cette page en HTTPS avant d’envoyer le jeton de configuration.",
     "subtitle": "Premier démarrage — créez un administrateur.",
     "password_label": "Mot de passe",
     "password_again": "Confirmer le mot de passe",
@@ -633,7 +638,14 @@
     "cancelled": "Enregistrement annulé — l'invite du navigateur a été fermée.",
     "registering": "Suivez l'invite dans votre navigateur…",
     "success": "Clé de sécurité ajoutée avec succès.",
-    "error_insecure": "Les clés de sécurité nécessitent une connexion sécurisée (HTTPS)."
+    "error_insecure": "Les clés de sécurité nécessitent une connexion sécurisée (HTTPS).",
+    "approval_title": "Confirmez votre identité",
+    "approval_description": "Saisissez votre mot de passe actuel et le code de vérification, ou utilisez une clé d’accès existante.",
+    "approval_password": "Mot de passe actuel",
+    "approval_code": "Code d’authentification",
+    "approval_existing": "Utiliser une clé existante",
+    "approval_confirm": "Confirmer",
+    "approval_error": "Impossible de confirmer votre identité. Vérifiez vos informations ou utilisez une clé existante."
   },
   "audit": {
     "title": "Activité de sécurité",

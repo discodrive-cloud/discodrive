@@ -7,7 +7,6 @@ import (
 	"log"
 	"mime"
 	"net/http"
-	"os"
 	"path/filepath"
 
 	"github.com/jackc/pgx/v5"
@@ -17,6 +16,7 @@ import (
 	"discodrive/internal/db"
 	"discodrive/internal/music"
 	"discodrive/internal/podcast"
+	"discodrive/internal/storage"
 )
 
 type radioDTO struct {
@@ -267,7 +267,7 @@ func (s *Server) handleGetPodcastCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := filepath.Join(s.storageRoot, ch.CoverPath.String)
-	f, err := os.Open(path)
+	f, err := storage.NewLocalDisk(s.storageRoot).Open(ch.CoverPath.String)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -318,7 +318,7 @@ func (s *Server) removePodcastFiles(ctx context.Context, channelID, userID pgtyp
 		return
 	}
 	if ch.CoverPath.Valid && ch.CoverPath.String != "" {
-		_ = os.Remove(filepath.Join(s.storageRoot, ch.CoverPath.String))
+		_ = storage.NewLocalDisk(s.storageRoot).Remove(ch.CoverPath.String)
 	}
 	episodes, err := s.q.ListEpisodesByChannel(ctx, channelID)
 	if err != nil {
@@ -326,7 +326,7 @@ func (s *Server) removePodcastFiles(ctx context.Context, channelID, userID pgtyp
 	}
 	for _, ep := range episodes {
 		if ep.DiskPath.Valid && ep.DiskPath.String != "" {
-			_ = os.Remove(filepath.Join(s.storageRoot, ep.DiskPath.String))
+			_ = storage.NewLocalDisk(s.storageRoot).Remove(ep.DiskPath.String)
 		}
 	}
 }

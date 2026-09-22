@@ -117,7 +117,10 @@ func (w *Worker) Run(ctx context.Context) {
 	go w.tick(ctx, w.cfg.QuotaInterval, "quota-notify", w.quotaNotify)
 	go w.tick(ctx, w.cfg.QuotaInterval, "storage-alert", w.storageAlert)
 	go w.tick(ctx, w.cfg.PairingGCInterval, "pairing-gc", func(ctx context.Context) error {
-		return w.q.DeleteExpiredPairings(ctx)
+		if err := w.q.DeleteExpiredPairings(ctx); err != nil {
+			return err
+		}
+		return w.q.DeleteExpiredAuthChallenges(ctx)
 	})
 	go w.tick(ctx, w.cfg.PodcastRefreshInterval, "podcast-refresh", w.podcastRefresh)
 	if w.idx != nil {
@@ -203,7 +206,7 @@ func (w *Worker) podcastRefresh(ctx context.Context) error {
 		start := pruneStart(len(rows), w.cfg.PodcastKeepPerChannel)
 		for _, row := range rows[start:] {
 			if row.DiskPath.Valid {
-				_ = os.Remove(filepath.Join(w.root, row.DiskPath.String))
+				_ = storage.NewLocalDisk(w.root).Remove(row.DiskPath.String)
 			}
 			if err := w.q.ClearEpisodeDownload(ctx, db.ClearEpisodeDownloadParams{ID: row.ID, UserID: ch.UserID}); err != nil {
 				log.Printf("discodrive: podcast-refresh prune channel=%s: %v", db.UUIDString(ch.ID), err)
@@ -267,7 +270,7 @@ func (w *Worker) watch(ctx context.Context) {
 			}
 			// also watch newly created directories
 			if e.Op&fsnotify.Create != 0 {
-				if fi, err := os.Stat(e.Name); err == nil && fi.IsDir() {
+				if fi, err := os.Lstat(e.Name); err == nil && fi.IsDir() {
 					w.addRecursive(watcher, e.Name)
 				}
 			}

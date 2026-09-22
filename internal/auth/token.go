@@ -19,11 +19,13 @@ type Claims struct {
 	DeviceID string `json:"did,omitempty"`
 	// Pur is the token purpose. Empty for full session tokens (back-compatible).
 	// "mfa" marks a short-lived intermediate token: password proven, second factor pending.
-	// "stream" marks a URL-carried media token scoped to a single node (Nid).
+	// "stream-v2" marks a URL-carried media token scoped to a single node (Nid).
 	// The main middleware rejects any token with a non-empty purpose.
 	Pur string `json:"pur,omitempty"`
-	// Nid is set only on purpose=stream tokens: the single node the token may read.
+	// Nid is set only on purpose=stream-v2 tokens: the single node the token may read.
 	Nid string `json:"nid,omitempty"`
+	// Reject ceremony tokens issued before purpose separation as well.
+	LegacyWebAuthn string `json:"was,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -81,12 +83,18 @@ const mfaTokenTTL = 5 * time.Minute
 // IssueMFA issues a short-lived intermediate token (purpose=mfa) for the
 // password-proven-but-second-factor-pending state. It grants no access on its own:
 // the main middleware rejects it; only the /auth/mfa/* completion handlers accept it (A.3/A.5).
-func (t *TokenIssuer) IssueMFA(userID, tenantID string) (string, error) {
+func (t *TokenIssuer) IssueMFA(userID, tenantID string, ver int64) (string, error) {
+	id, err := newDeviceCode()
+	if err != nil {
+		return "", err
+	}
 	now := time.Now()
 	claims := Claims{
 		TenantID: tenantID,
 		Pur:      "mfa",
+		Ver:      ver,
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        id,
 			Subject:   userID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(mfaTokenTTL)),
@@ -100,15 +108,16 @@ func (t *TokenIssuer) IssueMFA(userID, tenantID string) (string, error) {
 // media-listing endpoint, so a short TTL costs one extra request, not a broken player.
 const streamTokenTTL = time.Hour
 
-// IssueStream issues a purpose=stream token scoped to a single node. It grants no
+// IssueStream issues a purpose=stream-v2 token scoped to a single node. It grants no
 // session access (the main middleware rejects non-empty purposes); only the stream
 // endpoint accepts it, and that endpoint re-checks node access on every request.
-func (t *TokenIssuer) IssueStream(userID, nodeID string, ver int64) (string, error) {
+func (t *TokenIssuer) IssueStream(userID, nodeID string, ver int64, deviceID string) (string, error) {
 	now := time.Now()
 	claims := Claims{
-		Ver: ver,
-		Pur: "stream",
-		Nid: nodeID,
+		Ver:      ver,
+		Pur:      "stream-v2",
+		DeviceID: deviceID,
+		Nid:      nodeID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -121,37 +130,63 @@ func (t *TokenIssuer) IssueStream(userID, nodeID string, ver int64) (string, err
 // waSessionClaims carries a marshaled webauthn.SessionData between the begin and finish
 // steps of a WebAuthn ceremony, signed so the client cannot tamper with the challenge.
 type waSessionClaims struct {
-	Data string `json:"was"`
+	Pur      string `json:"pur"`
+	Data     string `json:"was"`
+	Ver      int64  `json:"ver"`
+	Action   string `json:"action,omitempty"`
+	Approval string `json:"approval,omitempty"`
 	jwt.RegisteredClaims
 }
 
 // IssueWebAuthnSession signs a short-lived token (5 min) carrying base64 SessionData for
-// the given user. Used to keep WebAuthn registration/login stateless across two requests.
-func (t *TokenIssuer) IssueWebAuthnSession(userID, data string) (string, error) {
-	now := time.Now()
-	claims := waSessionClaims{
-		Data: data,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   userID,
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(mfaTokenTTL)),
-		},
+// the given user. Successful ceremonies are consumed in the shared database.
+func (t *TokenIssuer) IssueWebAuthnSession(userID, data string, ver int64) (string, error) {
+	purpose := "webauthn-login"
+	if userID != "" {
+		purpose = "webauthn-register"
 	}
+	return t.issueWACeremony(waSessionClaims{Pur: purpose, Data: data, Ver: ver, RegisteredClaims: jwt.RegisteredClaims{Subject: userID}})
+}
+
+func (t *TokenIssuer) issueWACeremony(claims waSessionClaims) (string, error) {
+	id, err := newDeviceCode()
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
+	claims.ID = id
+	claims.IssuedAt = jwt.NewNumericDate(now)
+	claims.ExpiresAt = jwt.NewNumericDate(now.Add(mfaTokenTTL))
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(t.secret)
 }
 
 // ParseWebAuthnSession validates the token and returns the subject and the base64 SessionData.
 func (t *TokenIssuer) ParseWebAuthnSession(tokenStr string) (userID, data string, err error) {
+	claims, err := t.parseWebAuthnSession(tokenStr)
+	if err != nil {
+		return "", "", err
+	}
+	return claims.Subject, claims.Data, nil
+}
+
+func (t *TokenIssuer) parseWebAuthnSession(tokenStr string) (*waSessionClaims, error) {
 	claims := &waSessionClaims{}
-	if _, err = jwt.ParseWithClaims(tokenStr, claims, func(tok *jwt.Token) (any, error) {
+	if _, err := jwt.ParseWithClaims(tokenStr, claims, func(tok *jwt.Token) (any, error) {
 		if _, ok := tok.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("unexpected JWT signing method")
 		}
 		return t.secret, nil
 	}); err != nil {
-		return "", "", err
+		return nil, err
 	}
-	return claims.Subject, claims.Data, nil
+	expected := "webauthn-login"
+	if claims.Subject != "" {
+		expected = "webauthn-register"
+	}
+	if (claims.Pur != expected && claims.Pur != "webauthn-approval") || claims.Data == "" || claims.ID == "" || claims.ExpiresAt == nil {
+		return nil, errors.New("invalid WebAuthn token purpose")
+	}
+	return claims, nil
 }
 
 func (t *TokenIssuer) Parse(tokenStr string) (*Claims, error) {
@@ -164,6 +199,9 @@ func (t *TokenIssuer) Parse(tokenStr string) (*Claims, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if claims.LegacyWebAuthn != "" {
+		return nil, errors.New("WebAuthn ceremony is not an access token")
 	}
 	return claims, nil
 }

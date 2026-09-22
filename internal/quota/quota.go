@@ -3,7 +3,8 @@
 //
 // Occupied space is computed fresh from the database on every check — see the
 // UserStorageUsage query. It counts live files, files sitting in the trash (they are
-// removed from disk only after TRASH_DAYS), version snapshots and downloaded podcast
+// removed from disk only after TRASH_DAYS), persisted upload reservations, version
+// snapshots and downloaded podcast
 // episodes, because all of them are bytes the user is actually holding on the disk.
 // users.storage_used is only a cache for the "near limit" notification and is never
 // trusted here.

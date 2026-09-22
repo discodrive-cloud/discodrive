@@ -385,17 +385,18 @@ func (q *Queries) CreateConflictNode(ctx context.Context, arg CreateConflictNode
 }
 
 const createDesktopDevice = `-- name: CreateDesktopDevice :one
-INSERT INTO devices (user_id, name, kind) VALUES ($1, $2, 'desktop')
-RETURNING id, user_id, name, kind, last_seen_at, created_at, secret_hash, token_hash
+INSERT INTO devices (user_id, name, kind, token_version) VALUES ($1, $2, 'desktop', $3)
+RETURNING id, user_id, name, kind, last_seen_at, created_at, secret_hash, token_hash, token_version
 `
 
 type CreateDesktopDeviceParams struct {
-	UserID pgtype.UUID `json:"user_id"`
-	Name   string      `json:"name"`
+	UserID       pgtype.UUID `json:"user_id"`
+	Name         string      `json:"name"`
+	TokenVersion int64       `json:"token_version"`
 }
 
 func (q *Queries) CreateDesktopDevice(ctx context.Context, arg CreateDesktopDeviceParams) (Device, error) {
-	row := q.db.QueryRow(ctx, createDesktopDevice, arg.UserID, arg.Name)
+	row := q.db.QueryRow(ctx, createDesktopDevice, arg.UserID, arg.Name, arg.TokenVersion)
 	var i Device
 	err := row.Scan(
 		&i.ID,
@@ -406,24 +407,31 @@ func (q *Queries) CreateDesktopDevice(ctx context.Context, arg CreateDesktopDevi
 		&i.CreatedAt,
 		&i.SecretHash,
 		&i.TokenHash,
+		&i.TokenVersion,
 	)
 	return i, err
 }
 
 const createDevice = `-- name: CreateDevice :one
-INSERT INTO devices (user_id, name, kind)
-VALUES ($1, $2, $3)
-RETURNING id, user_id, name, kind, last_seen_at, created_at, secret_hash, token_hash
+INSERT INTO devices (user_id, name, kind, token_version)
+VALUES ($1, $2, $3, $4)
+RETURNING id, user_id, name, kind, last_seen_at, created_at, secret_hash, token_hash, token_version
 `
 
 type CreateDeviceParams struct {
-	UserID pgtype.UUID `json:"user_id"`
-	Name   string      `json:"name"`
-	Kind   string      `json:"kind"`
+	UserID       pgtype.UUID `json:"user_id"`
+	Name         string      `json:"name"`
+	Kind         string      `json:"kind"`
+	TokenVersion int64       `json:"token_version"`
 }
 
 func (q *Queries) CreateDevice(ctx context.Context, arg CreateDeviceParams) (Device, error) {
-	row := q.db.QueryRow(ctx, createDevice, arg.UserID, arg.Name, arg.Kind)
+	row := q.db.QueryRow(ctx, createDevice,
+		arg.UserID,
+		arg.Name,
+		arg.Kind,
+		arg.TokenVersion,
+	)
 	var i Device
 	err := row.Scan(
 		&i.ID,
@@ -434,6 +442,7 @@ func (q *Queries) CreateDevice(ctx context.Context, arg CreateDeviceParams) (Dev
 		&i.CreatedAt,
 		&i.SecretHash,
 		&i.TokenHash,
+		&i.TokenVersion,
 	)
 	return i, err
 }
@@ -644,19 +653,25 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 }
 
 const createWebdavDevice = `-- name: CreateWebdavDevice :one
-INSERT INTO devices (user_id, name, kind, secret_hash)
-VALUES ($1, $2, 'webdav', $3)
-RETURNING id, user_id, name, kind, last_seen_at, created_at, secret_hash, token_hash
+INSERT INTO devices (user_id, name, kind, secret_hash, token_version)
+VALUES ($1, $2, 'webdav', $3, $4)
+RETURNING id, user_id, name, kind, last_seen_at, created_at, secret_hash, token_hash, token_version
 `
 
 type CreateWebdavDeviceParams struct {
-	UserID     pgtype.UUID `json:"user_id"`
-	Name       string      `json:"name"`
-	SecretHash pgtype.Text `json:"secret_hash"`
+	UserID       pgtype.UUID `json:"user_id"`
+	Name         string      `json:"name"`
+	SecretHash   pgtype.Text `json:"secret_hash"`
+	TokenVersion int64       `json:"token_version"`
 }
 
 func (q *Queries) CreateWebdavDevice(ctx context.Context, arg CreateWebdavDeviceParams) (Device, error) {
-	row := q.db.QueryRow(ctx, createWebdavDevice, arg.UserID, arg.Name, arg.SecretHash)
+	row := q.db.QueryRow(ctx, createWebdavDevice,
+		arg.UserID,
+		arg.Name,
+		arg.SecretHash,
+		arg.TokenVersion,
+	)
 	var i Device
 	err := row.Scan(
 		&i.ID,
@@ -667,6 +682,7 @@ func (q *Queries) CreateWebdavDevice(ctx context.Context, arg CreateWebdavDevice
 		&i.CreatedAt,
 		&i.SecretHash,
 		&i.TokenHash,
+		&i.TokenVersion,
 	)
 	return i, err
 }
@@ -975,7 +991,7 @@ func (q *Queries) GetCalendarObject(ctx context.Context, arg GetCalendarObjectPa
 }
 
 const getDevice = `-- name: GetDevice :one
-SELECT id, user_id, name, kind, last_seen_at, created_at, secret_hash, token_hash FROM devices WHERE id = $1
+SELECT id, user_id, name, kind, last_seen_at, created_at, secret_hash, token_hash, token_version FROM devices WHERE id = $1
 `
 
 // Device by id (middleware verifies the device token is still live → instant revocation).
@@ -991,12 +1007,13 @@ func (q *Queries) GetDevice(ctx context.Context, id pgtype.UUID) (Device, error)
 		&i.CreatedAt,
 		&i.SecretHash,
 		&i.TokenHash,
+		&i.TokenVersion,
 	)
 	return i, err
 }
 
 const getDeviceByTokenHash = `-- name: GetDeviceByTokenHash :one
-SELECT id, user_id, name, kind, last_seen_at, created_at, secret_hash, token_hash FROM devices WHERE token_hash = $1
+SELECT id, user_id, name, kind, last_seen_at, created_at, secret_hash, token_hash, token_version FROM devices WHERE token_hash = $1
 `
 
 func (q *Queries) GetDeviceByTokenHash(ctx context.Context, tokenHash pgtype.Text) (Device, error) {
@@ -1011,6 +1028,7 @@ func (q *Queries) GetDeviceByTokenHash(ctx context.Context, tokenHash pgtype.Tex
 		&i.CreatedAt,
 		&i.SecretHash,
 		&i.TokenHash,
+		&i.TokenVersion,
 	)
 	return i, err
 }
@@ -1290,6 +1308,34 @@ SELECT id, tenant_id, email, password_hash, storage_quota, storage_used, created
 
 func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error) {
 	row := q.db.QueryRow(ctx, getUserByID, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.StorageQuota,
+		&i.StorageUsed,
+		&i.CreatedAt,
+		&i.Role,
+		&i.ChangeSeq,
+		&i.QuotaNotifiedAt,
+		&i.TokenVersion,
+		&i.Language,
+		&i.MustChangePassword,
+		&i.BookmarkSeq,
+		&i.BookmarkGcSeq,
+		&i.SessionTtlMinutes,
+	)
+	return i, err
+}
+
+const getUserForAuthUpdate = `-- name: GetUserForAuthUpdate :one
+SELECT id, tenant_id, email, password_hash, storage_quota, storage_used, created_at, role, change_seq, quota_notified_at, token_version, language, must_change_password, bookmark_seq, bookmark_gc_seq, session_ttl_minutes FROM users WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) GetUserForAuthUpdate(ctx context.Context, id pgtype.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, getUserForAuthUpdate, id)
 	var i User
 	err := row.Scan(
 		&i.ID,
@@ -1868,7 +1914,7 @@ func (q *Queries) ListChildren(ctx context.Context, arg ListChildrenParams) ([]N
 }
 
 const listDevicesForUser = `-- name: ListDevicesForUser :many
-SELECT id, user_id, name, kind, last_seen_at, created_at, secret_hash, token_hash FROM devices WHERE user_id = $1 ORDER BY created_at
+SELECT id, user_id, name, kind, last_seen_at, created_at, secret_hash, token_hash, token_version FROM devices WHERE user_id = $1 ORDER BY created_at
 `
 
 func (q *Queries) ListDevicesForUser(ctx context.Context, userID pgtype.UUID) ([]Device, error) {
@@ -1889,6 +1935,7 @@ func (q *Queries) ListDevicesForUser(ctx context.Context, userID pgtype.UUID) ([
 			&i.CreatedAt,
 			&i.SecretHash,
 			&i.TokenHash,
+			&i.TokenVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -2537,7 +2584,7 @@ SELECT u.id, u.email, u.role, u.storage_quota, u.created_at,
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = u.id AND e.disk_path IS NOT NULL
-       ), 0))::bigint AS used
+       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = u.id), 0))::bigint AS used
 FROM users u
 ORDER BY u.created_at
 `
@@ -2618,9 +2665,9 @@ func (q *Queries) ListWebAuthnCredentials(ctx context.Context, userID pgtype.UUI
 }
 
 const listWebdavDevicesByEmail = `-- name: ListWebdavDevicesByEmail :many
-SELECT d.id, d.user_id, d.name, d.kind, d.last_seen_at, d.created_at, d.secret_hash, d.token_hash FROM devices d
+SELECT d.id, d.user_id, d.name, d.kind, d.last_seen_at, d.created_at, d.secret_hash, d.token_hash, d.token_version FROM devices d
 JOIN users u ON u.id = d.user_id
-WHERE u.email = $1 AND d.kind = 'webdav' AND d.secret_hash IS NOT NULL
+WHERE u.email = $1 AND d.kind = 'webdav' AND d.secret_hash IS NOT NULL AND d.token_version = u.token_version AND NOT u.must_change_password
 `
 
 func (q *Queries) ListWebdavDevicesByEmail(ctx context.Context, email string) ([]Device, error) {
@@ -2641,6 +2688,7 @@ func (q *Queries) ListWebdavDevicesByEmail(ctx context.Context, email string) ([
 			&i.CreatedAt,
 			&i.SecretHash,
 			&i.TokenHash,
+			&i.TokenVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -2652,13 +2700,16 @@ func (q *Queries) ListWebdavDevicesByEmail(ctx context.Context, email string) ([
 	return items, nil
 }
 
-const markBackupCodeUsed = `-- name: MarkBackupCodeUsed :exec
-UPDATE backup_codes SET used_at = now() WHERE id = $1
+const markBackupCodeUsed = `-- name: MarkBackupCodeUsed :execrows
+UPDATE backup_codes SET used_at = now() WHERE id = $1 AND used_at IS NULL
 `
 
-func (q *Queries) MarkBackupCodeUsed(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, markBackupCodeUsed, id)
-	return err
+func (q *Queries) MarkBackupCodeUsed(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markBackupCodeUsed, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const markQuotaNotified = `-- name: MarkQuotaNotified :exec
@@ -2763,7 +2814,7 @@ FROM (
            ), 0) + COALESCE((
                SELECT SUM(e.size) FROM podcast_episodes e
                WHERE e.user_id = usr.id AND e.disk_path IS NOT NULL
-           ), 0))::bigint AS used
+           ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0))::bigint AS used
     FROM users usr
 ) AS fresh
 WHERE u.id = fresh.id AND u.storage_used <> fresh.used
@@ -3017,7 +3068,7 @@ SELECT (COALESCE((
            SELECT SUM(size) FROM file_versions
        ), 0) + COALESCE((
            SELECT SUM(size) FROM podcast_episodes WHERE disk_path IS NOT NULL
-       ), 0))::bigint AS used
+       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0))::bigint AS used
 `
 
 // Used space across all users — checked against the server-wide cap (STORAGE_TOTAL_GB).
@@ -3238,18 +3289,19 @@ func (q *Queries) UpdateNodeParent(ctx context.Context, arg UpdateNodeParentPara
 
 const updatePassword = `-- name: UpdatePassword :one
 UPDATE users SET password_hash = $2, token_version = token_version + 1, must_change_password = false
-WHERE id = $1 RETURNING id, tenant_id, email, password_hash, storage_quota, storage_used, created_at, role, change_seq, quota_notified_at, token_version, language, must_change_password, bookmark_seq, bookmark_gc_seq, session_ttl_minutes
+WHERE id = $1 AND password_hash = $3 RETURNING id, tenant_id, email, password_hash, storage_quota, storage_used, created_at, role, change_seq, quota_notified_at, token_version, language, must_change_password, bookmark_seq, bookmark_gc_seq, session_ttl_minutes
 `
 
 type UpdatePasswordParams struct {
-	ID           pgtype.UUID `json:"id"`
-	PasswordHash string      `json:"password_hash"`
+	ID                   pgtype.UUID `json:"id"`
+	PasswordHash         string      `json:"password_hash"`
+	PreviousPasswordHash string      `json:"previous_password_hash"`
 }
 
 // Password change: new hash + bump token_version (invalidates all active sessions)
 // + clear the forced-change flag (A.2).
 func (q *Queries) UpdatePassword(ctx context.Context, arg UpdatePasswordParams) (User, error) {
-	row := q.db.QueryRow(ctx, updatePassword, arg.ID, arg.PasswordHash)
+	row := q.db.QueryRow(ctx, updatePassword, arg.ID, arg.PasswordHash, arg.PreviousPasswordHash)
 	var i User
 	err := row.Scan(
 		&i.ID,
@@ -3306,7 +3358,7 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 	return i, err
 }
 
-const updateWebAuthnCredential = `-- name: UpdateWebAuthnCredential :exec
+const updateWebAuthnCredential = `-- name: UpdateWebAuthnCredential :execrows
 UPDATE webauthn_credentials SET credential = $2, last_used_at = now() WHERE credential_id = $1
 `
 
@@ -3316,9 +3368,12 @@ type UpdateWebAuthnCredentialParams struct {
 }
 
 // A.5: persist the credential after a login (sign_count bumps; clone detection) + last used.
-func (q *Queries) UpdateWebAuthnCredential(ctx context.Context, arg UpdateWebAuthnCredentialParams) error {
-	_, err := q.db.Exec(ctx, updateWebAuthnCredential, arg.CredentialID, arg.Credential)
-	return err
+func (q *Queries) UpdateWebAuthnCredential(ctx context.Context, arg UpdateWebAuthnCredentialParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateWebAuthnCredential, arg.CredentialID, arg.Credential)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const upsertAddressbookObject = `-- name: UpsertAddressbookObject :one
@@ -3505,9 +3560,11 @@ SELECT (COALESCE((
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = $1 AND e.disk_path IS NOT NULL
-       ), 0))::bigint AS used
+       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = $1), 0))::bigint AS used
 `
 
+// Include published and staged bytes in one snapshot: publication followed by
+// reservation release must never create a gap between separate usage reads.
 // Used space of a single user, same definition as ListUsersWithUsage. This is the
 // number the quota check runs against on every write.
 func (q *Queries) UserStorageUsage(ctx context.Context, userID pgtype.UUID) (int64, error) {

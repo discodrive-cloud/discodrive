@@ -45,6 +45,10 @@ func (s *Server) handleGetAccess(w http.ResponseWriter, r *http.Request) {
 // PUT /me/access {"webdav":bool,"caldav":bool,"carddav":bool} — toggle external access.
 // Fields are optional; only the keys present in the body are updated.
 func (s *Server) handlePutAccess(w http.ResponseWriter, r *http.Request) {
+	if auth.Role(r.Context()) != "admin" {
+		writeError(w, http.StatusForbidden, "admin privileges required")
+		return
+	}
 	var req struct {
 		Webdav  *bool `json:"webdav"`
 		Caldav  *bool `json:"caldav"`

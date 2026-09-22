@@ -668,7 +668,7 @@ func (q *Queries) GetBookByNode(ctx context.Context, nodeID pgtype.UUID) (Book, 
 }
 
 const getEbookSettings = `-- name: GetEbookSettings :one
-SELECT user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at FROM ebook_settings WHERE user_id = $1
+SELECT user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, token_version FROM ebook_settings WHERE user_id = $1
 `
 
 func (q *Queries) GetEbookSettings(ctx context.Context, userID pgtype.UUID) (EbookSetting, error) {
@@ -682,12 +682,14 @@ func (q *Queries) GetEbookSettings(ctx context.Context, userID pgtype.UUID) (Ebo
 		&i.ApiKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TokenVersion,
 	)
 	return i, err
 }
 
 const getEbookSettingsByApiKey = `-- name: GetEbookSettingsByApiKey :one
-SELECT user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at FROM ebook_settings WHERE api_key = $1
+SELECT s.user_id, s.enabled, s.folder_node_id, s.password_cipher, s.api_key, s.created_at, s.updated_at, s.token_version FROM ebook_settings s JOIN users u ON u.id = s.user_id
+WHERE s.api_key = $1 AND s.token_version = u.token_version AND NOT u.must_change_password
 `
 
 func (q *Queries) GetEbookSettingsByApiKey(ctx context.Context, apiKey pgtype.Text) (EbookSetting, error) {
@@ -701,6 +703,7 @@ func (q *Queries) GetEbookSettingsByApiKey(ctx context.Context, apiKey pgtype.Te
 		&i.ApiKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TokenVersion,
 	)
 	return i, err
 }
@@ -839,7 +842,7 @@ func (q *Queries) SetBookMetadataEdited(ctx context.Context, arg SetBookMetadata
 }
 
 const setEbookCredentials = `-- name: SetEbookCredentials :exec
-UPDATE ebook_settings SET password_cipher = $2, api_key = $3, updated_at = now()
+UPDATE ebook_settings SET password_cipher = $2, api_key = $3, token_version = $4, updated_at = now()
 WHERE user_id = $1
 `
 
@@ -847,10 +850,16 @@ type SetEbookCredentialsParams struct {
 	UserID         pgtype.UUID `json:"user_id"`
 	PasswordCipher pgtype.Text `json:"password_cipher"`
 	ApiKey         pgtype.Text `json:"api_key"`
+	TokenVersion   int64       `json:"token_version"`
 }
 
 func (q *Queries) SetEbookCredentials(ctx context.Context, arg SetEbookCredentialsParams) error {
-	_, err := q.db.Exec(ctx, setEbookCredentials, arg.UserID, arg.PasswordCipher, arg.ApiKey)
+	_, err := q.db.Exec(ctx, setEbookCredentials,
+		arg.UserID,
+		arg.PasswordCipher,
+		arg.ApiKey,
+		arg.TokenVersion,
+	)
 	return err
 }
 
@@ -984,7 +993,7 @@ INSERT INTO ebook_settings (user_id, enabled, folder_node_id, updated_at)
 VALUES ($1, $2, $3, now())
 ON CONFLICT (user_id) DO UPDATE SET enabled = EXCLUDED.enabled,
     folder_node_id = EXCLUDED.folder_node_id, updated_at = now()
-RETURNING user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at
+RETURNING user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, token_version
 `
 
 type UpsertEbookSettingsParams struct {
@@ -1004,6 +1013,7 @@ func (q *Queries) UpsertEbookSettings(ctx context.Context, arg UpsertEbookSettin
 		&i.ApiKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TokenVersion,
 	)
 	return i, err
 }

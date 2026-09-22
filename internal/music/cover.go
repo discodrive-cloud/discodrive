@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 
 	"github.com/dhowden/tag"
+
+	"discodrive/internal/safecontent"
+	"discodrive/internal/storage"
 )
 
 // candidateCovers is the ordered list of sibling filenames checked when
@@ -48,9 +51,19 @@ func EmbeddedCover(path string) (data []byte, mime string, ok bool) {
 		return nil, "", false
 	}
 
-	mimeType := pic.MIMEType
-	if mimeType == "" {
-		mimeType = "image/jpeg"
+	ct, valid := safecontent.Raster(pic.Data)
+	if !valid {
+		return nil, "", false
 	}
-	return pic.Data, mimeType, true
+	return pic.Data, ct, true
+}
+
+// EmbeddedStoredCover reads only from a securely opened storage file.
+func EmbeddedStoredCover(root, path string) ([]byte, string, bool) {
+	f, source, err := storage.NewLocalDisk(root).Pin(path)
+	if err != nil {
+		return nil, "", false
+	}
+	defer f.Close()
+	return EmbeddedCover(source)
 }

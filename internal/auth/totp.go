@@ -192,7 +192,7 @@ func (s *Service) DisableTOTP(ctx context.Context, userID, password, code string
 // and issues a full session.
 func (s *Service) CompleteMFATOTP(ctx context.Context, mfaToken, code string) (LoginResult, error) {
 	claims, err := s.issuer.Parse(mfaToken)
-	if err != nil || claims.Pur != "mfa" {
+	if err != nil || claims.Pur != "mfa" || claims.ID == "" || claims.ExpiresAt == nil {
 		return LoginResult{}, ErrInvalidMFAToken
 	}
 	uid, err := db.ParseUUID(claims.Subject)
@@ -200,16 +200,35 @@ func (s *Service) CompleteMFATOTP(ctx context.Context, mfaToken, code string) (L
 		return LoginResult{}, ErrInvalidMFAToken
 	}
 	u, err := s.q.GetUserByID(ctx, uid)
+	if err != nil || claims.Ver != u.TokenVersion {
+		return LoginResult{}, ErrInvalidMFAToken
+	}
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
+		return LoginResult{}, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+	// Reserve the challenge in the same transaction as the backup-code consume.
+	// A wrong code rolls back both; concurrent completions cannot burn extra codes.
+	consumed, err := consumeChallenge(ctx, qtx, claims.Pur+":"+claims.ID, claims.ExpiresAt.Time)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if !consumed {
 		return LoginResult{}, ErrInvalidMFAToken
 	}
 	method := "totp"
-	if !s.verifyTOTP(ctx, uid, code) {
-		if !s.consumeBackupCode(ctx, uid, code) {
+	if !s.verifyTOTPWithQueries(ctx, qtx, uid, code) {
+		if !consumeBackupCodeWithQueries(ctx, qtx, uid, code) {
 			return LoginResult{}, ErrInvalidTOTPCode
 		}
 		method = "backup"
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return LoginResult{}, err
+	}
+	// Sign the version we verified above, never reload a newer generation here.
 	token, err := s.issueFor(u)
 	if err != nil {
 		return LoginResult{}, err
@@ -219,7 +238,11 @@ func (s *Service) CompleteMFATOTP(ctx context.Context, mfaToken, code string) (L
 
 // verifyTOTP reports whether code matches the user's enabled TOTP secret (±1 period skew).
 func (s *Service) verifyTOTP(ctx context.Context, uid pgtype.UUID, code string) bool {
-	row, err := s.q.GetUserTOTP(ctx, uid)
+	return s.verifyTOTPWithQueries(ctx, s.q, uid, code)
+}
+
+func (s *Service) verifyTOTPWithQueries(ctx context.Context, q *db.Queries, uid pgtype.UUID, code string) bool {
+	row, err := q.GetUserTOTP(ctx, uid)
 	if err != nil || !row.Enabled {
 		return false
 	}
@@ -233,18 +256,22 @@ func (s *Service) verifyTOTP(ctx context.Context, uid pgtype.UUID, code string) 
 // consumeBackupCode matches code against the user's unused backup codes and, on a hit,
 // marks it used (one-time) and returns true.
 func (s *Service) consumeBackupCode(ctx context.Context, uid pgtype.UUID, code string) bool {
+	return consumeBackupCodeWithQueries(ctx, s.q, uid, code)
+}
+
+func consumeBackupCodeWithQueries(ctx context.Context, q *db.Queries, uid pgtype.UUID, code string) bool {
 	norm := normalizeBackupCode(code)
 	if norm == "" {
 		return false
 	}
-	rows, err := s.q.ListUnusedBackupCodes(ctx, uid)
+	rows, err := q.ListUnusedBackupCodes(ctx, uid)
 	if err != nil {
 		return false
 	}
 	for _, r := range rows {
 		if ok, _ := VerifyPassword(norm, r.CodeHash); ok {
-			_ = s.q.MarkBackupCodeUsed(ctx, r.ID)
-			return true
+			rows, err := q.MarkBackupCodeUsed(ctx, r.ID)
+			return err == nil && rows == 1
 		}
 	}
 	return false

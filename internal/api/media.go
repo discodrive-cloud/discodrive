@@ -3,7 +3,6 @@ package api
 import (
 	"mime"
 	"net/http"
-	"os"
 	"path/filepath"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -11,6 +10,7 @@ import (
 	"discodrive/internal/auth"
 	"discodrive/internal/db"
 	"discodrive/internal/music"
+	"discodrive/internal/storage"
 )
 
 // mediaItemDTO is one playable file in a folder, ready for the player: identity,
@@ -123,7 +123,7 @@ func (s *Server) mediaSingle(w http.ResponseWriter, r *http.Request, userID, par
 	// Not in the music index → read tags from the file now (single node, cheap).
 	// Audio formats the scanner understands only; video gets name+mime and no more.
 	if !item.Indexed && music.IsAudioFile(node.Name) {
-		if m, err := music.ReadMeta(filepath.Join(s.storageRoot, node.DiskPath.String)); err == nil {
+		if m, err := music.ReadStoredMeta(s.storageRoot, filepath.Join(s.storageRoot, node.DiskPath.String)); err == nil {
 			item.Title, item.Artist, item.Album = m.Title, m.Artist, m.Album
 			if m.Track > 0 {
 				tr := int32(m.Track)
@@ -170,14 +170,14 @@ func (s *Server) handleMediaCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	abs := filepath.Join(s.storageRoot, node.DiskPath.String)
-	if data, ct, ok := music.EmbeddedCover(abs); ok {
+	if data, ct, ok := music.EmbeddedStoredCover(s.storageRoot, abs); ok {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Type", ct)
 		_, _ = w.Write(data)
 		return
 	}
 	if p, ok := music.ResolveCoverPath(filepath.Dir(abs)); ok {
-		f, err := os.Open(p)
+		f, err := storage.NewLocalDisk(s.storageRoot).OpenAbsolute(p)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "not found")
 			return

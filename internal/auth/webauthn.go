@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"discodrive/internal/db"
@@ -93,7 +94,7 @@ func (s *Service) loadWAUser(ctx context.Context, uid pgtype.UUID) (*waUser, err
 // BeginWebAuthnRegistration starts enrolling a new authenticator for the (already
 // authenticated) user. Returns the JSON creation options for navigator.credentials.create()
 // and a signed session token that FinishWebAuthnRegistration must be given back.
-func (s *Service) BeginWebAuthnRegistration(ctx context.Context, userID string) (options []byte, sessionToken string, err error) {
+func (s *Service) BeginWebAuthnRegistration(ctx context.Context, userID string, approvalTokens ...string) (options []byte, sessionToken string, err error) {
 	if s.wa == nil {
 		return nil, "", ErrWebAuthnNotConfigured
 	}
@@ -103,6 +104,15 @@ func (s *Service) BeginWebAuthnRegistration(ctx context.Context, userID string) 
 	}
 	wu, err := s.loadWAUser(ctx, uid)
 	if err != nil {
+		return nil, "", err
+	}
+	if version, ok := TokenVersion(ctx); ok && (UserID(ctx) != userID || version != wu.u.TokenVersion) {
+		return nil, "", ErrWebAuthnSession
+	}
+	if len(approvalTokens) != 1 {
+		return nil, "", ErrApproval
+	}
+	if _, err := s.approval(approvalTokens[0], userID, "register", wu.u.TokenVersion); err != nil {
 		return nil, "", err
 	}
 	// Request a discoverable credential (passkey): residentKey "preferred" lets password
@@ -122,7 +132,7 @@ func (s *Service) BeginWebAuthnRegistration(ctx context.Context, userID string) 
 	if err != nil {
 		return nil, "", err
 	}
-	tok, err := s.issuer.IssueWebAuthnSession(userID, base64.StdEncoding.EncodeToString(sd))
+	tok, err := s.issuer.issueWACeremony(waSessionClaims{Pur: "webauthn-register", Data: base64.StdEncoding.EncodeToString(sd), Ver: wu.u.TokenVersion, Approval: approvalTokens[0], RegisteredClaims: jwt.RegisteredClaims{Subject: userID}})
 	if err != nil {
 		return nil, "", err
 	}
@@ -139,11 +149,11 @@ func (s *Service) FinishWebAuthnRegistration(ctx context.Context, userID, sessio
 	if s.wa == nil {
 		return ErrWebAuthnNotConfigured
 	}
-	subj, sdB64, err := s.issuer.ParseWebAuthnSession(sessionToken)
-	if err != nil || subj != userID {
+	claims, err := s.issuer.parseWebAuthnSession(sessionToken)
+	if err != nil || claims.Pur != "webauthn-register" || claims.Subject != userID {
 		return ErrWebAuthnSession
 	}
-	sdRaw, err := base64.StdEncoding.DecodeString(sdB64)
+	sdRaw, err := base64.StdEncoding.DecodeString(claims.Data)
 	if err != nil {
 		return ErrWebAuthnSession
 	}
@@ -174,13 +184,48 @@ func (s *Service) FinishWebAuthnRegistration(ctx context.Context, userID, sessio
 	if name == "" {
 		name = "Security key"
 	}
-	_, err = s.q.InsertWebAuthnCredential(ctx, db.InsertWebAuthnCredentialParams{
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+	// Registration must not turn a pre-password-change session into a new passkey.
+	current, err := qtx.GetUserForAuthUpdate(ctx, uid)
+	if err != nil {
+		return err
+	}
+	if current.TokenVersion != claims.Ver || current.MustChangePassword {
+		return ErrWebAuthnSession
+	}
+	approval, err := s.approval(claims.Approval, userID, "register", current.TokenVersion)
+	if err != nil {
+		return err
+	}
+	approved, err := consumeChallenge(ctx, qtx, approval.Pur+":"+approval.ID, approval.ExpiresAt.Time)
+	if err != nil {
+		return err
+	}
+	if !approved {
+		return ErrApproval
+	}
+	consumed, err := consumeChallenge(ctx, qtx, claims.Pur+":"+claims.ID, claims.ExpiresAt.Time)
+	if err != nil {
+		return err
+	}
+	if !consumed {
+		return ErrWebAuthnSession
+	}
+	_, err = qtx.InsertWebAuthnCredential(ctx, db.InsertWebAuthnCredentialParams{
 		UserID:       uid,
 		CredentialID: cred.ID,
 		Credential:   blob,
 		Name:         name,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // BeginWebAuthnLogin starts a passwordless, usernameless (discoverable) sign-in: the
@@ -199,7 +244,7 @@ func (s *Service) BeginWebAuthnLogin(ctx context.Context) (options []byte, sessi
 		return nil, "", err
 	}
 	// No subject yet — the user is discovered from the authenticator response at finish.
-	tok, err := s.issuer.IssueWebAuthnSession("", base64.StdEncoding.EncodeToString(sd))
+	tok, err := s.issuer.IssueWebAuthnSession("", base64.StdEncoding.EncodeToString(sd), 0)
 	if err != nil {
 		return nil, "", err
 	}
@@ -213,14 +258,18 @@ func (s *Service) BeginWebAuthnLogin(ctx context.Context) (options []byte, sessi
 // FinishWebAuthnLogin verifies a discoverable-login assertion, bumps the stored credential
 // (sign count / last used), and issues a full session for the identified user.
 func (s *Service) FinishWebAuthnLogin(ctx context.Context, sessionToken string, assertion []byte) (LoginResult, error) {
+	return s.finishWebAuthnLogin(ctx, sessionToken, assertion, "webauthn-login")
+}
+
+func (s *Service) finishWebAuthnLogin(ctx context.Context, sessionToken string, assertion []byte, purpose string) (LoginResult, error) {
 	if s.wa == nil {
 		return LoginResult{}, ErrWebAuthnNotConfigured
 	}
-	_, sdB64, err := s.issuer.ParseWebAuthnSession(sessionToken)
-	if err != nil {
+	claims, err := s.issuer.parseWebAuthnSession(sessionToken)
+	if err != nil || claims.Pur != purpose || (purpose == "webauthn-login" && claims.Subject != "") {
 		return LoginResult{}, ErrWebAuthnSession
 	}
-	sdRaw, err := base64.StdEncoding.DecodeString(sdB64)
+	sdRaw, err := base64.StdEncoding.DecodeString(claims.Data)
 	if err != nil {
 		return LoginResult{}, ErrWebAuthnSession
 	}
@@ -246,6 +295,9 @@ func (s *Service) FinishWebAuthnLogin(ctx context.Context, sessionToken string, 
 		if err != nil {
 			return nil, err
 		}
+		if purpose == "webauthn-approval" && (db.UUIDString(wu.u.ID) != claims.Subject || wu.u.TokenVersion != claims.Ver) {
+			return nil, ErrApproval
+		}
 		loggedIn = wu.u
 		return wu, nil
 	}
@@ -259,9 +311,30 @@ func (s *Service) FinishWebAuthnLogin(ctx context.Context, sessionToken string, 
 	if err != nil {
 		return LoginResult{}, err
 	}
-	if err := s.q.UpdateWebAuthnCredential(ctx, db.UpdateWebAuthnCredentialParams{CredentialID: cred.ID, Credential: blob}); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
 		return LoginResult{}, err
 	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+	consumed, err := consumeChallenge(ctx, qtx, claims.Pur+":"+claims.ID, claims.ExpiresAt.Time)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if !consumed {
+		return LoginResult{}, ErrWebAuthnSession
+	}
+	n, err := qtx.UpdateWebAuthnCredential(ctx, db.UpdateWebAuthnCredentialParams{CredentialID: cred.ID, Credential: blob})
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if n != 1 {
+		return LoginResult{}, ErrWebAuthnFailed
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return LoginResult{}, err
+	}
+
 	token, err := s.issueFor(loggedIn)
 	if err != nil {
 		return LoginResult{}, err

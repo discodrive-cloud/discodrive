@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"discodrive/internal/auth"
 	"discodrive/internal/bookmarks"
 	"discodrive/internal/db"
+	"discodrive/internal/storage"
 )
 
 const (
@@ -377,7 +377,7 @@ func (s *Server) handleBookmarkFavicon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rel := filepath.Join("saved", db.UUIDString(uid), "favicons", db.UUIDString(bm.ID)+bm.FaviconExt)
-	f, err := os.Open(filepath.Join(s.storageRoot, rel))
+	f, err := storage.NewLocalDisk(s.storageRoot).Open(rel)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not found")
 		return

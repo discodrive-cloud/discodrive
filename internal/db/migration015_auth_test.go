@@ -68,7 +68,7 @@ func TestMigration015AuthMFA(t *testing.T) {
 	}
 
 	// Changing the password clears the forced-change flag (A.2).
-	changed, err := q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: adminUser.ID, PasswordHash: "y"})
+	changed, err := q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: adminUser.ID, PasswordHash: "y", PreviousPasswordHash: adminUser.PasswordHash})
 	if err != nil {
 		t.Fatalf("UpdatePassword: %v", err)
 	}

@@ -1,6 +1,7 @@
 package music
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -9,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/dhowden/tag"
+
+	"discodrive/internal/storage"
 )
 
 // LyricLine represents one line of lyrics. Start is milliseconds from the
@@ -85,16 +88,29 @@ func ParseLRC(raw string) (lines []LyricLine, synced bool) {
 // Returns ("", false) when no lyrics are found. Never returns an error;
 // absence of lyrics is not an error condition.
 func ReadLyrics(audioPath string) (raw string, synced bool) {
+	return readLyrics(audioPath, os.Open)
+}
+
+// ReadStoredLyrics applies the same boundary to both sidecar and embedded tags.
+func ReadStoredLyrics(root, audioPath string) (string, bool) {
+	return readLyrics(audioPath, storage.NewLocalDisk(root).OpenAbsolute)
+}
+
+func readLyrics(audioPath string, open func(string) (*os.File, error)) (raw string, synced bool) {
 	// 1. Sidecar .lrc file.
 	sidecar := strings.TrimSuffix(audioPath, filepath.Ext(audioPath)) + ".lrc"
-	if data, err := os.ReadFile(sidecar); err == nil && len(data) > 0 {
-		content := string(data)
-		_, s := ParseLRC(content)
-		return content, s
+	if f, err := open(sidecar); err == nil {
+		data, readErr := io.ReadAll(io.LimitReader(f, 4<<20))
+		f.Close()
+		if readErr == nil && len(data) > 0 {
+			content := string(data)
+			_, s := ParseLRC(content)
+			return content, s
+		}
 	}
 
 	// 2. Embedded tag.
-	f, err := os.Open(audioPath)
+	f, err := open(audioPath)
 	if err != nil {
 		return "", false
 	}

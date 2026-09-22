@@ -122,12 +122,12 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Abre **https://server_address:8443** (o http://server_address:8080) — en el primer arranque verás el formulario de creación del administrador. Introduce un correo y una contraseña, y ya está listo. Ten en cuenta que si planeas configurar el envío de correos desde el servicio, debes usar direcciones de correo reales para los nombres de usuario (incluido el administrador); de lo contrario, los mensajes no podrán entregarse.
+Abra **https://server_address:8443** e introduzca el token de un solo uso, el correo y la contraseña. Obtenga el token desde la consola del servidor con `docker compose exec app cat /data/.bootstrap/setup-token`. La configuración requiere HTTPS. Al finalizar se elimina el archivo del token; eliminar al último administrador no vuelve a abrir la configuración.
 
 Cómo funciona por dentro:
 
 - Los archivos se guardan en `/data`.
-- Los certificados TLS van en `deploy/nginx/certs/` — debes crear y colocar ahí un **certificado real o autofirmado** (cómo generarlo se describe en la Opción 2) y configurar nginx para redirigir el puerto 80 a HTTPS.
+- Los certificados TLS van en `deploy/nginx/certs/` — debes crear y colocar ahí un **certificado real o autofirmado** (cómo generarlo se describe en la Opción 2) Compose publica únicamente HTTPS; para el puerto estándar, configure `NGINX_HTTPS_PORT=443`.
 
 Para detener: `docker compose down` (los datos se conservan). Para actualizar tras un `git pull`: `docker compose up -d --build`.
 
@@ -177,9 +177,9 @@ export XACCEL_ENABLED="false"                     # sin nginx, el servidor sirve
 ./discodrive
 ```
 
-Abre `http://server_address:8080` y crea el administrador.
+Configure un proxy inverso HTTPS antes de la configuración inicial. Lea el token desde la consola del servidor en `<STORAGE_ROOT>/.bootstrap/setup-token` (o `SETUP_TOKEN_FILE`) y abra la dirección HTTPS.
 
-**nginx (opcional).** Necesario para HTTPS y para servir archivos rápidamente mediante X-Accel. Toma como base `deploy/nginx/default.conf`, añade tus certificados TLS y establece `XACCEL_ENABLED=true` — así el servidor responde con la cabecera `X-Accel-Redirect` y nginx se encarga de servir el cuerpo del archivo (ruta `/data/`, valor del parámetro `STORAGE_ROOT`).
+**nginx (opcional).** Necesario para HTTPS y para servir archivos rápidamente mediante X-Accel. Toma como base `deploy/nginx/default.conf.template`, añade tus certificados TLS y establece `XACCEL_ENABLED=true` — así el servidor responde con la cabecera `X-Accel-Redirect` y nginx se encarga de servir el cuerpo del archivo (ruta `/data/`, valor del parámetro `STORAGE_ROOT`).
 
 Para los certificados TLS puedes usar Let's Encrypt (`certbot`) o generar unos autofirmados:
 

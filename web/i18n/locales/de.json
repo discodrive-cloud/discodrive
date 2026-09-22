@@ -46,6 +46,11 @@
     "passkey_error": "Anmeldung mit Passkey fehlgeschlagen"
   },
   "setup": {
+    "token_label": "Einrichtungstoken",
+    "token_hint": "Rufen Sie das einmalige Token über die Serverkonsole ab und geben Sie es hier ein.",
+    "error_token": "Bitte überprüfen Sie das Einrichtungstoken.",
+    "error_closed": "Die Ersteinrichtung ist bereits abgeschlossen. Bitte melden Sie sich an.",
+    "error_https": "Öffnen Sie diese Seite über HTTPS, bevor Sie das Einrichtungstoken senden.",
     "subtitle": "Erster Start — erstellen Sie einen Administrator.",
     "password_label": "Passwort",
     "password_again": "Passwort wiederholen",
@@ -633,7 +638,14 @@
     "cancelled": "Registrierung abgebrochen — die Browser-Abfrage wurde geschlossen.",
     "registering": "Folgen Sie der Aufforderung in Ihrem Browser…",
     "success": "Sicherheitsschlüssel erfolgreich hinzugefügt.",
-    "error_insecure": "Sicherheitsschlüssel erfordern eine sichere (HTTPS-)Verbindung."
+    "error_insecure": "Sicherheitsschlüssel erfordern eine sichere (HTTPS-)Verbindung.",
+    "approval_title": "Bestätigen Sie Ihre Identität",
+    "approval_description": "Verwenden Sie Ihr aktuelles Passwort und den Bestätigungscode oder einen vorhandenen Passkey.",
+    "approval_password": "Aktuelles Passwort",
+    "approval_code": "Authenticator-Code",
+    "approval_existing": "Vorhandenen Passkey verwenden",
+    "approval_confirm": "Bestätigen",
+    "approval_error": "Die Identität konnte nicht bestätigt werden. Prüfen Sie Ihre Angaben oder verwenden Sie einen vorhandenen Passkey."
   },
   "audit": {
     "title": "Sicherheitsaktivität",

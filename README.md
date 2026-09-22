@@ -89,6 +89,8 @@ A personal corner for everything you've found on the web and don't want to lose.
 - **Per-app passwords** for connecting file, music and book clients without exposing your main login.
 - **TLS everywhere** by default.
 
+Password changes revoke existing sessions, device refresh tokens, DAV passwords, and Subsonic/OPDS/KOReader credentials. Reconnect devices and issue new integration credentials afterwards. Registered passkeys and TOTP enrollment remain available. Upgrading to migration 000011 preserves existing device/integration credentials until the next password change; repeat any password change previously made to recover a compromised account. Pending legacy MFA/WebAuthn attempts must restart, and existing media URLs must be refreshed.
+
 ### 🌍 Yours, everywhere, in your language
 
 - Compatible with the Apple, Windows, Linux and Android operating systems.
@@ -105,7 +107,7 @@ DiscoDrive is a single server plus PostgreSQL. You can put nginx in front of it 
 > - `JWT_SECRET` — `openssl rand -base64 48`;
 > - `SETTINGS_ENCRYPTION_KEY` — `openssl rand -hex 16`.
 >
-> Keep in mind: Apple apps (CalDAV/CardDAV) require **HTTPS** — they will not work over plain HTTP.
+> All clients require **HTTPS**, including WebDAV, CalDAV/CardDAV, Subsonic, OPDS and sync.
 
 ### Option 1. Docker, cloning the repository (recommended)
 
@@ -122,12 +124,22 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Open **https://server_address:8443** (or http://server_address:8080) — on first launch you are taken straight to creating an administrator. Enter an email and a password, and you are ready to go. Note that if you plan to enable outbound email from the service, use real email addresses for all user accounts (including the administrator's), otherwise messages will not be deliverable.
+Read the one-time setup token through the server console:
+
+```sh
+docker compose exec app cat /data/.bootstrap/setup-token
+```
+
+Open **https://server_address:8443**, then enter the token, administrator email and password. Setup requires HTTPS. Use a real email address if you plan to enable email notifications. The token file has mode `0600`; only its SHA-256 digest is stored in the database. It is removed after successful setup, and the server never logs the token.
+
+`SETUP_TOKEN_FILE` can override the default `<STORAGE_ROOT>/.bootstrap/setup-token` path. Keep it outside user file trees, private to the server process, and persistent across restarts. If a pending token is lost, remove the file through the server console and restart to issue a replacement; the old token is revoked. Keep the backend port private: only your reverse proxy may set `X-Forwarded-Proto`.
+
+Existing installations are marked as configured during migration. Deleting the last administrator does not reopen setup. Recovery requires server-console/database access: restore a backup or promote an existing account in PostgreSQL (`UPDATE users SET role = 'admin' WHERE email = 'your-existing-account@example.com';`). Do not reset the bootstrap latch to recover access.
 
 How it works:
 
 - Files are stored in `/data`.
-- TLS certificates go in `deploy/nginx/certs/` — you need to place a **real or self-signed certificate** there (see Option 2 for how to generate one) and update the nginx config to redirect port 80 to HTTPS.
+- TLS certificates go in `deploy/nginx/certs/` — you need to place a **real or self-signed certificate** there (see Option 2 for how to generate one) The default Compose setup publishes only HTTPS; set `NGINX_HTTPS_PORT=443` for the standard port.
 
 To stop: `docker compose down` (data is preserved). To update after `git pull`: `docker compose up -d --build`.
 
@@ -177,9 +189,17 @@ export XACCEL_ENABLED="false"                     # without nginx the server ser
 ./discodrive
 ```
 
-Open `http://server_address:8080` and create an administrator.
+Configure an HTTPS reverse proxy before onboarding, then open its HTTPS address. Read the token on the server with `cat "$STORAGE_ROOT/.bootstrap/setup-token"` (or the path set by `SETUP_TOKEN_FILE`) and use it to create the administrator. Do not expose the backend HTTP port to clients.
 
-**nginx (optional).** Needed for HTTPS and fast file delivery via X-Accel. Use `deploy/nginx/default.conf` as a starting point, configure your TLS certificates and set `XACCEL_ENABLED=true` — the server will then send an `X-Accel-Redirect` header and nginx will serve the file bodies directly (location `/data/`, matching the value of `STORAGE_ROOT`).
+**nginx (optional).** Needed for HTTPS and fast file delivery via X-Accel. Use `deploy/nginx/default.conf.template` as a starting point, configure your TLS certificates and set `XACCEL_ENABLED=true` — the server will then send an `X-Accel-Redirect` header and nginx will serve the file bodies directly (location `/data/`, matching the value of `STORAGE_ROOT`).
+
+**HTTPS boundary.** The public HTTP port is no longer published. The nginx HTTP listener rejects requests instead of forwarding or redirecting them; configure every client with its HTTPS URL from the start. A redirect cannot protect credentials already sent over HTTP. TLS 1.2/1.3 and HSTS are enabled. Access logging is disabled in the supplied nginx template because some supported clients put tokens in query strings.
+
+The native binary binds to `127.0.0.1:8080` by default and requires HTTPS asserted by an immediate proxy listed in `TRUSTED_PROXY_CIDRS` (comma-separated CIDRs; native default `127.0.0.1/32,::1/128`). The proxy must overwrite `X-Forwarded-Proto` with its actual connection scheme. Compose listens on the container interface, trusts private IPv4 peers on its isolated network, and publishes only nginx HTTPS. For a custom network, set the allowlist to the actual proxy addresses/subnet and keep the backend port private. When an additional proxy sits in front of nginx, connect to nginx over HTTPS; configure trusted real-IP handling separately if you need the original client IP for rate limits.
+
+For explicit **local development only**, set `APP_HOST=127.0.0.1` (or `::1`) and `ALLOW_INSECURE_HTTP=true` for the native binary. The server refuses this mode on other listen addresses, and initial administrator setup still requires HTTPS. Compose always disables this exception. On upgrade, update/recreate both app and nginx services and switch old HTTP client URLs to HTTPS.
+
+**Storage boundary.** Symbolic links beneath `STORAGE_ROOT` are unsupported: the server rejects them during reads/writes and skips them during rescans, including links to another user inside the same storage root. Existing symlink-based libraries must be replaced with ordinary files/directories. On Linux and macOS, path-only media parsers use pinned file descriptors; Linux needs `/proc/self/fd` available. Keep `disable_symlinks on;` in every nginx `/__data/` location when using X-Accel: nginx opens the file independently, after Go authorizes it. This protects against symbolic-link traversal, not an administrator with direct write access to storage, hard links, or bind mounts.
 
 For TLS certificates, use Let's Encrypt (`certbot`) or generate self-signed ones:
 

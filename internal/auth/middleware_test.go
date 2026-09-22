@@ -115,7 +115,7 @@ func TestMiddleware_MFATokenRejected(t *testing.T) {
 		t.Error("lookupUser must not be called for an MFA-pending token")
 		return db.User{}, nil
 	}}
-	mfa, _ := iss.IssueMFA(validUUID, "t1")
+	mfa, _ := iss.IssueMFA(validUUID, "t1", 0)
 
 	h := svc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("handler must not be called for an MFA-pending token")

@@ -31,10 +31,11 @@ type ebookFolderDTO struct {
 // buildEbookSettingsResponse constructs the response from an EbookSetting row.
 // If the setting has a valid folder_node_id the node is fetched for its name.
 func (s *Server) buildEbookSettingsResponse(r *http.Request, es db.EbookSetting, uid pgtype.UUID) ebookSettingsResponse {
+	version, authenticated := auth.TokenVersion(r.Context())
 	resp := ebookSettingsResponse{
 		Enabled:     es.Enabled,
-		HasPassword: es.PasswordCipher.Valid && es.PasswordCipher.String != "",
-		HasApiKey:   es.ApiKey.Valid && es.ApiKey.String != "",
+		HasPassword: authenticated && es.TokenVersion == version && es.PasswordCipher.Valid && es.PasswordCipher.String != "",
+		HasApiKey:   authenticated && es.TokenVersion == version && es.ApiKey.Valid && es.ApiKey.String != "",
 	}
 	if es.FolderNodeID.Valid {
 		node, err := s.q.GetNodeForUser(r.Context(), db.GetNodeForUserParams{ID: es.FolderNodeID, UserID: uid})
@@ -172,9 +173,15 @@ func (s *Server) handlePostEbookPassword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	version, ok := auth.TokenVersion(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authorization required")
+		return
+	}
 	if err := s.q.SetEbookCredentials(r.Context(), db.SetEbookCredentialsParams{
 		UserID:         uid,
 		PasswordCipher: pgtype.Text{String: ciphertext, Valid: true},
+		TokenVersion:   version,
 		ApiKey:         pgtype.Text{String: apiKey, Valid: true},
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")

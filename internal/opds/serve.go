@@ -3,8 +3,8 @@ package opds
 import (
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
+
+	"discodrive/internal/storage"
 )
 
 // serveNodeFile streams a node's file with Range support.
@@ -26,8 +26,7 @@ func (h *Handler) serveNodeFile(w http.ResponseWriter, r *http.Request, diskPath
 	}
 
 	if !h.xaccel {
-		abs := filepath.Join(h.storageRoot, diskPath)
-		f, err := os.Open(abs)
+		f, err := storage.NewLocalDisk(h.storageRoot).Open(diskPath)
 		if err != nil {
 			http.Error(w, "not found", http.StatusNotFound)
 			return

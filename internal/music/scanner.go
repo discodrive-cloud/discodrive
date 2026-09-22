@@ -15,6 +15,7 @@ import (
 
 	"discodrive/internal/db"
 	"discodrive/internal/music/tagwrite"
+	"discodrive/internal/storage"
 )
 
 // audioExtensions maps lowercase file extensions (without dot) to MIME content types.
@@ -39,7 +40,19 @@ type Meta struct {
 // (go-flac) readers parse ID3v2.3 UTF-16 frames that dhowden/tag silently returns
 // empty for — without this, such files index as "Unknown Artist/Album". dhowden
 // is used as a per-field fallback for anything the primary reader misses.
-func ReadMeta(path string) (Meta, error) {
+func ReadMeta(path string) (Meta, error) { return readMeta(path, path) }
+
+// ReadStoredMeta pins the file before handing it to path-based parsers.
+func ReadStoredMeta(root, path string) (Meta, error) {
+	f, source, err := storage.NewLocalDisk(root).Pin(path)
+	if err != nil {
+		return Meta{}, err
+	}
+	defer f.Close()
+	return readMeta(path, source)
+}
+
+func readMeta(path, source string) (Meta, error) {
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
 	ct, ok := audioExtensions[ext]
 	if !ok {
@@ -50,7 +63,7 @@ func ReadMeta(path string) (Meta, error) {
 	meta := Meta{Title: base, Suffix: ext, ContentType: ct}
 
 	if w, _ := tagwrite.For(ext); w != nil {
-		if t, _, err := w.Read(path); err == nil {
+		if t, _, err := w.Read(source); err == nil {
 			if t.Title != nil && *t.Title != "" {
 				meta.Title = *t.Title
 			}
@@ -77,7 +90,7 @@ func ReadMeta(path string) (Meta, error) {
 
 	// Fallback: fill any field the primary reader left empty from dhowden/tag.
 	if meta.Artist == "" || meta.Album == "" || meta.Genre == "" || meta.Year == 0 || meta.Title == base {
-		if f, ferr := os.Open(path); ferr == nil {
+		if f, ferr := os.Open(source); ferr == nil {
 			defer f.Close()
 			if m, merr := tag.ReadFrom(f); merr == nil {
 				if meta.Artist == "" {
@@ -142,7 +155,12 @@ func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath strin
 		return err
 	}
 
-	meta, err := ReadMeta(diskPath)
+	file, source, err := storage.NewLocalDisk(ix.storageRoot).Pin(diskPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	meta, err := readMeta(diskPath, source)
 	if err != nil {
 		return err
 	}
@@ -151,7 +169,7 @@ func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath strin
 	// unknown"): NULL is reserved for rows that were never probed, so the scan
 	// change-gate can tell "needs enrichment" from "nothing more to extract"
 	// and does not re-index unprobeable files forever.
-	dur, br := ProbeAudio(diskPath, meta.Suffix)
+	dur, br := ProbeAudio(source, meta.Suffix)
 	durPg := pgtype.Int4{Int32: int32(dur), Valid: true}
 	brPg := pgtype.Int4{}
 	if br > 0 {
@@ -201,7 +219,7 @@ func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath strin
 
 	// Get file info for size.
 	var sizePg pgtype.Int8
-	if fi, serr := os.Stat(diskPath); serr == nil {
+	if fi, serr := file.Stat(); serr == nil {
 		sizePg = pgtype.Int8{Int64: fi.Size(), Valid: true}
 	}
 

@@ -16,12 +16,11 @@ import (
 	"discodrive/internal/secret"
 )
 
-const setupTokenKey = "admin.setup_token"
-
 var (
 	ErrEmailTaken      = errors.New("email already taken")
 	ErrInvalidCreds    = errors.New("invalid email or password")
-	ErrAdminExists     = errors.New("admin already exists")
+	ErrAdminExists     = errors.New("initial setup is closed")
+	ErrSetupToken      = errors.New("invalid setup token")
 	ErrInvalidMFAToken = errors.New("invalid or expired sign-in session")
 )
 
@@ -40,7 +39,8 @@ type Service struct {
 	availableFactors func(context.Context, pgtype.UUID) ([]string, error)
 	// defaultQuota (bytes) is given to users created without an explicit one;
 	// 0 = none, i.e. only the server-wide cap applies. Existing users are untouched.
-	defaultQuota int64
+	defaultQuota   int64
+	setupTokenFile string
 }
 
 // SetDefaultQuota sets the quota new users get when none is specified (DEFAULT_USER_QUOTA_GB).
@@ -144,7 +144,7 @@ func (s *Service) Login(ctx context.Context, email, password string) (LoginResul
 		return LoginResult{}, err
 	}
 	if len(methods) > 0 {
-		mfaTok, err := s.issuer.IssueMFA(db.UUIDString(u.ID), db.UUIDString(u.TenantID))
+		mfaTok, err := s.issuer.IssueMFA(db.UUIDString(u.ID), db.UUIDString(u.TenantID), u.TokenVersion)
 		if err != nil {
 			return LoginResult{}, err
 		}
@@ -158,39 +158,7 @@ func (s *Service) Login(ctx context.Context, email, password string) (LoginResul
 	return LoginResult{Token: token, User: u}, nil
 }
 
-// SetupNeeded returns true while no admin exists in the system.
-// Also cleans up any stale setup token left over from a previous scheme.
-func (s *Service) SetupNeeded(ctx context.Context) (bool, error) {
-	admins, err := s.q.CountAdmins(ctx)
-	if err != nil {
-		return false, err
-	}
-	if admins > 0 {
-		_ = s.q.DeleteSetting(ctx, setupTokenKey)
-		return false, nil
-	}
-	return true, nil
-}
-
-// SetupAdmin creates the first administrator (token-less first-run onboarding).
-// Only available while no admin exists; returns ErrAdminExists afterward (takeover guard).
-func (s *Service) SetupAdmin(ctx context.Context, email, password string) (db.User, error) {
-	admins, err := s.q.CountAdmins(ctx)
-	if err != nil {
-		return db.User{}, err
-	}
-	if admins > 0 {
-		return db.User{}, ErrAdminExists
-	}
-	hash, err := HashPassword(password)
-	if err != nil {
-		return db.User{}, err
-	}
-	return s.createUserTx(ctx, email, hash, "admin", "admin")
-}
-
-// createUserTx creates a tenant and a user in a single transaction; for admin
-// it also deletes the setup token.
+// createUserTx creates a tenant and a user in a single transaction.
 func (s *Service) createUserTx(ctx context.Context, email, hash, role, tenantName string) (db.User, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -213,11 +181,6 @@ func (s *Service) createUserTx(ctx context.Context, email, hash, role, tenantNam
 	})
 	if err != nil {
 		return db.User{}, err
-	}
-	if role == "admin" {
-		if err := qtx.DeleteSetting(ctx, setupTokenKey); err != nil {
-			return db.User{}, err
-		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.User{}, err
@@ -303,7 +266,10 @@ func (s *Service) ChangePassword(ctx context.Context, userID, current, newPasswo
 	if err != nil {
 		return "", err
 	}
-	updated, err := s.q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: uid, PasswordHash: hash})
+	updated, err := s.q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: uid, PasswordHash: hash, PreviousPasswordHash: u.PasswordHash})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrInvalidCreds
+	}
 	if err != nil {
 		return "", err
 	}
@@ -329,12 +295,16 @@ func (s *Service) CreateWebdavPassword(ctx context.Context, userID, name string)
 	if err != nil {
 		return db.Device{}, "", err
 	}
+	version, ok := TokenVersion(ctx)
+	if !ok || UserID(ctx) != userID {
+		return db.Device{}, "", ErrInvalidCreds
+	}
 	plain, hash, err := newWebdavSecret()
 	if err != nil {
 		return db.Device{}, "", err
 	}
 	dev, err := s.q.CreateWebdavDevice(ctx, db.CreateWebdavDeviceParams{
-		UserID: uid, Name: name, SecretHash: pgtype.Text{String: hash, Valid: true},
+		UserID: uid, Name: name, TokenVersion: version, SecretHash: pgtype.Text{String: hash, Valid: true},
 	})
 	if err != nil {
 		return db.Device{}, "", err

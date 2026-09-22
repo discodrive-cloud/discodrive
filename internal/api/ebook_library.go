@@ -4,7 +4,6 @@ import (
 	"errors"
 	"mime"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 
@@ -13,6 +12,7 @@ import (
 
 	"discodrive/internal/auth"
 	"discodrive/internal/db"
+	"discodrive/internal/storage"
 )
 
 const ebookLibraryPageSize = 50
@@ -273,7 +273,7 @@ func (s *Server) handleGetEbookCover(w http.ResponseWriter, r *http.Request) {
 
 	// Only DB-sourced cover_path is joined with storageRoot — never a client value.
 	path := filepath.Join(s.storageRoot, book.CoverPath.String)
-	f, err := os.Open(path)
+	f, err := storage.NewLocalDisk(s.storageRoot).Open(book.CoverPath.String)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -331,8 +331,7 @@ func (s *Server) handleDownloadEbook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use the same delivery path as streamFile, but with the book's contentType.
-	abs := filepath.Join(s.storageRoot, node.DiskPath.String)
-	f, err := os.Open(abs)
+	f, err := storage.NewLocalDisk(s.storageRoot).Open(node.DiskPath.String)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not found")
 		return

@@ -122,12 +122,12 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Ouvrez **https://server_address:8443** (ou http://server_address:8080) — au premier démarrage, vous arrivez directement sur la création d'un administrateur. Saisissez une adresse e-mail et un mot de passe, et c'est parti. Notez que si vous souhaitez activer l'envoi d'e-mails par le service, vous devez utiliser des adresses e-mail valides pour les noms d'utilisateurs (y compris celui de l'administrateur), sans quoi les messages ne pourront pas être délivrés.
+Ouvrez **https://server_address:8443** et saisissez le jeton à usage unique, l’adresse e-mail et le mot de passe. Récupérez le jeton dans la console du serveur avec `docker compose exec app cat /data/.bootstrap/setup-token`. La configuration nécessite HTTPS. Le fichier du jeton est supprimé après la configuration ; supprimer le dernier administrateur ne la rouvre pas.
 
 Fonctionnement :
 
 - Les fichiers sont stockés dans `/data`.
-- Les certificats TLS se placent dans `deploy/nginx/certs/` — vous devez y déposer un **vrai certificat ou un certificat auto-signé** (la commande de génération se trouve dans l'Option 2), puis configurer nginx pour rediriger le port 80 vers HTTPS.
+- Les certificats TLS se placent dans `deploy/nginx/certs/` — vous devez y déposer un **vrai certificat ou un certificat auto-signé** (la commande de génération se trouve dans l'Option 2). Compose expose uniquement HTTPS ; définissez `NGINX_HTTPS_PORT=443` pour le port standard.
 
 Pour arrêter : `docker compose down` (les données sont conservées). Pour mettre à jour après un `git pull` : `docker compose up -d --build`.
 
@@ -177,9 +177,9 @@ export XACCEL_ENABLED="false"                     # sans nginx, le serveur distr
 ./discodrive
 ```
 
-Ouvrez `http://server_address:8080` et créez un administrateur.
+Configurez un reverse proxy HTTPS avant la configuration initiale. Lisez le jeton dans la console du serveur à l’emplacement `<STORAGE_ROOT>/.bootstrap/setup-token` (ou `SETUP_TOKEN_FILE`) et ouvrez l’adresse HTTPS.
 
-**nginx (facultatif).** Nécessaire pour HTTPS et pour la distribution rapide des fichiers via X-Accel. Prenez `deploy/nginx/default.conf` comme base, renseignez vos certificats TLS et activez `XACCEL_ENABLED=true` — le serveur répondra alors avec l'en-tête `X-Accel-Redirect` et nginx se chargera d'envoyer le contenu des fichiers (emplacement `/data/`, valeur du paramètre `STORAGE_ROOT`).
+**nginx (facultatif).** Nécessaire pour HTTPS et pour la distribution rapide des fichiers via X-Accel. Prenez `deploy/nginx/default.conf.template` comme base, renseignez vos certificats TLS et activez `XACCEL_ENABLED=true` — le serveur répondra alors avec l'en-tête `X-Accel-Redirect` et nginx se chargera d'envoyer le contenu des fichiers (emplacement `/data/`, valeur du paramètre `STORAGE_ROOT`).
 
 Pour les certificats TLS, utilisez Let's Encrypt (`certbot`) ou générez des certificats auto-signés :
 

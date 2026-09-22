@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -13,6 +12,7 @@ import (
 	"discodrive/internal/db"
 	"discodrive/internal/podcast"
 	"discodrive/internal/quota"
+	"discodrive/internal/storage"
 )
 
 func init() {
@@ -299,13 +299,13 @@ func deletePodcastChannel(h *Handler, c *reqCtx) {
 	eps, _ := h.q.ListEpisodesByChannel(ctx, chUUID)
 	for _, ep := range eps {
 		if ep.DiskPath.Valid && ep.DiskPath.String != "" {
-			_ = os.Remove(filepath.Join(h.storageRoot, ep.DiskPath.String))
+			_ = storage.NewLocalDisk(h.storageRoot).Remove(ep.DiskPath.String)
 		}
 	}
 
 	// Best-effort: remove channel cover file.
 	if ch.CoverPath.Valid && ch.CoverPath.String != "" {
-		_ = os.Remove(filepath.Join(h.storageRoot, ch.CoverPath.String))
+		_ = storage.NewLocalDisk(h.storageRoot).Remove(ch.CoverPath.String)
 	}
 
 	n, err := h.q.DeletePodcastChannelForUser(ctx, db.DeletePodcastChannelForUserParams{
@@ -361,7 +361,7 @@ func deletePodcastEpisode(h *Handler, c *reqCtx) {
 	}
 
 	if ep.DiskPath.Valid && ep.DiskPath.String != "" {
-		_ = os.Remove(filepath.Join(h.storageRoot, ep.DiskPath.String))
+		_ = storage.NewLocalDisk(h.storageRoot).Remove(ep.DiskPath.String)
 	}
 
 	n, err := h.q.DeletePodcastEpisodeForUser(ctx, db.DeletePodcastEpisodeForUserParams{
@@ -466,12 +466,12 @@ func downloadPodcastEpisode(h *Handler, c *reqCtx) {
 
 	go func() {
 		bg := context.Background()
-		dest := filepath.Join(storageRoot, "podcasts", userIDStr, db.UUIDString(epID)+"."+suffix)
+		relPath := filepath.Join("podcasts", userIDStr, db.UUIDString(epID)+"."+suffix)
 
-		// A mid-download error leaves a partial file at dest; it is intentionally
-		// overwritten on retry, since dest is deterministic and streaming requires
-		// status == "completed" (which is only set after a full download).
-		size, ct, suf, dlErr := downloadTo(bg, audioURL, dest, episodeMax)
+		// Download into a private temporary directory, then publish safely.
+		size, ct, suf, dlErr := podcast.StoreDownload(storageRoot, relPath, func(dest string) (int64, string, string, error) {
+			return downloadTo(bg, audioURL, dest, episodeMax)
+		})
 		if dlErr != nil {
 			log.Printf("discodrive: downloadPodcastEpisode download %s: %v", db.UUIDString(epID), dlErr)
 			if setErr := h.q.SetEpisodeStatus(bg, db.SetEpisodeStatusParams{
@@ -481,13 +481,6 @@ func downloadPodcastEpisode(h *Handler, c *reqCtx) {
 			}); setErr != nil {
 				log.Printf("discodrive: downloadPodcastEpisode set-error-status: %v", setErr)
 			}
-			return
-		}
-
-		relPath, err := filepath.Rel(storageRoot, dest)
-		if err != nil {
-			_ = h.q.SetEpisodeStatus(bg, db.SetEpisodeStatusParams{ID: epID, Status: "error", UserID: userUUID})
-			log.Printf("discodrive: podcast rel-path %s: %v", dest, err)
 			return
 		}
 

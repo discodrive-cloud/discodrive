@@ -73,6 +73,7 @@ type Querier interface {
 	AccessibleSongsByArtist(ctx context.Context, arg AccessibleSongsByArtistParams) ([]AccessibleSongsByArtistRow, error)
 	AddPlayQueueEntry(ctx context.Context, arg AddPlayQueueEntryParams) error
 	AddPlaylistSong(ctx context.Context, arg AddPlaylistSongParams) error
+	AddUploadReservation(ctx context.Context, arg AddUploadReservationParams) error
 	AddressbookShareForUser(ctx context.Context, arg AddressbookShareForUserParams) (pgtype.UUID, error)
 	AppendChange(ctx context.Context, arg AppendChangeParams) (ChangeLog, error)
 	ApprovePairing(ctx context.Context, arg ApprovePairingParams) (pgtype.UUID, error)
@@ -93,11 +94,14 @@ type Querier interface {
 	ClearBookTags(ctx context.Context, bookID pgtype.UUID) error
 	ClearEbookCredentials(ctx context.Context, userID pgtype.UUID) error
 	ClearEpisodeDownload(ctx context.Context, arg ClearEpisodeDownloadParams) error
+	ClearExpiredSavedCookies(ctx context.Context) error
 	ClearMusicCredentials(ctx context.Context, userID pgtype.UUID) error
 	ClearPlayQueueEntries(ctx context.Context, userID pgtype.UUID) error
 	ClearPlaylistSongs(ctx context.Context, playlistID pgtype.UUID) error
 	ClearQuotaNotified(ctx context.Context) error
+	CompleteBootstrap(ctx context.Context) error
 	ConfirmUserTOTP(ctx context.Context, userID pgtype.UUID) error
+	ConsumeAuthChallenge(ctx context.Context, arg ConsumeAuthChallengeParams) (int64, error)
 	// Atomically "claim" an approved pairing: a race between two polls → token exactly once.
 	ConsumePairingIfApproved(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 	// Returns the count of accessible albums for a given artist.
@@ -132,6 +136,7 @@ type Querier interface {
 	CreateShare(ctx context.Context, arg CreateShareParams) (ResourceShare, error)
 	// Stage 0 base access layer. Queries are extended in steps 0.2–0.5.
 	CreateTenant(ctx context.Context, name string) (Tenant, error)
+	CreateUploadReservation(ctx context.Context, arg CreateUploadReservationParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	CreateWebdavDevice(ctx context.Context, arg CreateWebdavDeviceParams) (Device, error)
 	DeleteAddressbook(ctx context.Context, arg DeleteAddressbookParams) error
@@ -142,6 +147,8 @@ type Querier interface {
 	DeleteCalendar(ctx context.Context, arg DeleteCalendarParams) error
 	DeleteCalendarObject(ctx context.Context, arg DeleteCalendarObjectParams) (int64, error)
 	DeleteDevice(ctx context.Context, arg DeleteDeviceParams) error
+	DeleteEmptyUploadReservation(ctx context.Context, id string) error
+	DeleteExpiredAuthChallenges(ctx context.Context) error
 	DeleteExpiredPairings(ctx context.Context) error
 	DeleteFileVersion(ctx context.Context, id pgtype.UUID) error
 	DeleteFinishedDownloads(ctx context.Context, arg DeleteFinishedDownloadsParams) (int64, error)
@@ -154,6 +161,7 @@ type Querier interface {
 	DeleteSetting(ctx context.Context, key string) error
 	DeleteShare(ctx context.Context, id pgtype.UUID) error
 	DeleteSongByNode(ctx context.Context, nodeID pgtype.UUID) error
+	DeleteUploadReservation(ctx context.Context, id string) error
 	DeleteUser(ctx context.Context, id pgtype.UUID) error
 	DeleteUserTOTP(ctx context.Context, userID pgtype.UUID) error
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) error
@@ -169,6 +177,7 @@ type Querier interface {
 	GetArtistName(ctx context.Context, id pgtype.UUID) (string, error)
 	GetBookByNode(ctx context.Context, nodeID pgtype.UUID) (Book, error)
 	GetBookmarkSyncState(ctx context.Context, id pgtype.UUID) (GetBookmarkSyncStateRow, error)
+	GetBootstrap(ctx context.Context) (ServerBootstrap, error)
 	GetBrowserBookmarkForUser(ctx context.Context, arg GetBrowserBookmarkForUserParams) (BrowserBookmark, error)
 	GetCalendar(ctx context.Context, id pgtype.UUID) (Calendar, error)
 	GetCalendarByURI(ctx context.Context, uri string) (Calendar, error)
@@ -202,8 +211,10 @@ type Querier interface {
 	GetSongByNode(ctx context.Context, nodeID pgtype.UUID) (Song, error)
 	GetSyncSettings(ctx context.Context, userID pgtype.UUID) (SyncSetting, error)
 	GetTrashedNodeForUser(ctx context.Context, arg GetTrashedNodeForUserParams) (Node, error)
+	GetUploadReservation(ctx context.Context, id string) (UploadReservation, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
+	GetUserForAuthUpdate(ctx context.Context, id pgtype.UUID) (User, error)
 	GetUserLanguage(ctx context.Context, id pgtype.UUID) (string, error)
 	GetUserSessionTTL(ctx context.Context, id pgtype.UUID) (int32, error)
 	GetUserTOTP(ctx context.Context, userID pgtype.UUID) (UserTotp, error)
@@ -275,6 +286,7 @@ type Querier interface {
 	ListSecretKeys(ctx context.Context) ([]string, error)
 	ListSharesForResource(ctx context.Context, arg ListSharesForResourceParams) ([]ResourceShare, error)
 	ListSharesForUser(ctx context.Context, sharedWithUser pgtype.UUID) ([]ResourceShare, error)
+	ListStaleUploadReservations(ctx context.Context, touchedAt pgtype.Timestamptz) ([]UploadReservation, error)
 	// Returns accessible starred albums for a user, ordered by starred_at desc.
 	// An album is accessible iff it contains at least one song owned by or shared with
 	// the caller (same own ∪ shared_subtree filter as ListStarredSongs).
@@ -303,7 +315,9 @@ type Querier interface {
 	ListUsersWithUsage(ctx context.Context) ([]ListUsersWithUsageRow, error)
 	ListWebAuthnCredentials(ctx context.Context, userID pgtype.UUID) ([]WebauthnCredential, error)
 	ListWebdavDevicesByEmail(ctx context.Context, email string) ([]Device, error)
-	MarkBackupCodeUsed(ctx context.Context, id pgtype.UUID) error
+	LockBootstrap(ctx context.Context) (ServerBootstrap, error)
+	LockUploadQuota(ctx context.Context) error
+	MarkBackupCodeUsed(ctx context.Context, id pgtype.UUID) (int64, error)
 	MarkQuotaNotified(ctx context.Context, id pgtype.UUID) error
 	MaxPlaylistPosition(ctx context.Context, playlistID pgtype.UUID) (interface{}, error)
 	// MoveBookmark re-parents a node. The NOT EXISTS guard rejects a move that
@@ -352,6 +366,7 @@ type Querier interface {
 	SetArtistCover(ctx context.Context, arg SetArtistCoverParams) error
 	SetBookCoverPath(ctx context.Context, arg SetBookCoverPathParams) error
 	SetBookMetadataEdited(ctx context.Context, arg SetBookMetadataEditedParams) error
+	SetBootstrapTokenHash(ctx context.Context, tokenHash string) error
 	// SetBookmarkFavicon does NOT bump seq: favicons are server-side decoration,
 	// browsers don't need to re-pull the node.
 	SetBrowserBookmarkFavicon(ctx context.Context, arg SetBrowserBookmarkFaviconParams) error
@@ -397,13 +412,16 @@ type Querier interface {
 	TopSongsByArtistName(ctx context.Context, arg TopSongsByArtistNameParams) ([]TopSongsByArtistNameRow, error)
 	// Used space across all users — checked against the server-wide cap (STORAGE_TOTAL_GB).
 	TotalStorageUsage(ctx context.Context) (int64, error)
+	TotalUploadReserved(ctx context.Context) (int64, error)
 	TouchDevice(ctx context.Context, id pgtype.UUID) error
+	TouchUploadReservation(ctx context.Context, id string) error
 	// The part of a user's occupied space that emptying the trash would release: trashed
 	// files plus the version history that goes with them. Files sit there for TRASH_DAYS,
 	// so this is the fastest space a user can free by themselves.
 	TrashStorageUsage(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// Delete versions beyond the keep newest; return snapshot paths for disk cleanup.
 	TrimNodeVersions(ctx context.Context, arg TrimNodeVersionsParams) ([]pgtype.Text, error)
+	TrimUploadReservation(ctx context.Context, arg TrimUploadReservationParams) error
 	UndeleteSubtree(ctx context.Context, arg UndeleteSubtreeParams) error
 	Unstar(ctx context.Context, arg UnstarParams) error
 	UpdateBookMetadata(ctx context.Context, arg UpdateBookMetadataParams) error
@@ -419,7 +437,7 @@ type Querier interface {
 	UpdateSavedItemProgress(ctx context.Context, arg UpdateSavedItemProgressParams) (int64, error)
 	UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error)
 	// A.5: persist the credential after a login (sign_count bumps; clone detection) + last used.
-	UpdateWebAuthnCredential(ctx context.Context, arg UpdateWebAuthnCredentialParams) error
+	UpdateWebAuthnCredential(ctx context.Context, arg UpdateWebAuthnCredentialParams) (int64, error)
 	// == addressbook_objects ==
 	UpsertAddressbookObject(ctx context.Context, arg UpsertAddressbookObjectParams) (AddressbookObject, error)
 	UpsertAlbum(ctx context.Context, arg UpsertAlbumParams) (Album, error)
@@ -449,9 +467,12 @@ type Querier interface {
 	// TOTP 2FA (A.3). Secret is AES-GCM ciphertext.
 	// Begin (or restart) TOTP setup: store an encrypted secret, not yet confirmed.
 	UpsertUserTOTP(ctx context.Context, arg UpsertUserTOTPParams) error
+	// Include published and staged bytes in one snapshot: publication followed by
+	// reservation release must never create a gap between separate usage reads.
 	// Used space of a single user, same definition as ListUsersWithUsage. This is the
 	// number the quota check runs against on every write.
 	UserStorageUsage(ctx context.Context, userID pgtype.UUID) (int64, error)
+	UserUploadReserved(ctx context.Context, userID pgtype.UUID) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)

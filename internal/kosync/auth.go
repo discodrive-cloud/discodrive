@@ -29,7 +29,7 @@ func (h *Handler) authUser(r *http.Request) (userID string, email string, ok boo
 	}
 
 	settings, err := h.q.GetEbookSettings(ctx, user.ID)
-	if err != nil || !settings.Enabled || !settings.PasswordCipher.Valid {
+	if err != nil || !settings.Enabled || !settings.PasswordCipher.Valid || settings.TokenVersion != user.TokenVersion || user.MustChangePassword {
 		return "", "", false
 	}
 

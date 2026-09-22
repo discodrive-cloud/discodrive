@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net/http"
 
+	"discodrive/internal/appleprofile"
 	"discodrive/internal/auth"
 	"discodrive/internal/bookmarks"
 	"discodrive/internal/caldav"
@@ -22,6 +23,7 @@ import (
 
 // Server holds the dependencies for the HTTP layer.
 type Server struct {
+	profiles     appleprofile.Tickets
 	auth         *auth.Service
 	q            *db.Queries
 	files        *storage.FileService
@@ -57,6 +59,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux := http.NewServeMux()
 
 	// public
+	mux.HandleFunc("GET /apple-profile/{ticket}/DiscoDrive.mobileconfig", s.handleAppleProfileDownload)
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("GET /setup/status", s.handleSetupStatus)
 	mux.HandleFunc("POST /setup/admin", s.rateLimited(s.handleSetupAdmin))
@@ -75,6 +78,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	// authenticated (Bearer JWT, scoped by user_id/tenant_id)
 	prot := authSvc.Middleware
 	mux.Handle("GET /me", prot(http.HandlerFunc(s.handleMe)))
+	mux.Handle("POST /me/apple-profile", prot(http.HandlerFunc(s.handleAppleProfile)))
 	mux.Handle("GET /me/storage", prot(http.HandlerFunc(s.handleMeStorage)))
 	mux.Handle("PUT /me/password", prot(http.HandlerFunc(s.handleChangePassword)))
 	mux.Handle("GET /me/totp", prot(http.HandlerFunc(s.handleTOTPStatus)))
@@ -83,6 +87,9 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("DELETE /me/totp", prot(http.HandlerFunc(s.rateLimited(s.handleTOTPDisable))))
 	mux.Handle("POST /me/totp/backup-codes", prot(http.HandlerFunc(s.rateLimited(s.handleRegenerateBackupCodes))))
 	mux.Handle("GET /me/audit", prot(http.HandlerFunc(s.handleAuditList)))
+	mux.Handle("POST /me/webauthn/approval/password", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalPassword))))
+	mux.Handle("POST /me/webauthn/approval/begin", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalBegin))))
+	mux.Handle("POST /me/webauthn/approval/finish", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalFinish))))
 	mux.Handle("GET /me/webauthn", prot(http.HandlerFunc(s.handleWebAuthnList)))
 	mux.Handle("POST /me/webauthn/register/begin", prot(http.HandlerFunc(s.handleWebAuthnRegisterBegin)))
 	mux.Handle("POST /me/webauthn/register/finish", prot(http.HandlerFunc(s.handleWebAuthnRegisterFinish)))
@@ -136,7 +143,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 
 	// external-access toggles (webdav/caldav/carddav enable flags)
 	mux.Handle("GET /me/access", prot(http.HandlerFunc(s.handleGetAccess)))
-	mux.Handle("PUT /me/access", prot(http.HandlerFunc(s.handlePutAccess)))
+	mux.Handle("PUT /me/access", prot(authSvc.RequireAdmin(http.HandlerFunc(s.handlePutAccess))))
 
 	// ebook settings (OPDS)
 	mux.Handle("GET /me/ebooks", prot(http.HandlerFunc(s.handleGetEbookSettings)))

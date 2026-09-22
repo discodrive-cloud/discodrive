@@ -92,21 +92,21 @@ const carddavUrl = computed(() => origin.value + '/carddav/')
       <div class="space-y-2">
         <label class="flex items-center gap-3 text-sm">
           <input
-            type="checkbox" class="h-4 w-4" :checked="access.webdav" :disabled="savingAccess"
+            type="checkbox" class="h-4 w-4" :checked="access.webdav" :disabled="savingAccess || sess.role !== 'admin'"
             @change="saveAccess({ webdav: ($event.target as HTMLInputElement).checked })"
           />
           <span>{{ t('settings.access_webdav') }}</span>
         </label>
         <label class="flex items-center gap-3 text-sm">
           <input
-            type="checkbox" class="h-4 w-4" :checked="access.caldav" :disabled="savingAccess"
+            type="checkbox" class="h-4 w-4" :checked="access.caldav" :disabled="savingAccess || sess.role !== 'admin'"
             @change="saveAccess({ caldav: ($event.target as HTMLInputElement).checked })"
           />
           <span>{{ t('settings.access_caldav') }}</span>
         </label>
         <label class="flex items-center gap-3 text-sm">
           <input
-            type="checkbox" class="h-4 w-4" :checked="access.carddav" :disabled="savingAccess"
+            type="checkbox" class="h-4 w-4" :checked="access.carddav" :disabled="savingAccess || sess.role !== 'admin'"
             @change="saveAccess({ carddav: ($event.target as HTMLInputElement).checked })"
           />
           <span>{{ t('settings.access_carddav') }}</span>

@@ -8,8 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +17,7 @@ import (
 
 	"discodrive/internal/auth"
 	"discodrive/internal/db"
+	"discodrive/internal/httpsecurity"
 	"discodrive/internal/quota"
 	"discodrive/internal/storage"
 )
@@ -105,8 +104,9 @@ func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// GET /setup/status — indicates whether initial onboarding is needed (no admin exists yet).
+// GET /setup/status reports the permanent onboarding state; no secrets are returned.
 func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	needed, err := s.auth.SetupNeeded(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -115,9 +115,17 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"needed": needed, "webauthn": s.auth.WebAuthnEnabled()})
 }
 
-// POST /setup/admin — token-less creation of the first admin (only while no admin exists).
+// POST /setup/admin requires the local one-time secret and HTTPS.
 func (s *Server) handleSetupAdmin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	// Setup always requires HTTPS, even in the local development HTTP mode.
+	if !httpsecurity.IsHTTPS(r) {
+		writeError(w, http.StatusForbidden, "Open the setup page over HTTPS")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	var req struct {
+		Token    string `json:"token"`
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
@@ -129,10 +137,12 @@ func (s *Server) handleSetupAdmin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	admin, err := s.auth.SetupAdmin(r.Context(), req.Email, req.Password)
+	admin, err := s.auth.SetupAdmin(r.Context(), req.Email, req.Password, req.Token)
 	switch {
+	case errors.Is(err, auth.ErrSetupToken):
+		writeError(w, http.StatusUnauthorized, "Invalid setup token")
 	case errors.Is(err, auth.ErrAdminExists):
-		writeError(w, http.StatusConflict, "admin already exists")
+		writeError(w, http.StatusConflict, "Initial setup is already completed")
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "internal error")
 	default:
@@ -344,6 +354,11 @@ func writeStorageErr(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, storage.ErrUploadSize):
 		writeError(w, http.StatusBadRequest, "upload is incomplete: staged bytes do not match the declared size")
+	case errors.Is(err, db.ErrUploadConnectionsBusy):
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "too many active uploads; retry shortly")
+	case errors.Is(err, quota.ErrReservation), errors.Is(err, storage.ErrUploadNotFound):
+		writeError(w, http.StatusNotFound, "upload session not found")
 	case errors.Is(err, quota.ErrExceeded):
 		// 507: the request is fine, the storage behind it is not. The message carries the
 		// numbers, so clients can tell the user how much room is actually left.
@@ -778,8 +793,7 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, mime pgtype.
 // serveFileContent opens diskPath and serves it with Range support. setHeaders runs
 // only once the file is known to be readable, so error responses stay header-clean.
 func (s *Server) serveFileContent(w http.ResponseWriter, r *http.Request, name, diskPath string, setHeaders func()) {
-	abs := filepath.Join(s.storageRoot, diskPath)
-	f, err := os.Open(abs)
+	f, err := storage.NewLocalDisk(s.storageRoot).Open(diskPath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "file not found")
 		return

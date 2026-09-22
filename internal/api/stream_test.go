@@ -152,7 +152,7 @@ func TestStreamRejectsBadTokens(t *testing.T) {
 	}
 	// An expired stream token (signed with the same secret as bootstrapPairingDB's issuer).
 	expired, err := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.Claims{
-		Ver: e.user.TokenVersion, Pur: "stream", Nid: nid,
+		Ver: e.user.TokenVersion, Pur: "stream-v2", Nid: nid,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   e.userID,
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Minute)),

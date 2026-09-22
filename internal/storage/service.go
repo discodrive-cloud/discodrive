@@ -37,9 +37,11 @@ var (
 
 // FileService links the node tree in the database with its on-disk mirror (Storage).
 type FileService struct {
-	pool *pgxpool.Pool
-	q    *db.Queries
-	st   Storage
+	pool interface {
+		Begin(context.Context) (pgx.Tx, error)
+	}
+	q  *db.Queries
+	st Storage
 	// quota bounds what a user may write; nil = no limits configured (tests, and
 	// deployments that set neither user quotas nor a server-wide cap).
 	quota *quota.Checker
@@ -491,30 +493,23 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 	}
 	rel := prefix + "/" + name
 
-	// Quota is charged to the tree owner, not the uploader: a file written into a
-	// folder shared with you lands in the owner's storage and fills their quota.
-	// Overwriting frees nothing — the content being replaced moves into .versions.
-	limited, err := s.quota.Reader(ctx, ownerUUID, r)
+	staged, err := s.stage(ctx, ownerUUID, r)
 	if err != nil {
 		return PushResult{}, err
 	}
-
-	// Stage content to a temp file: the stream is read only once, and the decision
-	// (accept / conflict) is made afterwards, once we know the size and sha.
-	tmpRel := tmpName()
-	size, sha, err := s.st.WriteFile(tmpRel, limited)
-	if err != nil {
-		_ = s.st.Remove(tmpRel) // a body cut short by the quota limiter still staged bytes
-		return PushResult{}, err
+	defer staged.cleanup(s.st)
+	tmpRel, size, sha := staged.rel, staged.size, staged.hash
+	q, begin := s.q, s.pool.Begin
+	if staged.reservation != nil {
+		q = staged.reservation.Queries()
+		begin = staged.reservation.Connection().Begin
 	}
-	defer func() { _ = s.st.Remove(tmpRel) }() // clean up if it was never moved
-
-	tx, err := s.pool.Begin(ctx)
+	tx, err := begin(ctx)
 	if err != nil {
 		return PushResult{}, err
 	}
 	defer tx.Rollback(ctx)
-	qtx := s.q.WithTx(tx)
+	qtx := q.WithTx(tx)
 
 	existing, err := qtx.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: ownerUUID, Path: rel})
 	switch {
@@ -605,26 +600,23 @@ func (s *FileService) ReplaceContentInPlace(ctx context.Context, userID, nodeID 
 		return db.Node{}, ErrNameTaken
 	}
 
-	// No snapshot on this path (that is the point of replacing in place), so the
-	// incoming bytes cost their own size and nothing more.
-	limited, err := s.quota.Reader(ctx, node.UserID, r)
+	staged, err := s.stage(ctx, node.UserID, r)
 	if err != nil {
 		return db.Node{}, err
 	}
-	tmpRel := tmpName()
-	size, sha, err := s.st.WriteFile(tmpRel, limited)
-	if err != nil {
-		_ = s.st.Remove(tmpRel)
-		return db.Node{}, err
+	defer staged.cleanup(s.st)
+	tmpRel, size, sha := staged.rel, staged.size, staged.hash
+	q, begin := s.q, s.pool.Begin
+	if staged.reservation != nil {
+		q = staged.reservation.Queries()
+		begin = staged.reservation.Connection().Begin
 	}
-	defer func() { _ = s.st.Remove(tmpRel) }()
-
-	tx, err := s.pool.Begin(ctx)
+	tx, err := begin(ctx)
 	if err != nil {
 		return db.Node{}, err
 	}
 	defer tx.Rollback(ctx)
-	qtx := s.q.WithTx(tx)
+	qtx := q.WithTx(tx)
 
 	if err := s.st.Move(tmpRel, node.DiskPath.String); err != nil {
 		return db.Node{}, err

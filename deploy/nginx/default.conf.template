@@ -1,74 +1,25 @@
-# nginx reverse proxy in front of the single Go binary.
-#
-# This is an nginx TEMPLATE: the official nginx image runs envsubst over it at startup
-# (see 20-envsubst-on-templates.sh) and writes the result to /etc/nginx/conf.d/default.conf.
-# Only the APP_PORT variable is substituted — NGINX_ENVSUBST_FILTER=^APP_PORT$ keeps
-# nginx runtime vars ($host/$scheme/…) intact. Its value must match the app's APP_PORT
-# so proxy_pass targets the right upstream port.
-#
-# HTTP (80) — local development and lenient clients (Thunderbird, file WebDAV).
-# HTTPS (443, mkcert dev cert) — required for Apple CalDAV/CardDAV: iOS/macOS do NOT send
-# the Basic password over unencrypted HTTP. Locations are duplicated in both server blocks (dev config).
-#
-# ⚠ SECURITY: this is a DEVELOPMENT config. The HTTP (80) block proxies the API and
-# DAV endpoints, so Bearer tokens and WebDAV/CalDAV/CardDAV Basic passwords travel in
-# cleartext. Do NOT expose port 80 beyond a trusted local network. For production,
-# replace the HTTP block below with a redirect to HTTPS and serve everything over TLS:
-#
-#   server {
-#       listen 80;
-#       server_name your.domain;
-#       return 301 https://$host$request_uri;
-#   }
-
+# TLS is mandatory. The HTTP listener only rejects requests and is not published
+# by docker-compose. Never forward client-controlled X-Forwarded-Proto.
+# envsubst substitutes only APP_PORT; nginx runtime variables are preserved.
 server {
     listen 80;
     server_name _;
-    client_max_body_size 0;   # the app enforces the size limit, not nginx
-
-    location /dav/ {
-        proxy_pass http://app:${APP_PORT};
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_request_buffering off;
-        client_max_body_size 0;
-        proxy_read_timeout 3600s;
-    }
-
-    location /sync/events {
-        proxy_pass http://app:${APP_PORT};
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_http_version 1.1;
-        proxy_set_header Connection '';
-        proxy_buffering off;            # SSE: don't buffer the stream, deliver events immediately
-        proxy_cache off;
-        proxy_read_timeout 3600s;
-    }
-
-    location / {
-        proxy_pass http://app:${APP_PORT};
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_request_buffering off;       # stream upload chunks straight to the app
-    }
-
-    location /__data/ {
-        internal;
-        alias /data/;
-    }
+    access_log off; # Do not record token-bearing URLs accidentally sent over HTTP.
+    default_type text/plain;
+    add_header Cache-Control "no-store" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    return 403 "Use HTTPS to access this server.\n";
 }
 
 server {
     listen 443 ssl;
     server_name _;
+    # Subsonic and public downloads may carry tokens in query parameters.
+    access_log off;
     client_max_body_size 0;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    add_header Strict-Transport-Security "max-age=31536000" always;
 
     ssl_certificate     /etc/nginx/certs/dev.pem;
     ssl_certificate_key /etc/nginx/certs/dev-key.pem;
@@ -77,7 +28,7 @@ server {
         proxy_pass http://app:${APP_PORT};
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For   $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_request_buffering off;
         client_max_body_size 0;
@@ -88,7 +39,7 @@ server {
         proxy_pass http://app:${APP_PORT};
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For   $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_http_version 1.1;
         proxy_set_header Connection '';
@@ -101,7 +52,7 @@ server {
         proxy_pass http://app:${APP_PORT};
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For   $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_request_buffering off;
     }
@@ -109,5 +60,7 @@ server {
     location /__data/ {
         internal;
         alias /data/;
+        # Recheck on nginx open: Go validation alone cannot prevent path swaps.
+        disable_symlinks on;
     }
 }

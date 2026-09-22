@@ -161,14 +161,15 @@ type ChangeLog struct {
 }
 
 type Device struct {
-	ID         pgtype.UUID        `json:"id"`
-	UserID     pgtype.UUID        `json:"user_id"`
-	Name       string             `json:"name"`
-	Kind       string             `json:"kind"`
-	LastSeenAt pgtype.Timestamptz `json:"last_seen_at"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
-	SecretHash pgtype.Text        `json:"secret_hash"`
-	TokenHash  pgtype.Text        `json:"token_hash"`
+	ID           pgtype.UUID        `json:"id"`
+	UserID       pgtype.UUID        `json:"user_id"`
+	Name         string             `json:"name"`
+	Kind         string             `json:"kind"`
+	LastSeenAt   pgtype.Timestamptz `json:"last_seen_at"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	SecretHash   pgtype.Text        `json:"secret_hash"`
+	TokenHash    pgtype.Text        `json:"token_hash"`
+	TokenVersion int64              `json:"token_version"`
 }
 
 type DevicePairing struct {
@@ -192,6 +193,7 @@ type EbookSetting struct {
 	ApiKey         pgtype.Text        `json:"api_key"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	TokenVersion   int64              `json:"token_version"`
 }
 
 type FileVersion struct {
@@ -234,6 +236,7 @@ type MusicSetting struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	TagEditVersioning bool               `json:"tag_edit_versioning"`
+	TokenVersion      int64              `json:"token_version"`
 }
 
 type Node struct {
@@ -360,21 +363,28 @@ type ResourceShare struct {
 }
 
 type SavedItem struct {
-	ID           pgtype.UUID        `json:"id"`
-	UserID       pgtype.UUID        `json:"user_id"`
-	Url          string             `json:"url"`
-	Kind         string             `json:"kind"`
-	Title        string             `json:"title"`
-	Status       string             `json:"status"`
-	ErrorMsg     string             `json:"error_msg"`
-	ContentPath  pgtype.Text        `json:"content_path"`
-	SizeBytes    pgtype.Int8        `json:"size_bytes"`
-	BytesDone    int64              `json:"bytes_done"`
-	Meta         []byte             `json:"meta"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
-	ContentHtml  pgtype.Text        `json:"content_html"`
-	CookieHeader pgtype.Text        `json:"cookie_header"`
+	ID              pgtype.UUID        `json:"id"`
+	UserID          pgtype.UUID        `json:"user_id"`
+	Url             string             `json:"url"`
+	Kind            string             `json:"kind"`
+	Title           string             `json:"title"`
+	Status          string             `json:"status"`
+	ErrorMsg        string             `json:"error_msg"`
+	ContentPath     pgtype.Text        `json:"content_path"`
+	SizeBytes       pgtype.Int8        `json:"size_bytes"`
+	BytesDone       int64              `json:"bytes_done"`
+	Meta            []byte             `json:"meta"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ContentHtml     pgtype.Text        `json:"content_html"`
+	CookieHeader    pgtype.Text        `json:"cookie_header"`
+	CookieExpiresAt pgtype.Timestamptz `json:"cookie_expires_at"`
+}
+
+type ServerBootstrap struct {
+	Singleton bool   `json:"singleton"`
+	Completed bool   `json:"completed"`
+	TokenHash string `json:"token_hash"`
 }
 
 type Setting struct {
@@ -425,6 +435,18 @@ type Tenant struct {
 	ID        pgtype.UUID        `json:"id"`
 	Name      string             `json:"name"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type UploadReservation struct {
+	ID        string             `json:"id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Bytes     int64              `json:"bytes"`
+	TouchedAt pgtype.Timestamptz `json:"touched_at"`
+}
+
+type UsedAuthChallenge struct {
+	TokenHash string             `json:"token_hash"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 }
 
 type User struct {

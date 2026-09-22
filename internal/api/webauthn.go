@@ -46,8 +46,18 @@ func (s *Server) handleWebAuthnList(w http.ResponseWriter, r *http.Request) {
 
 // POST /me/webauthn/register/begin — challenge for navigator.credentials.create().
 func (s *Server) handleWebAuthnRegisterBegin(w http.ResponseWriter, r *http.Request) {
-	options, sessionToken, err := s.auth.BeginWebAuthnRegistration(r.Context(), auth.UserID(r.Context()))
+	var req struct {
+		ApprovalToken string `json:"approval_token"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8192)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 403, "identity confirmation required")
+		return
+	}
+	options, sessionToken, err := s.auth.BeginWebAuthnRegistration(r.Context(), auth.UserID(r.Context()), req.ApprovalToken)
 	switch {
+	case errors.Is(err, auth.ErrApproval):
+		writeError(w, 403, "identity confirmation required")
 	case errors.Is(err, auth.ErrWebAuthnNotConfigured):
 		writeError(w, http.StatusBadRequest, "security keys are unavailable: server has no public domain configured")
 	case err != nil:
@@ -74,6 +84,8 @@ func (s *Server) handleWebAuthnRegisterFinish(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "registration session expired, start over")
 	case errors.Is(err, auth.ErrWebAuthnFailed):
 		writeError(w, http.StatusBadRequest, "could not verify the authenticator")
+	case errors.Is(err, auth.ErrApproval):
+		writeError(w, 403, "identity confirmation required")
 	case errors.Is(err, auth.ErrWebAuthnNotConfigured):
 		writeError(w, http.StatusBadRequest, "security keys are unavailable")
 	case err != nil:
@@ -90,6 +102,8 @@ func (s *Server) handleWebAuthnRegisterFinish(w http.ResponseWriter, r *http.Req
 func (s *Server) handleWebAuthnLoginBegin(w http.ResponseWriter, r *http.Request) {
 	options, sessionToken, err := s.auth.BeginWebAuthnLogin(r.Context())
 	switch {
+	case errors.Is(err, auth.ErrApproval):
+		writeError(w, 403, "identity confirmation required")
 	case errors.Is(err, auth.ErrWebAuthnNotConfigured):
 		writeError(w, http.StatusBadRequest, "passkeys are unavailable: server has no public domain configured")
 	case err != nil:
@@ -152,18 +166,20 @@ func (s *Server) handleWebAuthnRename(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /me/webauthn/{id} — remove an authenticator.
 func (s *Server) handleWebAuthnDelete(w http.ResponseWriter, r *http.Request) {
-	uid, err := db.ParseUUID(auth.UserID(r.Context()))
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid token subject")
+	var req struct {
+		ApprovalToken string `json:"approval_token"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8192)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 403, "identity confirmation required")
 		return
 	}
-	cid, err := db.ParseUUID(r.PathValue("id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
-		return
-	}
-	if err := s.q.DeleteWebAuthnCredential(r.Context(), db.DeleteWebAuthnCredentialParams{ID: cid, UserID: uid}); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+	if err := s.auth.DeletePasskey(r.Context(), auth.UserID(r.Context()), r.PathValue("id"), req.ApprovalToken); err != nil {
+		if errors.Is(err, auth.ErrApproval) {
+			writeError(w, 403, "identity confirmation required")
+		} else {
+			writeError(w, 500, "internal error")
+		}
 		return
 	}
 	s.audit(r.Context(), auth.UserID(r.Context()), "passkey.removed", r, nil)

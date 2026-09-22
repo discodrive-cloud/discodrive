@@ -3,12 +3,12 @@ package opds
 import (
 	"errors"
 	"net/http"
-	"os"
 	"path/filepath"
 
 	"github.com/jackc/pgx/v5"
 
 	"discodrive/internal/db"
+	"discodrive/internal/storage"
 )
 
 // cover handles GET /opds/cover/{bookId}.
@@ -74,7 +74,7 @@ func (h *Handler) serveCover(w http.ResponseWriter, r *http.Request, bookIDStr s
 
 	// Only the DB-sourced cover_path is joined with storageRoot — never a client value.
 	coverPath := filepath.Join(h.storageRoot, book.CoverPath.String)
-	f, err := os.Open(coverPath)
+	f, err := storage.NewLocalDisk(h.storageRoot).Open(book.CoverPath.String)
 	if err != nil {
 		http.NotFound(w, r)
 		return

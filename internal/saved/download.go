@@ -10,7 +10,6 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"strings"
 	"time"
@@ -18,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"discodrive/internal/db"
+	"discodrive/internal/fetchguard"
 	"discodrive/internal/quota"
 )
 
@@ -64,13 +64,18 @@ func (s *Service) processDownload(ctx context.Context, item db.SavedItem) (resul
 	if err != nil {
 		return result{}, err
 	}
-	// The browser session cookie, for sites behind a login. net/http strips
-	// Cookie itself on a cross-domain redirect, so the session cannot leak to
-	// a foreign host.
-	if item.CookieHeader.Valid && item.CookieHeader.String != "" {
-		req.Header.Set("Cookie", item.CookieHeader.String)
+	cookie, err := s.openCookie(item)
+	if err != nil {
+		return result{}, err
 	}
-	resp, err := s.Client.Do(req)
+	client := s.Client
+	if cookie != "" {
+		client, err = fetchguard.WithCookie(s.Client, req, cookie)
+		if err != nil {
+			return result{}, err
+		}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return result{}, err
 	}
@@ -142,11 +147,11 @@ func (s *Service) freeName(dir, name string) (string, error) {
 			candidate = fmt.Sprintf("%s-%d%s", base, i, ext)
 		}
 		rel := dir + "/" + candidate
-		abs, err := s.st.AbsPath(rel)
+		exists, err := s.st.Exists(rel)
 		if err != nil {
 			return "", err
 		}
-		if _, err := os.Stat(abs); errors.Is(err, os.ErrNotExist) {
+		if !exists {
 			return rel, nil
 		}
 	}

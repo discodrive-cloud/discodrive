@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"discodrive/internal/safecontent"
 )
 
 // streamClient proxies on-demand episode audio. Unlike guardedClient it has no
@@ -56,7 +58,13 @@ func ProxyStreamUnsafe(ctx context.Context, client *http.Client, w http.Response
 		return false, fmt.Errorf("podcast: proxy %s: status %d", srcURL, resp.StatusCode)
 	}
 
-	for _, h := range []string{"Content-Type", "Content-Length", "Accept-Ranges", "Content-Range"} {
+	ct, ok := safecontent.Media(resp.Header.Get("Content-Type"))
+	if !ok {
+		return false, fmt.Errorf("podcast: unsupported media type")
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Type", ct)
+	for _, h := range []string{"Content-Length", "Accept-Ranges", "Content-Range"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
 		}

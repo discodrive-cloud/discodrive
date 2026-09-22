@@ -185,13 +185,14 @@ func getCoverArt(h *Handler, c *reqCtx) {
 
 	// The node is an audio file with embedded cover art.
 	absPath := filepath.Join(h.storageRoot, node.DiskPath.String)
-	data, mimeType, ok2 := music.EmbeddedCover(absPath)
+	data, mimeType, ok2 := music.EmbeddedStoredCover(h.storageRoot, absPath)
 	if !ok2 {
 		http.Error(c.w, "no cover", http.StatusNotFound)
 		return
 	}
 
 	// Serve with Range support via bytes.Reader.
+	c.w.Header().Set("X-Content-Type-Options", "nosniff")
 	c.w.Header().Set("Content-Type", mimeType)
 	http.ServeContent(c.w, c.r, node.Name, time.Time{}, bytes.NewReader(data))
 }

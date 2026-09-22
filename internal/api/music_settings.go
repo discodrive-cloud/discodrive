@@ -31,9 +31,10 @@ type musicFolderDTO struct {
 // buildMusicSettingsResponse constructs the response from a MusicSetting row.
 // If the setting has a valid folder_node_id the node is fetched for its name.
 func (s *Server) buildMusicSettingsResponse(r *http.Request, ms db.MusicSetting, uid pgtype.UUID) musicSettingsResponse {
+	version, authenticated := auth.TokenVersion(r.Context())
 	resp := musicSettingsResponse{
 		Enabled:           ms.Enabled,
-		HasPassword:       ms.PasswordCipher.Valid && ms.PasswordCipher.String != "",
+		HasPassword:       authenticated && ms.TokenVersion == version && ms.PasswordCipher.Valid && ms.PasswordCipher.String != "",
 		TagEditVersioning: ms.TagEditVersioning,
 	}
 	if ms.FolderNodeID.Valid {
@@ -179,9 +180,15 @@ func (s *Server) handlePostMusicPassword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	version, ok := auth.TokenVersion(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authorization required")
+		return
+	}
 	if err := s.q.SetMusicCredentials(r.Context(), db.SetMusicCredentialsParams{
 		UserID:         uid,
 		PasswordCipher: pgtype.Text{String: ciphertext, Valid: true},
+		TokenVersion:   version,
 		ApiKey:         pgtype.Text{String: apiKey, Valid: true},
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")

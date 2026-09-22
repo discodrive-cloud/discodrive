@@ -17,6 +17,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"discodrive/internal/db"
+	"discodrive/internal/secret"
 	"discodrive/internal/storage"
 )
 
@@ -50,6 +51,11 @@ func bootstrap(t *testing.T, maxDownloadMB int) (*Service, *pgxpool.Pool, *db.Qu
 	}
 	root := t.TempDir()
 	svc := NewService(q, storage.NewLocalDisk(root), maxDownloadMB)
+	cipher, err := secret.New("0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetCipher(cipher)
 	svc.Client = &http.Client{}
 	svc.Validate = func(string) error { return nil }
 	return svc, pool, q, u.ID, root
@@ -243,7 +249,7 @@ func TestDeleteMidDownloadAbortsAndCleansUp(t *testing.T) {
 // TestDownloadWithCookie: the browser session cookie reaches the request (for
 // sites behind a login) and is wiped from the row once the item is done.
 func TestDownloadWithCookie(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Cookie") != "session=secret42" {
 			http.Error(w, "login required", http.StatusForbidden)
 			return
@@ -254,6 +260,7 @@ func TestDownloadWithCookie(t *testing.T) {
 	defer srv.Close()
 
 	svc, pool, q, uid, root := bootstrap(t, 0)
+	svc.Client = srv.Client()
 
 	// Without the cookie: an honest error from the site.
 	noCookie, _ := svc.Create(context.Background(), uid, srv.URL+"/private", KindDownload, "", "", "")

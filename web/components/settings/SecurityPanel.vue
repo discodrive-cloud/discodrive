@@ -211,13 +211,49 @@ async function loadPasskeys() {
 }
 onMounted(loadPasskeys)
 
+const approvalAction = ref('')
+const approvalPassword = ref('')
+const approvalCode = ref('')
+const approvalError = ref('')
+const approvalBusy = ref(false)
+let resolveApproval: ((token: string | null) => void) | undefined
+function authorizePasskeyAction(action: string): Promise<string | null> {
+  approvalPassword.value = ''; approvalCode.value = ''; approvalError.value = ''
+  approvalAction.value = action
+  return new Promise(resolve => { resolveApproval = resolve })
+}
+function closeApproval(token: string | null = null) {
+  approvalAction.value = ''; approvalPassword.value = ''; approvalCode.value = ''
+  resolveApproval?.(token); resolveApproval = undefined
+}
+useModalEscape(computed(() => !!approvalAction.value), () => { if (!approvalBusy.value) closeApproval() })
+onBeforeUnmount(() => closeApproval())
+async function confirmIdentity(withPasskey: boolean) {
+  approvalBusy.value = true; approvalError.value = ''
+  try {
+    let result: { approval_token: string }
+    if (withPasskey) {
+      const begin = await request<{ options: any; session_token: string }>('/me/webauthn/approval/begin', { method: 'POST', body: { action: approvalAction.value } })
+      const { get } = await import('@github/webauthn-json')
+      const assertion = await get(begin.options)
+      result = await request('/me/webauthn/approval/finish', { method: 'POST', body: { session_token: begin.session_token, assertion } })
+    } else {
+      result = await request('/me/webauthn/approval/password', { method: 'POST', body: { action: approvalAction.value, password: approvalPassword.value, code: approvalCode.value } })
+    }
+    closeApproval(result.approval_token)
+  } catch { approvalError.value = t('passkey.approval_error') }
+  finally { approvalBusy.value = false }
+}
+
 async function addPasskey() {
   passkeyError.value = ''
   passkeyStatus.value = ''
   passkeyBusy.value = true
+  const approval = await authorizePasskeyAction('register')
+  if (!approval) { passkeyBusy.value = false; return }
   let res: { options: { publicKey: Record<string, unknown> }; session_token: string }
   try {
-    res = await request<{ options: { publicKey: Record<string, unknown> }; session_token: string }>('/me/webauthn/register/begin', { method: 'POST' })
+    res = await request<{ options: { publicKey: Record<string, unknown> }; session_token: string }>('/me/webauthn/register/begin', { method: 'POST', body: { approval_token: approval } })
   } catch (e: any) {
     passkeyError.value = e?.data?.error || t('passkey.error_begin')
     passkeyBusy.value = false
@@ -289,7 +325,9 @@ async function deletePasskey(pk: Passkey) {
   if (!(await confirm(t('passkey.confirm_delete'), { message: t('passkey.confirm_delete_msg', { name: pk.name }), confirmText: t('passkey.confirm_delete_btn'), danger: true }))) return
   passkeyError.value = ''
   try {
-    await request(`/me/webauthn/${pk.id}`, { method: 'DELETE' })
+    const approval = await authorizePasskeyAction(`delete:${pk.id}`)
+    if (!approval) return
+    await request(`/me/webauthn/${pk.id}`, { method: 'DELETE', body: { approval_token: approval } })
     await loadPasskeys()
   } catch (e: any) {
     passkeyError.value = e?.data?.error || t('passkey.error_delete')
@@ -299,6 +337,24 @@ async function deletePasskey(pk: Passkey) {
 
 <template>
   <div>
+    <div v-if="approvalAction" class="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4" @click.self="!approvalBusy && closeApproval()">
+      <form class="card w-full max-w-sm p-5" role="dialog" aria-modal="true" aria-labelledby="passkey-approval-title" @submit.prevent="confirmIdentity(false)">
+        <h2 id="passkey-approval-title" class="mb-2 font-semibold">{{ t('passkey.approval_title') }}</h2>
+        <p class="mb-4 text-sm text-muted">{{ t('passkey.approval_description') }}</p>
+        <label class="mb-3 block text-sm">{{ t('passkey.approval_password') }}
+          <input v-model="approvalPassword" type="password" autocomplete="current-password" class="input mt-1 w-full" :disabled="approvalBusy" autofocus />
+        </label>
+        <label v-if="totpEnabled" class="mb-3 block text-sm">{{ t('passkey.approval_code') }}
+          <input v-model="approvalCode" autocomplete="one-time-code" inputmode="numeric" class="input mt-1 w-full" :disabled="approvalBusy" />
+        </label>
+        <p v-if="approvalError" class="mb-3 text-sm text-danger" role="alert">{{ approvalError }}</p>
+        <button v-if="passkeys.length" type="button" class="btn-ghost mb-3 w-full" :disabled="approvalBusy" @click="confirmIdentity(true)">{{ t('passkey.approval_existing') }}</button>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn-ghost" :disabled="approvalBusy" @click="closeApproval()">{{ t('dialog.cancel') }}</button>
+          <button type="submit" class="btn-accent" :disabled="approvalBusy || !approvalPassword">{{ t('passkey.approval_confirm') }}</button>
+        </div>
+      </form>
+    </div>
     <p v-if="error" class="mb-4 flex items-center gap-2 text-sm text-danger">
       <Icon name="lucide:triangle-alert" size="16" /> {{ error }}
     </p>

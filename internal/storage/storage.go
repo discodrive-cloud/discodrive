@@ -8,10 +8,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
+	"sort"
 )
 
 // DiskEntry is a single entry in the on-disk tree (relative path from the root).
@@ -43,10 +42,10 @@ type Storage interface {
 	Truncate(rel string, size int64) error
 	// Remove deletes a path recursively (used by GC; not called on soft-delete).
 	Remove(rel string) error
+	// Exists checks for a regular file or directory without following symlinks.
+	Exists(rel string) (bool, error)
 	// Open opens a file for reading.
 	Open(rel string) (*os.File, error)
-	// AbsPath returns the absolute path (for X-Accel / direct reads).
-	AbsPath(rel string) (string, error)
 	// Walk returns the subtree under rel (parents before children), with relative
 	// paths. Unreadable directories are skipped rather than aborting the walk;
 	// partial reports whether anything was skipped (the listing is incomplete).
@@ -62,30 +61,12 @@ func NewLocalDisk(root string) *LocalDisk {
 	return &LocalDisk{root: filepath.Clean(root)}
 }
 
-// abs safely joins the root and relative path, preventing path escape.
-func (d *LocalDisk) abs(rel string) (string, error) {
-	clean := filepath.Clean("/" + strings.ReplaceAll(rel, "\\", "/"))
-	full := filepath.Join(d.root, clean)
-	if full != d.root && !strings.HasPrefix(full, d.root+string(os.PathSeparator)) {
-		return "", ErrPathEscape
-	}
-	return full, nil
-}
-
 func (d *LocalDisk) WriteFile(rel string, r io.Reader) (int64, string, error) {
-	full, err := d.abs(rel)
-	if err != nil {
-		return 0, "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return 0, "", err
-	}
-	f, err := os.Create(full)
+	f, err := d.openFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, true)
 	if err != nil {
 		return 0, "", err
 	}
 	defer f.Close()
-
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(f, h), r)
 	if err != nil {
@@ -98,65 +79,47 @@ func (d *LocalDisk) WriteFile(rel string, r io.Reader) (int64, string, error) {
 }
 
 func (d *LocalDisk) Mkdir(rel string) error {
-	full, err := d.abs(rel)
+	r, err := d.directory(rel, true)
 	if err != nil {
 		return err
 	}
-	return os.MkdirAll(full, 0o755)
+	return r.Close()
 }
 
 func (d *LocalDisk) Move(oldRel, newRel string) error {
-	oldFull, err := d.abs(oldRel)
+	// Hold both parents open. Rename via their descriptors, without resolving
+	// either original path again (including during concurrent directory swaps).
+	old, oldName, err := d.parent(oldRel, false)
 	if err != nil {
 		return err
 	}
-	newFull, err := d.abs(newRel)
+	defer old.Close()
+	dest, newName, err := d.parent(newRel, true)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(newFull), 0o755); err != nil {
+	defer dest.Close()
+	if err := rejectLink(old, oldName); err != nil {
 		return err
 	}
-	return os.Rename(oldFull, newFull)
+	if err := rejectLink(dest, newName); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return renameAt(old, oldName, dest, newName)
 }
 
 func (d *LocalDisk) Copy(srcRel, dstRel string) error {
-	srcFull, err := d.abs(srcRel)
-	if err != nil {
-		return err
-	}
-	dstFull, err := d.abs(dstRel)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(dstFull), 0o755); err != nil {
-		return err
-	}
-	in, err := os.Open(srcFull)
+	in, err := d.Open(srcRel)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.Create(dstFull)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Sync()
+	_, _, err = d.WriteFile(dstRel, in)
+	return err
 }
 
 func (d *LocalDisk) Append(rel string, r io.Reader) error {
-	full, err := d.abs(rel)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(full, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := d.openFile(rel, os.O_APPEND|os.O_CREATE|os.O_WRONLY, true)
 	if err != nil {
 		return err
 	}
@@ -168,14 +131,15 @@ func (d *LocalDisk) Append(rel string, r io.Reader) error {
 }
 
 func (d *LocalDisk) Size(rel string) (int64, error) {
-	full, err := d.abs(rel)
+	f, err := d.Open(rel)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
 	if err != nil {
 		return 0, err
 	}
-	fi, err := os.Stat(full)
-	if os.IsNotExist(err) {
-		return 0, nil // no chunk staged yet
-	}
+	defer f.Close()
+	fi, err := f.Stat()
 	if err != nil {
 		return 0, err
 	}
@@ -183,69 +147,108 @@ func (d *LocalDisk) Size(rel string) (int64, error) {
 }
 
 func (d *LocalDisk) Truncate(rel string, size int64) error {
-	full, err := d.abs(rel)
+	f, err := d.openFile(rel, os.O_WRONLY, false)
+	if size == 0 && os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	if size == 0 {
-		// Nothing was staged before this chunk: os.Truncate would fail on a file that
-		// Append never got round to creating.
-		if _, err := os.Stat(full); os.IsNotExist(err) {
-			return nil
-		}
-	}
-	return os.Truncate(full, size)
+	defer f.Close()
+	return f.Truncate(size)
 }
 
 func (d *LocalDisk) Remove(rel string) error {
-	full, err := d.abs(rel)
+	r, name, err := d.parent(rel, false)
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(full)
+	defer r.Close()
+	// RemoveAll unlinks symlinks themselves; it never traverses them.
+	return r.RemoveAll(name)
+}
+
+func (d *LocalDisk) Exists(rel string) (bool, error) {
+	r, name, err := d.parent(rel, false)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer r.Close()
+	info, err := r.Lstat(name)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return false, ErrPathEscape
+	}
+	return true, nil
 }
 
 func (d *LocalDisk) Open(rel string) (*os.File, error) {
-	full, err := d.abs(rel)
-	if err != nil {
-		return nil, err
-	}
-	return os.Open(full)
-}
-
-func (d *LocalDisk) AbsPath(rel string) (string, error) {
-	return d.abs(rel)
+	return d.openFile(rel, os.O_RDONLY, false)
 }
 
 func (d *LocalDisk) Walk(rel string) ([]DiskEntry, bool, error) {
-	full, err := d.abs(rel)
-	if err != nil {
-		return nil, false, err
+	r, err := d.directory(rel, false)
+	if os.IsNotExist(err) {
+		return nil, false, nil
 	}
+	if err != nil {
+		return nil, true, err
+	}
+	defer r.Close()
 	var out []DiskEntry
 	partial := false
-	walkErr := filepath.WalkDir(full, func(p string, e fs.DirEntry, err error) error {
+	var walk func(*os.Root, string)
+	walk = func(root *os.Root, prefix string) {
+		f, err := root.Open(".")
 		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
+			partial = true
+			return
+		}
+		entries, err := f.ReadDir(-1)
+		f.Close()
+		if err != nil {
+			partial = true
+			return
+		}
+		// Match filepath.WalkDir's stable ordering and parent-before-child contract.
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		for _, e := range entries {
+			name := e.Name()
+			info, err := root.Lstat(name)
+			if err != nil {
+				partial = true
+				continue
 			}
-			// Unreadable entry: skip its subtree, keep walking the rest.
-			partial = true
-			return nil
+			if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
+				partial = true
+				continue
+			}
+			entryPath := filepath.Join(prefix, name)
+			if info.IsDir() {
+				child, err := childDirectory(root, name, false)
+				if err != nil {
+					partial = true
+					continue
+				}
+				out = append(out, DiskEntry{Rel: filepath.ToSlash(entryPath), IsDir: true})
+				walk(child, entryPath)
+				child.Close()
+			} else {
+				out = append(out, DiskEntry{Rel: filepath.ToSlash(entryPath)})
+			}
 		}
-		if p == full {
-			return nil // skip the root directory itself
-		}
-		r, err := filepath.Rel(d.root, p)
-		if err != nil {
-			partial = true
-			return nil
-		}
-		out = append(out, DiskEntry{Rel: filepath.ToSlash(r), IsDir: e.IsDir()})
-		return nil
-	})
-	if walkErr != nil && !os.IsNotExist(walkErr) {
-		return nil, partial, walkErr
 	}
+	walk(r, rel)
 	return out, partial, nil
 }

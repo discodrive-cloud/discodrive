@@ -46,6 +46,11 @@
     "passkey_error": "No se pudo iniciar sesión con una passkey"
   },
   "setup": {
+    "token_label": "Token de configuración",
+    "token_hint": "Obtenga el token de un solo uso desde la consola del servidor e introdúzcalo aquí.",
+    "error_token": "Compruebe el token de configuración.",
+    "error_closed": "La configuración inicial ya se ha completado. Inicie sesión.",
+    "error_https": "Abra esta página mediante HTTPS antes de enviar el token de configuración.",
     "subtitle": "Primer inicio — cree un administrador.",
     "password_label": "Contraseña",
     "password_again": "Confirmar contraseña",
@@ -633,7 +638,14 @@
     "cancelled": "Registro cancelado — se cerró el aviso del navegador.",
     "registering": "Sigue las indicaciones de tu navegador…",
     "success": "Clave de seguridad añadida correctamente.",
-    "error_insecure": "Las claves de seguridad requieren una conexión segura (HTTPS)."
+    "error_insecure": "Las claves de seguridad requieren una conexión segura (HTTPS).",
+    "approval_title": "Confirme su identidad",
+    "approval_description": "Introduzca su contraseña actual y el código de verificación, o utilice una clave de acceso existente.",
+    "approval_password": "Contraseña actual",
+    "approval_code": "Código del autenticador",
+    "approval_existing": "Usar una clave existente",
+    "approval_confirm": "Confirmar",
+    "approval_error": "No se pudo confirmar su identidad. Revise los datos o utilice una clave existente."
   },
   "audit": {
     "title": "Actividad de seguridad",

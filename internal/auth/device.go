@@ -75,6 +75,10 @@ func (s *Service) DeviceTokenExchange(ctx context.Context, deviceToken string) (
 	if err != nil {
 		return "", err
 	}
+	// Never upgrade an old device credential to the current password generation.
+	if dev.TokenVersion != u.TokenVersion || u.MustChangePassword {
+		return "", ErrDeviceToken
+	}
 	_ = s.q.TouchDevice(ctx, dev.ID)
 	return s.issueForDevice(u, db.UUIDString(dev.ID))
 }

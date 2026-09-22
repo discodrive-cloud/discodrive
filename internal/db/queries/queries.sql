@@ -53,10 +53,12 @@ SELECT u.id, u.email, u.role, u.storage_quota, u.created_at,
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = u.id AND e.disk_path IS NOT NULL
-       ), 0))::bigint AS used
+       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = u.id), 0))::bigint AS used
 FROM users u
 ORDER BY u.created_at;
 
+-- Include published and staged bytes in one snapshot: publication followed by
+-- reservation release must never create a gap between separate usage reads.
 -- Used space of a single user, same definition as ListUsersWithUsage. This is the
 -- number the quota check runs against on every write.
 -- name: UserStorageUsage :one
@@ -70,7 +72,7 @@ SELECT (COALESCE((
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = sqlc.arg(user_id) AND e.disk_path IS NOT NULL
-       ), 0))::bigint AS used;
+       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = sqlc.arg(user_id)), 0))::bigint AS used;
 
 -- The part of a user's occupied space that emptying the trash would release: trashed
 -- files plus the version history that goes with them. Files sit there for TRASH_DAYS,
@@ -93,7 +95,7 @@ SELECT (COALESCE((
            SELECT SUM(size) FROM file_versions
        ), 0) + COALESCE((
            SELECT SUM(size) FROM podcast_episodes WHERE disk_path IS NOT NULL
-       ), 0))::bigint AS used;
+       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0))::bigint AS used;
 
 -- Sum of the quotas handed out to users, optionally excluding one (the user being
 -- edited). NULL exclude_id excludes nobody. Used to keep the handed-out total within
@@ -120,7 +122,7 @@ FROM (
            ), 0) + COALESCE((
                SELECT SUM(e.size) FROM podcast_episodes e
                WHERE e.user_id = usr.id AND e.disk_path IS NOT NULL
-           ), 0))::bigint AS used
+           ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0))::bigint AS used
     FROM users usr
 ) AS fresh
 WHERE u.id = fresh.id AND u.storage_used <> fresh.used;
@@ -132,7 +134,7 @@ UPDATE users SET storage_quota = $2, role = $3 WHERE id = $1 RETURNING *;
 -- + clear the forced-change flag (A.2).
 -- name: UpdatePassword :one
 UPDATE users SET password_hash = $2, token_version = token_version + 1, must_change_password = false
-WHERE id = $1 RETURNING *;
+WHERE id = $1 AND password_hash = sqlc.arg(previous_password_hash) RETURNING *;
 
 -- name: DeleteUser :exec
 DELETE FROM users WHERE id = $1;
@@ -141,8 +143,8 @@ DELETE FROM users WHERE id = $1;
 SELECT count(*) FROM users WHERE role = 'admin';
 
 -- name: CreateDevice :one
-INSERT INTO devices (user_id, name, kind)
-VALUES ($1, $2, $3)
+INSERT INTO devices (user_id, name, kind, token_version)
+VALUES ($1, $2, $3, $4)
 RETURNING *;
 
 -- name: ListDevicesForUser :many
@@ -156,14 +158,14 @@ SELECT * FROM devices WHERE id = $1;
 DELETE FROM devices WHERE id = $1 AND user_id = $2;
 
 -- name: CreateWebdavDevice :one
-INSERT INTO devices (user_id, name, kind, secret_hash)
-VALUES ($1, $2, 'webdav', $3)
+INSERT INTO devices (user_id, name, kind, secret_hash, token_version)
+VALUES ($1, $2, 'webdav', $3, $4)
 RETURNING *;
 
 -- name: ListWebdavDevicesByEmail :many
 SELECT d.* FROM devices d
 JOIN users u ON u.id = d.user_id
-WHERE u.email = $1 AND d.kind = 'webdav' AND d.secret_hash IS NOT NULL;
+WHERE u.email = $1 AND d.kind = 'webdav' AND d.secret_hash IS NOT NULL AND d.token_version = u.token_version AND NOT u.must_change_password;
 
 -- modified_at is the content's own modification time when the client supplies one, so a
 -- photo from 2019 uploaded today reads as 2019. NULL falls back to now(), which is what
@@ -629,7 +631,7 @@ RETURNING id;
 DELETE FROM device_pairings WHERE expires_at < now();
 
 -- name: CreateDesktopDevice :one
-INSERT INTO devices (user_id, name, kind) VALUES ($1, $2, 'desktop')
+INSERT INTO devices (user_id, name, kind, token_version) VALUES ($1, $2, 'desktop', $3)
 RETURNING *;
 
 -- name: SetDeviceTokenHash :exec
@@ -675,8 +677,8 @@ DELETE FROM backup_codes WHERE user_id = $1;
 -- name: ListUnusedBackupCodes :many
 SELECT * FROM backup_codes WHERE user_id = $1 AND used_at IS NULL;
 
--- name: MarkBackupCodeUsed :exec
-UPDATE backup_codes SET used_at = now() WHERE id = $1;
+-- name: MarkBackupCodeUsed :execrows
+UPDATE backup_codes SET used_at = now() WHERE id = $1 AND used_at IS NULL;
 
 -- WebAuthn credentials (A.4). The full go-webauthn Credential is stored as JSON.
 
@@ -693,7 +695,7 @@ UPDATE webauthn_credentials SET name = $3 WHERE id = $1 AND user_id = $2;
 -- name: DeleteWebAuthnCredential :exec
 DELETE FROM webauthn_credentials WHERE id = $1 AND user_id = $2;
 
--- name: UpdateWebAuthnCredential :exec
+-- name: UpdateWebAuthnCredential :execrows
 -- A.5: persist the credential after a login (sign_count bumps; clone detection) + last used.
 UPDATE webauthn_credentials SET credential = $2, last_used_at = now() WHERE credential_id = $1;
 
@@ -704,3 +706,6 @@ INSERT INTO audit_log (user_id, event, ip, user_agent, detail) VALUES ($1, $2, $
 
 -- name: ListAuditLog :many
 SELECT * FROM audit_log WHERE user_id = $1 ORDER BY id DESC LIMIT $2;
+
+-- name: GetUserForAuthUpdate :one
+SELECT * FROM users WHERE id = $1 FOR UPDATE;

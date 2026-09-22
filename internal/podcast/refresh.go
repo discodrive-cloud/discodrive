@@ -60,13 +60,11 @@ func cacheCover(ctx context.Context, q *db.Queries, storageRoot string, ch db.Po
 	}
 	userID := db.UUIDString(ch.UserID)
 	chID := db.UUIDString(ch.ID)
-	dest := filepath.Join(storageRoot, "podcasts", userID, "covers", chID+extWithDot(imageURL))
-	if _, _, _, err := CoverDownloadFunc(ctx, imageURL, dest); err != nil {
+	rel := filepath.Join("podcasts", userID, "covers", chID+extWithDot(imageURL))
+	if _, _, _, err := StoreDownload(storageRoot, rel, func(dest string) (int64, string, string, error) {
+		return CoverDownloadFunc(ctx, imageURL, dest)
+	}); err != nil {
 		log.Printf("discodrive: podcast cover channel=%s: %v", chID, err)
-		return
-	}
-	rel, err := filepath.Rel(storageRoot, dest)
-	if err != nil {
 		return
 	}
 	if err := q.SetPodcastChannelCoverPath(ctx, db.SetPodcastChannelCoverPathParams{

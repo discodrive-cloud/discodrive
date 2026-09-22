@@ -9,6 +9,7 @@ import (
 	"discodrive/internal/auth"
 	"discodrive/internal/music"
 	"discodrive/internal/music/tagwrite"
+	"discodrive/internal/safecontent"
 )
 
 type tagsDTO struct {
@@ -120,16 +121,18 @@ func (s *Server) handleGetMusicTags(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetMusicTagsCover(w http.ResponseWriter, r *http.Request) {
-	data, mime, ok, err := s.tagEditor.Cover(r.Context(), auth.UserID(r.Context()), r.PathValue("id"))
+	data, _, ok, err := s.tagEditor.Cover(r.Context(), auth.UserID(r.Context()), r.PathValue("id"))
 	if err != nil {
 		mapTagErr(w, err)
 		return
 	}
-	if !ok {
+	ct, raster := safecontent.Raster(data)
+	if !ok || !raster {
 		writeError(w, http.StatusNotFound, "no cover")
 		return
 	}
-	w.Header().Set("Content-Type", mime)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Type", ct)
 	w.Write(data)
 }
 

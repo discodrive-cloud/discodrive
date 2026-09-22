@@ -46,6 +46,11 @@
     "passkey_error": "Could not sign in with a passkey"
   },
   "setup": {
+    "token_label": "Setup token",
+    "token_hint": "Retrieve the one-time token from the server console and enter it here.",
+    "error_token": "Please check the setup token.",
+    "error_closed": "Initial setup has already been completed. Please sign in.",
+    "error_https": "Please open this page over HTTPS before submitting the setup token.",
     "subtitle": "First launch — create an administrator.",
     "password_label": "Password",
     "password_again": "Password again",
@@ -588,7 +593,14 @@
     "cancelled": "Registration cancelled — the browser prompt was dismissed.",
     "registering": "Follow the prompt in your browser…",
     "success": "Security key added successfully.",
-    "error_insecure": "Security keys require a secure (HTTPS) connection."
+    "error_insecure": "Security keys require a secure (HTTPS) connection.",
+    "approval_title": "Confirm your identity",
+    "approval_description": "Confirm with your current password and verification code, or an existing passkey.",
+    "approval_password": "Current password",
+    "approval_code": "Authenticator code",
+    "approval_existing": "Use an existing passkey",
+    "approval_confirm": "Confirm",
+    "approval_error": "Could not confirm your identity. Check your details or try an existing passkey."
   },
   "twofa": {
     "title": "Two-factor authentication",

@@ -153,7 +153,12 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = p.ProposedName
 	}
-	dev, err := s.q.CreateDesktopDevice(r.Context(), db.CreateDesktopDeviceParams{UserID: uid, Name: name})
+	version, ok := auth.TokenVersion(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authorization required")
+		return
+	}
+	dev, err := s.q.CreateDesktopDevice(r.Context(), db.CreateDesktopDeviceParams{UserID: uid, Name: name, TokenVersion: version})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return

@@ -12,7 +12,7 @@ import (
 )
 
 const claimSavedItem = `-- name: ClaimSavedItem :execrows
-UPDATE saved_items SET status = 'processing', error_msg = '', updated_at = now()
+UPDATE saved_items SET status = 'processing', error_msg = '', cookie_header = NULL, updated_at = now()
 WHERE id = $1 AND status = 'pending'
 `
 
@@ -22,6 +22,17 @@ func (q *Queries) ClaimSavedItem(ctx context.Context, id pgtype.UUID) (int64, er
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const clearExpiredSavedCookies = `-- name: ClearExpiredSavedCookies :exec
+UPDATE saved_items SET cookie_header = NULL, cookie_expires_at = NULL,
+    status = 'error', error_msg = 'Download credentials expired; submit the download again'
+WHERE cookie_header IS NOT NULL AND cookie_expires_at <= now()
+`
+
+func (q *Queries) ClearExpiredSavedCookies(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, clearExpiredSavedCookies)
+	return err
 }
 
 const deleteFinishedDownloads = `-- name: DeleteFinishedDownloads :execrows
@@ -66,7 +77,7 @@ func (q *Queries) DeleteSavedItemForUser(ctx context.Context, arg DeleteSavedIte
 }
 
 const getSavedItemForUser = `-- name: GetSavedItemForUser :one
-SELECT id, user_id, url, kind, title, status, error_msg, content_path, size_bytes, bytes_done, meta, created_at, updated_at, content_html, cookie_header FROM saved_items WHERE id = $1 AND user_id = $2
+SELECT id, user_id, url, kind, title, status, error_msg, content_path, size_bytes, bytes_done, meta, created_at, updated_at, content_html, cookie_header, cookie_expires_at FROM saved_items WHERE id = $1 AND user_id = $2
 `
 
 type GetSavedItemForUserParams struct {
@@ -93,12 +104,13 @@ func (q *Queries) GetSavedItemForUser(ctx context.Context, arg GetSavedItemForUs
 		&i.UpdatedAt,
 		&i.ContentHtml,
 		&i.CookieHeader,
+		&i.CookieExpiresAt,
 	)
 	return i, err
 }
 
 const listPendingSavedItems = `-- name: ListPendingSavedItems :many
-SELECT id, user_id, url, kind, title, status, error_msg, content_path, size_bytes, bytes_done, meta, created_at, updated_at, content_html, cookie_header FROM saved_items WHERE status = 'pending' ORDER BY created_at LIMIT $1
+SELECT id, user_id, url, kind, title, status, error_msg, content_path, size_bytes, bytes_done, meta, created_at, updated_at, content_html, cookie_header, cookie_expires_at FROM saved_items WHERE status = 'pending' ORDER BY created_at LIMIT $1
 `
 
 func (q *Queries) ListPendingSavedItems(ctx context.Context, limit int32) ([]SavedItem, error) {
@@ -126,6 +138,7 @@ func (q *Queries) ListPendingSavedItems(ctx context.Context, limit int32) ([]Sav
 			&i.UpdatedAt,
 			&i.ContentHtml,
 			&i.CookieHeader,
+			&i.CookieExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -138,7 +151,7 @@ func (q *Queries) ListPendingSavedItems(ctx context.Context, limit int32) ([]Sav
 }
 
 const listSavedItems = `-- name: ListSavedItems :many
-SELECT id, user_id, url, kind, title, status, error_msg, content_path, size_bytes, bytes_done, meta, created_at, updated_at, content_html, cookie_header FROM saved_items
+SELECT id, user_id, url, kind, title, status, error_msg, content_path, size_bytes, bytes_done, meta, created_at, updated_at, content_html, cookie_header, cookie_expires_at FROM saved_items
 WHERE user_id = $1
   AND kind <> 'download'
   AND ($4::text = '' OR kind = $4::text)
@@ -190,6 +203,7 @@ func (q *Queries) ListSavedItems(ctx context.Context, arg ListSavedItemsParams) 
 			&i.UpdatedAt,
 			&i.ContentHtml,
 			&i.CookieHeader,
+			&i.CookieExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -202,7 +216,10 @@ func (q *Queries) ListSavedItems(ctx context.Context, arg ListSavedItemsParams) 
 }
 
 const resetStaleSavedItems = `-- name: ResetStaleSavedItems :execrows
-UPDATE saved_items SET status = 'pending', bytes_done = 0, updated_at = now()
+UPDATE saved_items SET
+ status = CASE WHEN cookie_expires_at IS NOT NULL THEN 'error' ELSE 'pending' END,
+ error_msg = CASE WHEN cookie_expires_at IS NOT NULL THEN 'Please submit the authenticated download again' ELSE '' END,
+ cookie_header = NULL, cookie_expires_at = NULL, bytes_done = 0, updated_at = now()
 WHERE status = 'processing'
 `
 
@@ -236,7 +253,7 @@ const setSavedItemDone = `-- name: SetSavedItemDone :execrows
 UPDATE saved_items
 SET status = 'done', content_path = $2, size_bytes = $3, bytes_done = COALESCE($3, bytes_done),
     title = COALESCE(NULLIF($5::text, ''), title), meta = $4,
-    content_html = NULL, cookie_header = NULL, updated_at = now()
+    content_html = NULL, cookie_header = NULL, cookie_expires_at = NULL, updated_at = now()
 WHERE id = $1 AND status = 'processing'
 `
 
@@ -264,7 +281,7 @@ func (q *Queries) SetSavedItemDone(ctx context.Context, arg SetSavedItemDonePara
 }
 
 const setSavedItemError = `-- name: SetSavedItemError :exec
-UPDATE saved_items SET status = 'error', error_msg = $2, updated_at = now()
+UPDATE saved_items SET status = 'error', error_msg = $2, cookie_header = NULL, cookie_expires_at = NULL, updated_at = now()
 WHERE id = $1
 `
 
@@ -300,13 +317,15 @@ func (q *Queries) UpdateSavedItemProgress(ctx context.Context, arg UpdateSavedIt
 
 const upsertSavedItem = `-- name: UpsertSavedItem :one
 
-INSERT INTO saved_items (user_id, url, kind, title, content_html, cookie_header)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO saved_items (user_id, url, kind, title, content_html, cookie_header, cookie_expires_at)
+VALUES ($1, $2, $3, $4, $5, $6,
+ CASE WHEN $6::text IS NOT NULL THEN now() + interval '15 minutes' END)
 ON CONFLICT (user_id, url, kind) DO UPDATE SET
     content_html = COALESCE(EXCLUDED.content_html, saved_items.content_html),
-    cookie_header = COALESCE(EXCLUDED.cookie_header, saved_items.cookie_header),
+    cookie_header = CASE WHEN saved_items.status IN ('pending', 'error') THEN EXCLUDED.cookie_header END,
+    cookie_expires_at = CASE WHEN saved_items.status IN ('pending', 'error') THEN EXCLUDED.cookie_expires_at WHEN saved_items.status = 'processing' THEN saved_items.cookie_expires_at END,
     updated_at = now()
-RETURNING id, user_id, url, kind, title, status, error_msg, content_path, size_bytes, bytes_done, meta, created_at, updated_at, content_html, cookie_header
+RETURNING id, user_id, url, kind, title, status, error_msg, content_path, size_bytes, bytes_done, meta, created_at, updated_at, content_html, cookie_header, cookie_expires_at
 `
 
 type UpsertSavedItemParams struct {
@@ -347,6 +366,7 @@ func (q *Queries) UpsertSavedItem(ctx context.Context, arg UpsertSavedItemParams
 		&i.UpdatedAt,
 		&i.ContentHtml,
 		&i.CookieHeader,
+		&i.CookieExpiresAt,
 	)
 	return i, err
 }

@@ -3,8 +3,9 @@ package subsonic
 import (
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
+
+	"discodrive/internal/safecontent"
+	"discodrive/internal/storage"
 )
 
 // serveNodeFile streams a node's file with Range support.
@@ -20,13 +21,16 @@ import (
 // In xaccel mode an X-Accel-Redirect header is sent and nginx serves the bytes;
 // the path is URL-escaped (spaces/unicode → %XX, slashes preserved).
 func (h *Handler) serveNodeFile(c *reqCtx, diskPath, name, contentType string) {
-	if contentType != "" {
-		c.w.Header().Set("Content-Type", contentType)
+	ct, ok := safecontent.InlineType(contentType)
+	if !ok {
+		http.Error(c.w, "unsupported media type", http.StatusForbidden)
+		return
 	}
+	c.w.Header().Set("X-Content-Type-Options", "nosniff")
+	c.w.Header().Set("Content-Type", ct)
 
 	if !h.xaccel {
-		abs := filepath.Join(h.storageRoot, diskPath)
-		f, err := os.Open(abs)
+		f, err := storage.NewLocalDisk(h.storageRoot).Open(diskPath)
 		if err != nil {
 			http.Error(c.w, "not found", http.StatusNotFound)
 			return

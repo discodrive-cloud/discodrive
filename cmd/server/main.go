@@ -29,6 +29,7 @@ import (
 	davpkg "discodrive/internal/dav"
 	"discodrive/internal/db"
 	"discodrive/internal/ebook"
+	"discodrive/internal/httpsecurity"
 	"discodrive/internal/kosync"
 	"discodrive/internal/music"
 	"discodrive/internal/notify"
@@ -146,6 +147,10 @@ func securityHeaders(scriptHashes []string, next http.Handler) http.Handler {
 }
 
 func runServer(cfg config.Config) {
+	transport, err := httpsecurity.New(cfg.TrustedProxyCIDRs, cfg.Host, cfg.AllowInsecureHTTP)
+	if err != nil {
+		log.Fatalf("discodrive: transport configuration: %v", err)
+	}
 	if cfg.DatabaseURL == "" {
 		log.Fatal("discodrive: DATABASE_URL is not set")
 	}
@@ -198,7 +203,9 @@ func runServer(cfg config.Config) {
 	// write path allows.
 	quotaChecker := quota.New(queries, cfg.StorageTotalBytes())
 	fileSvc.SetQuota(quotaChecker)
-	uploads.SetQuota(quotaChecker)
+	if err := uploads.SetQuota(quotaChecker); err != nil {
+		log.Fatalf("recover upload accounting: %v", err)
+	}
 	// VERSION_KEEP=0 turns version history off: overwrites replace the file and keep
 	// nothing. The trim job then also clears whatever history is already stored.
 	if cfg.VersionKeep <= 0 {
@@ -210,11 +217,14 @@ func runServer(cfg config.Config) {
 		log.Printf("discodrive: storage capped at %s (STORAGE_TOTAL_GB=%d)", quota.HumanBytes(total), cfg.StorageTotalGB)
 	}
 
-	// Bootstrap admin: token-less onboarding via /app/setup when no admin exists yet.
+	// Initialize the local bootstrap secret before starting workers or HTTP.
+	if err := authSvc.InitBootstrap(ctx, cfg.SetupTokenFile); err != nil {
+		log.Fatalf("discodrive: bootstrap: %v", err)
+	}
 	if needed, err := authSvc.SetupNeeded(ctx); err != nil {
 		log.Fatalf("discodrive: setup check: %v", err)
 	} else if needed {
-		log.Println("discodrive: no admin yet — open /app/setup to create an administrator")
+		log.Printf("discodrive: initial setup required — read token from %s via the server console and open /app/setup over HTTPS", cfg.SetupTokenFile)
 	}
 
 	// Saved items (bookmarks / read-later / server-side downloads). Stale
@@ -222,6 +232,7 @@ func runServer(cfg config.Config) {
 	// reset cannot race live processing goroutines.
 	savedSvc := saved.NewService(queries, store, cfg.SavedMaxDownloadMB)
 	savedSvc.SetQuota(quotaChecker)
+	savedSvc.SetCipher(cipher)
 	if err := savedSvc.RecoverStale(ctx); err != nil {
 		log.Fatalf("discodrive: saved recover: %v", err)
 	}
@@ -262,12 +273,16 @@ func runServer(cfg config.Config) {
 	scriptHashes := inlineScriptHashes(discodrive.WebUI())
 	srv := &http.Server{
 		Addr:              cfg.Addr(),
-		Handler:           securityHeaders(scriptHashes, api.NewRouter(authSvc, queries, fileSvc, uploads, cfg.StorageRoot, cipher, notifier, discodrive.WebUI(), dav, caldavH, carddavH, davSvc, cfg.XAccelEnabled, eventHub, subsonicH, opdsH, kosyncH, tagEditor, metaEditor, savedSvc, bookmarksSvc)),
+		Handler:           transport.Handler(securityHeaders(scriptHashes, api.NewRouter(authSvc, queries, fileSvc, uploads, cfg.StorageRoot, cipher, notifier, discodrive.WebUI(), dav, caldavH, carddavH, davSvc, cfg.XAccelEnabled, eventHub, subsonicH, opdsH, kosyncH, tagEditor, metaEditor, savedSvc, bookmarksSvc))),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {
-		log.Printf("discodrive: listening on http://%s", cfg.Addr())
+		if cfg.AllowInsecureHTTP {
+			log.Printf("discodrive: local development HTTP listening on %s (setup still requires HTTPS)", cfg.Addr())
+		} else {
+			log.Printf("discodrive: private HTTP backend listening on %s; public requests require HTTPS via a trusted proxy", cfg.Addr())
+		}
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("discodrive: server crashed: %v", err)
 		}

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -30,6 +30,7 @@ var (
 
 type uploadSession struct {
 	mu       sync.Mutex
+	closed   bool
 	userID   string
 	parentID *string
 	name     string
@@ -64,7 +65,45 @@ func NewUploads(st Storage, fs *FileService) *Uploads {
 }
 
 // SetQuota installs the quota checker. Called once at startup.
-func (u *Uploads) SetQuota(c *quota.Checker) { u.quota = c }
+func (u *Uploads) SetQuota(c *quota.Checker) error {
+	u.quota = c
+	if c == nil {
+		return nil
+	}
+	// Older binaries kept upload sessions only in memory. Their leftover staged
+	// files cannot be resumed and have no reservation; remove them before serving.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	entries, partial, err := u.st.Walk(".uploads")
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if partial {
+		return errors.New("cannot inspect staged uploads")
+	}
+	for _, entry := range entries {
+		if entry.IsDir {
+			continue
+		}
+		id := strings.TrimPrefix(entry.Rel, ".uploads/")
+		if strings.Contains(id, "/") {
+			return errors.New("unexpected staged upload path")
+		}
+		known, err := c.HasReservation(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !known {
+			if err := u.st.Remove(entry.Rel); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 // uid parses a session's user ID for the quota queries.
 func uid(userID string) (pgtype.UUID, error) {
@@ -102,18 +141,25 @@ func (u *Uploads) init(ctx context.Context, userID string, parentID *string, nam
 	if total < 0 {
 		return "", ErrUploadSize
 	}
-	// Refuse a file that cannot possibly fit before the client starts sending it —
-	// the per-chunk check would otherwise only stop it once the quota is full.
+	id := randomHex()
 	if u.quota != nil {
 		owner, err := uid(userID)
 		if err != nil {
 			return "", err
 		}
+		if parentID != nil && u.fs != nil {
+			_, _, owner, err = u.fs.resolveParent(ctx, userID, parentID)
+			if err != nil {
+				return "", err
+			}
+		}
 		if err := u.quota.Check(ctx, owner, total); err != nil {
 			return "", err
 		}
+		if err := u.quota.CreateReservation(ctx, id, owner); err != nil {
+			return "", err
+		}
 	}
-	id := randomHex()
 	u.mu.Lock()
 	u.m[id] = &uploadSession{userID: userID, parentID: parentID, name: name,
 		relPath: relPath, baseVersion: baseVersion,
@@ -132,37 +178,51 @@ func (u *Uploads) init(ctx context.Context, userID string, parentID *string, nam
 // upload in prod until restart).
 func (u *Uploads) GC(maxAge time.Duration) {
 	cutoff := time.Now().Add(-maxAge)
-	u.mu.Lock()
-	candidates := make(map[string]*uploadSession, len(u.m))
-	maps.Copy(candidates, u.m)
-	u.mu.Unlock()
-
-	var staleIDs []string
-	var stale []*uploadSession
-	for id, s := range candidates {
-		if !s.mu.TryLock() {
-			continue // an in-flight chunk/complete holds the session: it is active
+	if u.quota != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		rows, err := u.quota.StaleReservations(ctx, cutoff)
+		if err != nil {
+			return
 		}
-		idle := s.lastTouch.Before(cutoff)
-		s.mu.Unlock()
-		if idle {
-			staleIDs = append(staleIDs, id)
-			stale = append(stale, s)
+		for _, row := range rows {
+			reservation, err := u.quota.LockReservation(ctx, row.ID)
+			if err != nil {
+				continue
+			}
+			// Re-check after acquiring the upload lock: another instance may have touched it.
+			if reservation.Row.TouchedAt.Time.Before(cutoff) {
+				if err := u.st.Remove(".uploads/" + row.ID); err == nil {
+					if reservation.Release() == nil {
+						u.mu.Lock()
+						delete(u.m, row.ID)
+						u.mu.Unlock()
+					}
+				}
+			}
+			reservation.Close()
 		}
-	}
-	if len(staleIDs) == 0 {
 		return
 	}
-	// A session touched in the window between the idle check and this delete is
-	// dropped anyway: it had been idle past maxAge, the client gets
-	// ErrUploadNotFound on its next request and restarts the upload.
 	u.mu.Lock()
-	for _, id := range staleIDs {
-		delete(u.m, id)
+	candidates := make(map[string]*uploadSession, len(u.m))
+	for id, s := range u.m {
+		candidates[id] = s
 	}
 	u.mu.Unlock()
-	for _, s := range stale {
-		_ = u.st.Remove(s.tmpRel)
+	for id, s := range candidates {
+		if !s.mu.TryLock() {
+			continue
+		}
+		if s.lastTouch.Before(cutoff) && u.st.Remove(s.tmpRel) == nil {
+			s.closed = true
+			s.mu.Unlock()
+			u.mu.Lock()
+			delete(u.m, id)
+			u.mu.Unlock()
+		} else {
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -199,6 +259,9 @@ func (u *Uploads) Chunk(ctx context.Context, id, userID string, n int, r io.Read
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return 0, ErrUploadNotFound
+	}
 	s.lastTouch = time.Now()
 
 	switch {
@@ -209,6 +272,17 @@ func (u *Uploads) Chunk(ctx context.Context, id, userID string, n int, r io.Read
 		_, _ = io.Copy(io.Discard, r)
 		return s.nextChunk, ErrChunkOutOfOrder
 	}
+	var reservation *quota.Reservation
+	if u.quota != nil {
+		reservation, err = u.quota.LockReservation(ctx, id)
+		if err != nil {
+			return s.nextChunk, err
+		}
+		defer reservation.Close()
+		if err := reservation.Touch(); err != nil {
+			return s.nextChunk, err
+		}
+	}
 	// Append writes straight into the staging file, so a body that dies mid-chunk leaves a
 	// partial tail behind. nextChunk does not advance, and the client retries this very
 	// chunk (useUploads.ts does, up to MAX_RETRIES) — appending the full chunk after the
@@ -217,24 +291,28 @@ func (u *Uploads) Chunk(ctx context.Context, id, userID string, n int, r io.Read
 	if err != nil {
 		return s.nextChunk, err
 	}
-	// Staged bytes live in .uploads/, outside the node tree, so the quota sum cannot see
-	// them yet — they are passed as reserved so each chunk is measured against what is
-	// left after the ones already staged. Init has usually caught an oversized file
-	// already; this stops the case Init cannot judge, an upload with no declared size,
-	// and a quota that filled up while the upload was running.
+	// Reconcile a conservative reservation left by a cancelled write only after
+	// checking the actual file under the same cross-process upload lock.
+	if reservation != nil {
+		if before > reservation.Row.Bytes {
+			return s.nextChunk, quota.ErrReservation
+		}
+		if err := reservation.Trim(before); err != nil {
+			return s.nextChunk, err
+		}
+	}
 	limited := io.Reader(r)
-	if u.quota != nil {
-		owner, err := uid(s.userID)
-		if err != nil {
-			return s.nextChunk, err
-		}
-		if limited, err = u.quota.ReaderReserving(ctx, owner, before, r); err != nil {
-			return s.nextChunk, err
-		}
+	if reservation != nil {
+		limited = reservation.Reader(r)
 	}
 	if err := u.st.Append(s.tmpRel, limited); err != nil {
 		if terr := u.st.Truncate(s.tmpRel, before); terr != nil {
 			return s.nextChunk, terr
+		}
+		if reservation != nil {
+			if e := reservation.Trim(before); e != nil {
+				return s.nextChunk, e
+			}
 		}
 		return s.nextChunk, err
 	}
@@ -250,7 +328,21 @@ func (u *Uploads) Chunk(ctx context.Context, id, userID string, n int, r io.Read
 			if terr := u.st.Truncate(s.tmpRel, before); terr != nil {
 				return s.nextChunk, terr
 			}
+			if reservation != nil {
+				if e := reservation.Trim(before); e != nil {
+					return s.nextChunk, e
+				}
+			}
 			return s.nextChunk, ErrUploadSize
+		}
+	}
+	if reservation != nil {
+		actual, e := u.st.Size(s.tmpRel)
+		if e != nil {
+			return s.nextChunk, e
+		}
+		if e = reservation.Trim(actual); e != nil {
+			return s.nextChunk, e
 		}
 	}
 	s.nextChunk++
@@ -265,6 +357,20 @@ func (u *Uploads) Status(id, userID string) (int, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return 0, ErrUploadNotFound
+	}
+	if u.quota != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		exists, err := u.quota.HasReservation(ctx, id)
+		if err != nil {
+			return 0, err
+		}
+		if !exists {
+			return 0, ErrUploadNotFound
+		}
+	}
 	return s.nextChunk, nil
 }
 
@@ -277,6 +383,32 @@ func (u *Uploads) Complete(ctx context.Context, id, userID string) (PushResult, 
 		return PushResult{}, err
 	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return PushResult{}, ErrUploadNotFound
+	}
+	fs := u.fs
+	var reservation *quota.Reservation
+	if u.quota != nil {
+		reservation, err = u.quota.LockReservation(ctx, id)
+		if err != nil {
+			s.mu.Unlock()
+			return PushResult{}, err
+		}
+		defer reservation.Close()
+		if err := reservation.Touch(); err != nil {
+			s.mu.Unlock()
+			return PushResult{}, err
+		}
+		actual, err := u.st.Size(s.tmpRel)
+		if err != nil {
+			s.mu.Unlock()
+			return PushResult{}, err
+		}
+		ctx = reservation.WithCredit(ctx, actual)
+		fs = &FileService{pool: reservation.Connection(), q: reservation.Queries(), st: u.fs.st, quota: reservation.Checker(), noVersions: u.fs.noVersions}
+	}
+
 	// Verify before publishing: without this the session happily pushes whatever chunks
 	// happened to land, and Push computes content_hash over those bytes — so a short or
 	// duplicated upload is self-consistent and no later integrity check can spot it.
@@ -298,10 +430,10 @@ func (u *Uploads) Complete(ctx context.Context, id, userID string) (PushResult, 
 	}
 	var res PushResult
 	if s.relPath != "" {
-		res, err = u.fs.PushByPathWithMeta(ctx, s.userID, s.relPath, s.baseVersion, f,
+		res, err = fs.PushByPathWithMeta(ctx, s.userID, s.relPath, s.baseVersion, f,
 			PushMeta{ModifiedAt: s.modifiedAt})
 	} else {
-		res, err = u.fs.PushWithMeta(ctx, s.userID, s.parentID, s.name, s.baseVersion, "", f,
+		res, err = fs.PushWithMeta(ctx, s.userID, s.parentID, s.name, s.baseVersion, "", f,
 			PushMeta{ModifiedAt: s.modifiedAt})
 	}
 	_ = f.Close()
@@ -309,7 +441,10 @@ func (u *Uploads) Complete(ctx context.Context, id, userID string) (PushResult, 
 		s.mu.Unlock()
 		return PushResult{}, err
 	}
-	_ = u.st.Remove(s.tmpRel)
+	if removeErr := u.st.Remove(s.tmpRel); removeErr == nil && reservation != nil {
+		_ = reservation.Release()
+	}
+	s.closed = true
 	s.mu.Unlock()
 
 	u.mu.Lock()
@@ -320,15 +455,36 @@ func (u *Uploads) Complete(ctx context.Context, id, userID string) (PushResult, 
 
 // Abort cancels an upload: removes the temp file and session. Unknown or foreign ID → no-op.
 func (u *Uploads) Abort(userID, id string) {
+	s, err := u.get(id, userID)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	if u.quota != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r, err := u.quota.LockReservation(ctx, id)
+		if err != nil {
+			return
+		}
+		defer r.Close()
+		if u.st.Remove(s.tmpRel) != nil {
+			return
+		}
+		if r.Release() != nil {
+			return
+		}
+	} else if u.st.Remove(s.tmpRel) != nil {
+		return
+	}
+	s.closed = true
 	u.mu.Lock()
-	s, ok := u.m[id]
-	if ok && s.userID == userID {
-		delete(u.m, id)
-	}
+	delete(u.m, id)
 	u.mu.Unlock()
-	if ok && s.userID == userID {
-		_ = u.st.Remove(s.tmpRel)
-	}
 }
 
 func randomHex() string {

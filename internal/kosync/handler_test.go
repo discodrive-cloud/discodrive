@@ -380,3 +380,23 @@ func TestSyncsGetIsolation(t *testing.T) {
 		t.Errorf("user2 should see empty {}, got %q (isolation broken)", body2)
 	}
 }
+
+func TestCredentialsRevokedOnPasswordChange(t *testing.T) {
+	h, q, uid, _, _, ctx := setupKosync(t)
+	probe := func() int {
+		return doRequest(h, http.MethodGet, "/users/auth", testEmail1, md5Key(testPassword), nil).Code
+	}
+	if code := probe(); code != 200 {
+		t.Fatalf("before change: %d", code)
+	}
+	u, err := q.GetUserByID(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: uid, PasswordHash: "changed", PreviousPasswordHash: u.PasswordHash}); err != nil {
+		t.Fatal(err)
+	}
+	if code := probe(); code != 401 {
+		t.Fatalf("old ebook credential accepted: %d", code)
+	}
+}
