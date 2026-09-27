@@ -20,6 +20,11 @@ func init() {
 // Cover extraction is out of scope — CoverData is always nil.
 // When the Info dict is absent or Title is empty the caller (ReadMeta) falls
 // back to the filename.
+// pdfcpu otherwise creates a config directory under $HOME on first use and aborts the
+// whole process when it cannot (a service user without a writable home, a read-only
+// container root). Its defaults are all we need.
+func init() { pdfapi.DisableConfigDir() }
+
 func parsePDF(path string) (Meta, error) {
 	f, err := os.Open(path)
 	if err != nil {
