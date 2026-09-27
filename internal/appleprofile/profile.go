@@ -22,6 +22,11 @@ type Options struct {
 // for the app password during installation; credentials do not enter download URLs
 // or an unencrypted configuration profile.
 func Build(o Options) ([]byte, error) {
+	return build(o, "")
+}
+
+// Password-bearing output must stay in memory and be encrypted before delivery.
+func build(o Options, password string) ([]byte, error) {
 	u, err := url.Parse(o.ServerURL)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return nil, errors.New("an HTTPS server origin is required")
@@ -72,6 +77,9 @@ func Build(o Options) ([]byte, error) {
 		integer(item.key+"Port", port)
 		text(item.key+"PrincipalURL", strings.TrimRight(o.ServerURL, "/")+"/"+item.path+"/"+url.PathEscape(o.UserID)+"/")
 		text(item.key+"Username", o.Email)
+		if password != "" {
+			text(item.key+"Password", password)
+		}
 		b.WriteString("<key>" + item.key + "UseSSL</key><true/></dict>")
 	}
 	b.WriteString("</array></dict></plist>")
