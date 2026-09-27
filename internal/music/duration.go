@@ -1,6 +1,7 @@
 package music
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"io"
@@ -36,7 +37,9 @@ func probeMP3(path string) (durationSec int, bitrateKbps int) {
 	}
 	defer f.Close()
 
-	d := mp3.NewDecoder(f)
+	// Buffered: the decoder reads every frame in small pieces, and on a bare *os.File
+	// each of them is a syscall — that dominated the first scan of a library.
+	d := mp3.NewDecoder(bufio.NewReaderSize(f, 64<<10))
 	var totalNs float64
 	var frame mp3.Frame
 	var skipped int

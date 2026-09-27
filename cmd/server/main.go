@@ -172,7 +172,11 @@ func runServer(cfg config.Config) {
 		log.Fatalf("discodrive: migrations: %v", err)
 	}
 
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	poolCfg, err := db.PoolConfig(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("discodrive: DATABASE_URL: %v", err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		log.Fatalf("discodrive: connecting to database: %v", err)
 	}

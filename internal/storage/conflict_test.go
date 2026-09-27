@@ -19,6 +19,12 @@ func i64(v int64) *int64 { return &v }
 // a ready FileService + Queries + test user ID + disk root.
 func setupFS(t *testing.T) (*storage.FileService, *db.Queries, string, string) {
 	t.Helper()
+	return setupFSWith(t, nil)
+}
+
+// setupFSWith is setupFS with the disk wrapped by wrap (nil = plain LocalDisk).
+func setupFSWith(t *testing.T, wrap func(storage.Storage) storage.Storage) (*storage.FileService, *db.Queries, string, string) {
+	t.Helper()
 	ctx := context.Background()
 
 	pgC, err := tcpostgres.Run(ctx, "postgres:16-alpine",
@@ -57,7 +63,11 @@ func setupFS(t *testing.T) (*storage.FileService, *db.Queries, string, string) {
 		t.Fatalf("user: %v", err)
 	}
 	root := t.TempDir()
-	fs := storage.NewFileService(pool, storage.NewLocalDisk(root))
+	var st storage.Storage = storage.NewLocalDisk(root)
+	if wrap != nil {
+		st = wrap(st)
+	}
+	fs := storage.NewFileService(pool, st)
 	return fs, q, db.UUIDString(user.ID), root
 }
 

@@ -418,17 +418,30 @@ func (w *Worker) storedAlertLevel(ctx context.Context) quota.Level {
 	return quota.Level(n)
 }
 
-// addRecursive adds a directory and all its subdirectories to the watcher, skipping
-// the internal .versions/.tmp directories (they are outside the tree mirror).
+// addRecursive adds a directory and all its subdirectories to the watcher.
 func (w *Worker) addRecursive(watcher *fsnotify.Watcher, dir string) {
+	for _, p := range watchDirs(dir) {
+		_ = watcher.Add(p)
+	}
+}
+
+// watchDirs lists dir and its subdirectories that belong to the tree mirror. Service
+// areas are skipped: .versions/.tmp are outside the mirror, and .uploads (staged
+// chunks) and .bootstrap are written by the service itself — watching them made every
+// uploaded chunk trigger a full rescan.
+func watchDirs(dir string) []string {
+	var dirs []string
 	_ = filepath.WalkDir(dir, func(p string, e os.DirEntry, err error) error {
 		if err != nil || !e.IsDir() {
 			return nil
 		}
-		if base := filepath.Base(p); strings.HasPrefix(base, ".versions") || strings.HasPrefix(base, ".tmp") {
+		base := filepath.Base(p)
+		if strings.HasPrefix(base, ".versions") || strings.HasPrefix(base, ".tmp") ||
+			base == ".uploads" || base == ".bootstrap" {
 			return filepath.SkipDir
 		}
-		_ = watcher.Add(p)
+		dirs = append(dirs, p)
 		return nil
 	})
+	return dirs
 }

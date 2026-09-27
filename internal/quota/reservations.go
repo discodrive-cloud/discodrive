@@ -99,14 +99,24 @@ func (c *Checker) StaleReservations(ctx context.Context, cutoff time.Time) ([]db
 	return c.q.ListStaleUploadReservations(ctx, pgtype.Timestamptz{Time: cutoff, Valid: true})
 }
 
+// ReserveBlock is how far ahead of the data a reservation is charged. Accounting takes
+// the global quota lock, so it runs once per block rather than once per Read (~32 KiB);
+// writers trim the reservation to the real size once the data is on disk.
+const ReserveBlock = 4 << 20
+
 type reservationReader struct {
 	reservation *Reservation
 	source      io.Reader
+	prepaid     int64 // reserved but not yet read
 }
 
 func (r *reservationReader) Read(p []byte) (int, error) {
 	n, readErr := r.source.Read(p)
 	if n == 0 {
+		return n, readErr
+	}
+	if int64(n) <= r.prepaid {
+		r.prepaid -= int64(n)
 		return n, readErr
 	}
 	v := r.reservation
@@ -129,15 +139,21 @@ func (r *reservationReader) Read(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if int64(n) > available {
+	need := int64(n) - r.prepaid
+	if need > available {
 		return 0, exceeded(available)
 	}
-	if err = q.AddUploadReservation(v.ctx, db.AddUploadReservationParams{ID: v.Row.ID, Bytes: int64(n)}); err != nil {
+	// Reserve a block ahead, but take at most half of what is left: near the edge of
+	// the quota a parallel upload of the same user must not be refused over bytes this
+	// one has not even read yet.
+	grant := max(need, min(ReserveBlock, available/2))
+	if err = q.AddUploadReservation(v.ctx, db.AddUploadReservationParams{ID: v.Row.ID, Bytes: grant}); err != nil {
 		return 0, err
 	}
 	if err = tx.Commit(v.ctx); err != nil {
 		return 0, err
 	}
+	r.prepaid += grant - int64(n)
 	return n, readErr
 }
 
