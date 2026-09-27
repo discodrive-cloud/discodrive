@@ -26,10 +26,11 @@ const davCacheMax = 4096
 // the current database row (device present, same secret hash, token version and
 // password-change state still valid), so revocation takes effect on the next request.
 type davCache struct {
-	mu      sync.Mutex
-	key     []byte
-	entries map[[sha256.Size]byte]davCacheEntry
-	now     func() time.Time
+	mu       sync.Mutex
+	key      []byte
+	entries  map[[sha256.Size]byte]davCacheEntry
+	inflight map[[sha256.Size]byte]chan struct{} // Argon2 checks running per credentials
+	now      func() time.Time
 }
 
 type davCacheEntry struct {
@@ -42,7 +43,8 @@ func newDAVCache() *davCache {
 	if _, err := rand.Read(key); err != nil {
 		panic(err) // crypto/rand never fails on supported platforms
 	}
-	return &davCache{key: key, entries: make(map[[sha256.Size]byte]davCacheEntry), now: time.Now}
+	return &davCache{key: key, entries: make(map[[sha256.Size]byte]davCacheEntry),
+		inflight: make(map[[sha256.Size]byte]chan struct{}), now: time.Now}
 }
 
 func (c *davCache) id(email, password string) [sha256.Size]byte {
@@ -88,6 +90,27 @@ func (c *davCache) store(email, password string, e davCacheEntry) {
 		}
 	}
 	c.entries[id] = e
+}
+
+// begin claims the Argon2 check of these credentials. If another request is already
+// checking them, it returns that check's completion channel instead (and no done):
+// wait on it and look the cache up again. Otherwise the caller runs the check and must
+// call done afterwards.
+func (c *davCache) begin(email, password string) (running <-chan struct{}, done func()) {
+	id := c.id(email, password)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ch, ok := c.inflight[id]; ok {
+		return ch, nil
+	}
+	ch := make(chan struct{})
+	c.inflight[id] = ch
+	return nil, func() {
+		c.mu.Lock()
+		delete(c.inflight, id)
+		c.mu.Unlock()
+		close(ch)
+	}
 }
 
 func (c *davCache) len() int {

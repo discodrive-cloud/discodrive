@@ -171,3 +171,23 @@ func TestDAVCacheIsBounded(t *testing.T) {
 		t.Fatalf("cache holds %d entries, max %d", n, davCacheMax)
 	}
 }
+
+// A client opening a connection sends a burst of requests with the same credentials.
+// They used to queue for Argon2 one by one (two slots, one second of patience) and
+// most got 429; concurrent checks of the same credentials now share one Argon2 run.
+func TestDAVCacheSharesConcurrentChecks(t *testing.T) {
+	f := newDAVFixture(t)
+	const burst = 8
+	results := make(chan bool, burst)
+	for range burst {
+		go func() { results <- f.check(f.password) }()
+	}
+	for range burst {
+		if !<-results {
+			t.Fatal("a request of the burst was rejected")
+		}
+	}
+	if n := f.argon2.Load(); n != 1 {
+		t.Fatalf("Argon2 ran %d times for a burst of %d, want 1", n, burst)
+	}
+}

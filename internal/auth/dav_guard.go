@@ -121,6 +121,25 @@ func (s *Service) checkDAVPassword(ctx context.Context, email, password, peer st
 	if uid, did, ok := s.cachedWebdavPassword(ctx, email, password); ok {
 		return uid, did, nil
 	}
+	// A client's burst of requests carries the same credentials: let one of them run
+	// Argon2 and the rest wait for its result instead of queueing for their own.
+	if s.davCache != nil {
+		running, finish := s.davCache.begin(email, password)
+		if running != nil {
+			select {
+			case <-running:
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			}
+			if uid, did, ok := s.cachedWebdavPassword(ctx, email, password); ok {
+				return uid, did, nil
+			}
+			// The shared check did not succeed (wrong password, busy, cancelled):
+			// check on our own, under the normal guard.
+		} else {
+			defer finish()
+		}
+	}
 	done, err := s.davGuard.begin(ctx, peer)
 	if err != nil {
 		return "", "", err
