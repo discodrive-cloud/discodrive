@@ -518,10 +518,16 @@ func (s *Server) handleCreateFolder(w http.ResponseWriter, r *http.Request) {
 // stream unbounded data and exhaust disk/memory. Larger files use the chunked path.
 const maxMultipartUpload = 10 << 30 // 10 GiB
 
+// multipartMemory is how much of a multipart body is held in RAM; larger file parts
+// spill to a temp file. Parsing happens before the concurrent-upload limit applies, so
+// the old 32 MiB (x2 with buffer growth) per request let a few parallel uploads
+// exhaust memory.
+const multipartMemory = 1 << 20
+
 // POST /files/upload (multipart: file, [name], [parent_id])
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxMultipartUpload)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	if err := r.ParseMultipartForm(multipartMemory); err != nil {
 		writeError(w, http.StatusBadRequest, "expected multipart/form-data")
 		return
 	}
