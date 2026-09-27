@@ -15,10 +15,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-var ErrApproval = errors.New("confirm your identity to manage passkeys")
+var ErrApproval = errors.New("confirm your identity to manage authentication")
 
-func validPasskeyAction(action string) bool {
-	if action == "register" {
+func validApprovalAction(action string) bool {
+	if action == "register" || action == "totp:setup" {
 		return true
 	}
 	id, ok := strings.CutPrefix(action, "delete:")
@@ -30,7 +30,7 @@ func validPasskeyAction(action string) bool {
 }
 
 func (s *Service) issueApproval(u db.User, action string) (string, error) {
-	if !validPasskeyAction(action) {
+	if !validApprovalAction(action) {
 		return "", ErrApproval
 	}
 	id, err := newDeviceCode()
@@ -45,7 +45,7 @@ func (s *Service) issueApproval(u db.User, action string) (string, error) {
 // ApprovePasskeyWithPassword requires the user's existing factors, not just a session.
 func (s *Service) ApprovePasskeyWithPassword(ctx context.Context, userID, password, code, action string) (string, error) {
 	uid, err := db.ParseUUID(userID)
-	if err != nil || !validPasskeyAction(action) {
+	if err != nil || !validApprovalAction(action) {
 		return "", ErrApproval
 	}
 	u, err := s.q.GetUserByID(ctx, uid)
@@ -81,7 +81,7 @@ func (s *Service) BeginPasskeyApproval(ctx context.Context, userID, action strin
 	if s.wa == nil {
 		return nil, "", ErrWebAuthnNotConfigured
 	}
-	if !validPasskeyAction(action) {
+	if !validApprovalAction(action) {
 		return nil, "", ErrApproval
 	}
 	uid, err := db.ParseUUID(userID)
@@ -113,7 +113,7 @@ func (s *Service) BeginPasskeyApproval(ctx context.Context, userID, action strin
 
 func (s *Service) FinishPasskeyApproval(ctx context.Context, userID, token string, assertion []byte) (string, error) {
 	c, err := s.issuer.parseWebAuthnSession(token)
-	if err != nil || c.Pur != "webauthn-approval" || c.Subject != userID || !validPasskeyAction(c.Action) {
+	if err != nil || c.Pur != "webauthn-approval" || c.Subject != userID || !validApprovalAction(c.Action) {
 		return "", ErrApproval
 	}
 	res, err := s.finishWebAuthnLogin(ctx, token, assertion, "webauthn-approval")

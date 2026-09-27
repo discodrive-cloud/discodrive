@@ -46,7 +46,11 @@ func TestPasskeyApprovalRequiresExistingFactors(t *testing.T) {
 	if _, err := svc.ApprovePasskeyWithPassword(ctx, uid, "wrong", "", "register"); !errors.Is(err, auth.ErrApproval) {
 		t.Fatalf("wrong password: %v", err)
 	}
-	_, key, err := svc.SetupTOTP(ctx, uid)
+	enrollmentApproval, err := svc.ApprovePasskeyWithPassword(ctx, uid, "password12", "", "totp:setup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, key, err := svc.SetupTOTP(ctx, uid, enrollmentApproval)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +58,7 @@ func TestPasskeyApprovalRequiresExistingFactors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ConfirmTOTP(ctx, uid, code); err != nil {
+	if _, err := svc.ConfirmTOTP(ctx, uid, code, enrollmentApproval); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.ApprovePasskeyWithPassword(ctx, uid, "password12", "", "register"); !errors.Is(err, auth.ErrApproval) {

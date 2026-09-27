@@ -9,8 +9,9 @@ import (
 
 // Claims is the JWT payload. Subject = user_id.
 type Claims struct {
-	TenantID string `json:"tid"`
-	Role     string `json:"role"`
+	SessionID string `json:"sid,omitempty"`
+	TenantID  string `json:"tid"`
+	Role      string `json:"role"`
 	// Ver is the token version at issue time (users.token_version). A password change
 	// increments the counter in the DB, causing old tokens to stop matching → 401.
 	Ver int64 `json:"ver"`
@@ -41,8 +42,8 @@ func NewTokenIssuer(secret string, ttl time.Duration) *TokenIssuer {
 
 // Issue issues a JWT with the issuer's default TTL. deviceID is non-empty only for
 // sync-device tokens (daemon); pass "" for web sessions.
-func (t *TokenIssuer) Issue(userID, tenantID, role string, ver int64, deviceID string) (string, error) {
-	return t.IssueTTL(userID, tenantID, role, ver, deviceID, t.ttl)
+func (t *TokenIssuer) Issue(userID, tenantID, role string, ver int64, deviceID string, sessionID ...string) (string, error) {
+	return t.IssueTTL(userID, tenantID, role, ver, deviceID, t.ttl, sessionID...)
 }
 
 // IssueTTL is Issue with an explicit lifetime — the session length the user chose for
@@ -50,7 +51,7 @@ func (t *TokenIssuer) Issue(userID, tenantID, role string, ver int64, deviceID s
 // all: the user asked never to be signed out. Such a token is still revocable, since
 // the middleware re-checks users.token_version (bumped by a password change), the role
 // and, for devices, whether the device still exists on every single request.
-func (t *TokenIssuer) IssueTTL(userID, tenantID, role string, ver int64, deviceID string, ttl time.Duration) (string, error) {
+func (t *TokenIssuer) IssueTTL(userID, tenantID, role string, ver int64, deviceID string, ttl time.Duration, sessionID ...string) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		TenantID: tenantID,
@@ -61,6 +62,9 @@ func (t *TokenIssuer) IssueTTL(userID, tenantID, role string, ver int64, deviceI
 			Subject:  userID,
 			IssuedAt: jwt.NewNumericDate(now),
 		},
+	}
+	if len(sessionID) == 1 {
+		claims.SessionID = sessionID[0]
 	}
 	if ttl > 0 {
 		claims.ExpiresAt = jwt.NewNumericDate(now.Add(ttl))
@@ -111,7 +115,7 @@ const streamTokenTTL = time.Hour
 // IssueStream issues a purpose=stream-v2 token scoped to a single node. It grants no
 // session access (the main middleware rejects non-empty purposes); only the stream
 // endpoint accepts it, and that endpoint re-checks node access on every request.
-func (t *TokenIssuer) IssueStream(userID, nodeID string, ver int64, deviceID string) (string, error) {
+func (t *TokenIssuer) IssueStream(userID, nodeID string, ver int64, deviceID string, sessionID ...string) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		Ver:      ver,
@@ -123,6 +127,9 @@ func (t *TokenIssuer) IssueStream(userID, nodeID string, ver int64, deviceID str
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(streamTokenTTL)),
 		},
+	}
+	if len(sessionID) == 1 {
+		claims.SessionID = sessionID[0]
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(t.secret)
 }
@@ -204,4 +211,27 @@ func (t *TokenIssuer) Parse(tokenStr string) (*Claims, error) {
 		return nil, errors.New("WebAuthn ceremony is not an access token")
 	}
 	return claims, nil
+}
+
+// logoutClaims ignores expiry only: an expired browser token can still revoke its
+// own session, but cannot authorize ordinary requests or bypass signature checks.
+type logoutClaims struct{ Claims }
+
+func (*logoutClaims) GetExpirationTime() (*jwt.NumericDate, error) { return nil, nil }
+
+func (t *TokenIssuer) parseLogout(tokenStr string) (*Claims, error) {
+	claims := &logoutClaims{}
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(tok *jwt.Token) (any, error) {
+		if _, ok := tok.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected JWT signing method")
+		}
+		return t.secret, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if claims.Pur != "" || claims.LegacyWebAuthn != "" || claims.DeviceID != "" || claims.SessionID == "" {
+		return nil, ErrInvalidCreds
+	}
+	return &claims.Claims, nil
 }

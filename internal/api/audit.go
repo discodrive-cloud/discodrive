@@ -70,6 +70,8 @@ func (s *Server) handleRegenerateBackupCodes(w http.ResponseWriter, r *http.Requ
 	uid := auth.UserID(r.Context())
 	codes, err := s.auth.RegenerateBackupCodes(r.Context(), uid, req.Code)
 	switch {
+	case errors.Is(err, auth.ErrApproval):
+		writeError(w, http.StatusUnauthorized, "session expired; sign in again")
 	case errors.Is(err, auth.ErrInvalidTOTPCode):
 		writeError(w, http.StatusBadRequest, "invalid code")
 	case err != nil:

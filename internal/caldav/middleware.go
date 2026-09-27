@@ -3,11 +3,13 @@ package caldav
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 
 	"discodrive/internal/auth"
 	"discodrive/internal/db"
+	"discodrive/internal/httpsecurity"
 )
 
 const maxBody = 1 << 20 // 1 MB per object
@@ -25,16 +27,22 @@ func Handler(authSvc *auth.Service, settings SettingsReader, backend *Backend, d
 			http.Error(w, "CalDAV disabled", http.StatusForbidden)
 			return
 		}
-		email, pass, ok := r.BasicAuth()
-		if !ok {
+		uid, _, err := authSvc.AuthenticateDAV(r)
+		if errors.Is(err, auth.ErrDAVBusy) {
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "authentication temporarily limited; retry later", http.StatusTooManyRequests)
+			return
+		}
+		if err != nil {
 			unauthorized(w)
 			return
 		}
-		uid, _, ok := authSvc.VerifyWebdavPassword(r.Context(), email, pass)
+
+		raw, ok := httpsecurity.ReadDAVBody(w, r, maxBody)
 		if !ok {
-			unauthorized(w)
 			return
 		}
+		r.Body = io.NopCloser(bytes.NewReader(raw))
 		ctx := WithUserID(r.Context(), uid)
 		// PROPPATCH is not implemented by go-webdav (returns 501), which breaks Apple clients.
 		// We handle it ourselves with a no-op 207 response (see proppatch.go).
@@ -49,14 +57,9 @@ func Handler(authSvc *auth.Service, settings SettingsReader, backend *Backend, d
 			return
 		}
 		if r.Method == http.MethodPut {
-			raw, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
-			if err != nil {
-				http.Error(w, "error reading body", http.StatusBadRequest)
-				return
-			}
 			ctx = WithRawBody(ctx, raw)
-			r.Body = io.NopCloser(bytes.NewReader(raw))
 		}
+
 		dav.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

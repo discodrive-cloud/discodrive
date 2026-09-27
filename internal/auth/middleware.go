@@ -16,6 +16,7 @@ const (
 	ctxRole
 	ctxDeviceID
 	ctxTokenVersion
+	ctxSessionID
 )
 
 // Middleware requires a valid Bearer JWT and injects user_id/tenant_id/role into the context.
@@ -82,6 +83,10 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 				return
 			}
 		}
+		if claims.DeviceID == "" && (claims.SessionID == "" || s.sessionActive == nil || !s.sessionActive(r.Context(), claims)) {
+			writeUnauthorized(w, "session has been revoked; sign in again")
+			return
+		}
 		// Sliding session: on every authorized request we renew the token
 		// (new exp = now+TTL) and return it in X-Token; the client saves it. Idle
 		// longer than TTL → token expires → must log in again. We preserve device_id,
@@ -94,7 +99,7 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 		if claims.DeviceID == "" {
 			ttl = SessionTTL(u.SessionTtlMinutes)
 		}
-		if fresh, e := s.issuer.IssueTTL(claims.Subject, claims.TenantID, u.Role, u.TokenVersion, claims.DeviceID, ttl); e == nil {
+		if fresh, e := s.issuer.IssueTTL(claims.Subject, claims.TenantID, u.Role, u.TokenVersion, claims.DeviceID, ttl, claims.SessionID); e == nil {
 			w.Header().Set("X-Token", fresh)
 		}
 		// Authed responses carry a per-request X-Token, so they must never be cached:
@@ -108,6 +113,7 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, ctxRole, u.Role)
 		ctx = context.WithValue(ctx, ctxDeviceID, claims.DeviceID)
 		ctx = context.WithValue(ctx, ctxTokenVersion, claims.Ver)
+		ctx = context.WithValue(ctx, ctxSessionID, claims.SessionID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -135,7 +141,8 @@ func Role(ctx context.Context) string     { v, _ := ctx.Value(ctxRole).(string);
 func passwordChangeExempt(r *http.Request) bool {
 	p := r.URL.Path
 	return (r.Method == http.MethodGet && p == "/me") ||
-		(r.Method == http.MethodPut && p == "/me/password")
+		(r.Method == http.MethodPut && p == "/me/password") ||
+		(r.Method == http.MethodPost && p == "/auth/logout")
 }
 
 func writeUnauthorized(w http.ResponseWriter, msg string) {

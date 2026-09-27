@@ -92,6 +92,7 @@ const totpError = ref('')
 const totpStep = ref<'idle' | 'setup' | 'backups'>('idle')
 const totpQr = ref('')
 const totpSecret = ref('')
+const totpApproval = ref('')
 const totpCode = ref('')
 const totpBackupCodes = ref<string[]>([])
 // Disable flow
@@ -111,7 +112,11 @@ async function startTotpSetup() {
   totpError.value = ''
   totpBusy.value = true
   try {
-    const res = await request<{ otpauth_url: string; secret: string }>('/me/totp/setup', { method: 'POST' })
+    totpApproval.value = ''
+    const approval = await authorizeIdentityAction('totp:setup')
+    if (!approval) return
+    const res = await request<{ otpauth_url: string; secret: string }>('/me/totp/setup', { method: 'POST', body: { approval_token: approval } })
+    totpApproval.value = approval
     totpSecret.value = res.secret
     totpQr.value = await QRCode.toDataURL(res.otpauth_url, { width: 200, margin: 1 })
     totpStep.value = 'setup'
@@ -127,7 +132,8 @@ async function confirmTotp() {
   totpError.value = ''
   totpBusy.value = true
   try {
-    const res = await request<{ backup_codes: string[] }>('/me/totp/confirm', { method: 'POST', body: { code: totpCode.value } })
+    const res = await request<{ backup_codes: string[] }>('/me/totp/confirm', { method: 'POST', body: { code: totpCode.value, approval_token: totpApproval.value } })
+    totpApproval.value = ''
     totpBackupCodes.value = res.backup_codes
     totpStep.value = 'backups'
   } catch (e: any) {
@@ -217,7 +223,7 @@ const approvalCode = ref('')
 const approvalError = ref('')
 const approvalBusy = ref(false)
 let resolveApproval: ((token: string | null) => void) | undefined
-function authorizePasskeyAction(action: string): Promise<string | null> {
+function authorizeIdentityAction(action: string): Promise<string | null> {
   approvalPassword.value = ''; approvalCode.value = ''; approvalError.value = ''
   approvalAction.value = action
   return new Promise(resolve => { resolveApproval = resolve })
@@ -233,12 +239,12 @@ async function confirmIdentity(withPasskey: boolean) {
   try {
     let result: { approval_token: string }
     if (withPasskey) {
-      const begin = await request<{ options: any; session_token: string }>('/me/webauthn/approval/begin', { method: 'POST', body: { action: approvalAction.value } })
+      const begin = await request<{ options: any; session_token: string }>('/me/identity/approval/begin', { method: 'POST', body: { action: approvalAction.value } })
       const { get } = await import('@github/webauthn-json')
       const assertion = await get(begin.options)
-      result = await request('/me/webauthn/approval/finish', { method: 'POST', body: { session_token: begin.session_token, assertion } })
+      result = await request('/me/identity/approval/finish', { method: 'POST', body: { session_token: begin.session_token, assertion } })
     } else {
-      result = await request('/me/webauthn/approval/password', { method: 'POST', body: { action: approvalAction.value, password: approvalPassword.value, code: approvalCode.value } })
+      result = await request('/me/identity/approval/password', { method: 'POST', body: { action: approvalAction.value, password: approvalPassword.value, code: approvalCode.value } })
     }
     closeApproval(result.approval_token)
   } catch { approvalError.value = t('passkey.approval_error') }
@@ -249,7 +255,7 @@ async function addPasskey() {
   passkeyError.value = ''
   passkeyStatus.value = ''
   passkeyBusy.value = true
-  const approval = await authorizePasskeyAction('register')
+  const approval = await authorizeIdentityAction('register')
   if (!approval) { passkeyBusy.value = false; return }
   let res: { options: { publicKey: Record<string, unknown> }; session_token: string }
   try {
@@ -325,7 +331,7 @@ async function deletePasskey(pk: Passkey) {
   if (!(await confirm(t('passkey.confirm_delete'), { message: t('passkey.confirm_delete_msg', { name: pk.name }), confirmText: t('passkey.confirm_delete_btn'), danger: true }))) return
   passkeyError.value = ''
   try {
-    const approval = await authorizePasskeyAction(`delete:${pk.id}`)
+    const approval = await authorizeIdentityAction(`delete:${pk.id}`)
     if (!approval) return
     await request(`/me/webauthn/${pk.id}`, { method: 'DELETE', body: { approval_token: approval } })
     await loadPasskeys()
@@ -505,7 +511,7 @@ async function deletePasskey(pk: Passkey) {
               <Icon v-if="totpBusy" name="lucide:loader-circle" class="animate-spin" size="16" />
               <Icon v-else name="lucide:check" size="16" /> {{ t('twofa.btn_confirm') }}
             </button>
-            <button class="btn-ghost" :disabled="totpBusy" @click="totpStep = 'idle'; totpError = ''">
+            <button class="btn-ghost" :disabled="totpBusy" @click="totpStep = 'idle'; totpError = ''; totpApproval = ''; totpSecret = ''; totpQr = ''">
               {{ t('common.cancel') }}
             </button>
           </div>

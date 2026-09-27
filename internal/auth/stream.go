@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"github.com/golang-jwt/jwt/v5"
 
 	"discodrive/internal/db"
 )
@@ -23,7 +24,7 @@ func (s *Service) ValidateStreamToken(ctx context.Context, tokenStr, nodeID stri
 	}
 	// A session JWT pasted into ?t= must not work: URLs leak (logs, history), and a
 	// leaked session is a far bigger prize than a leaked single-file token.
-	// Legacy stream URLs lack device provenance and must be re-minted.
+	// Legacy URLs lacking device/browser provenance must be re-minted.
 	if claims.Pur != "stream-v2" || claims.Nid == "" || claims.Nid != nodeID {
 		return "", ErrStreamToken
 	}
@@ -50,6 +51,9 @@ func (s *Service) ValidateStreamToken(ctx context.Context, tokenStr, nodeID stri
 			return "", ErrStreamToken
 		}
 	}
+	if claims.DeviceID == "" && (claims.SessionID == "" || s.sessionActive == nil || !s.sessionActive(ctx, claims)) {
+		return "", ErrStreamToken
+	}
 	return claims.Subject, nil
 }
 
@@ -71,7 +75,11 @@ func (s *Service) StreamMinter(ctx context.Context, userID string) (func(nodeID 
 		return nil, ErrStreamToken
 	}
 	deviceID := DeviceID(ctx)
+	sessionID := SessionID(ctx)
+	if UserID(ctx) != userID || (deviceID == "" && (sessionID == "" || s.sessionActive == nil || !s.sessionActive(ctx, &Claims{SessionID: sessionID, Ver: u.TokenVersion, RegisteredClaims: jwt.RegisteredClaims{Subject: userID}}))) {
+		return nil, ErrStreamToken
+	}
 	return func(nodeID string) (string, error) {
-		return s.issuer.IssueStream(userID, nodeID, u.TokenVersion, deviceID)
+		return s.issuer.IssueStream(userID, nodeID, u.TokenVersion, deviceID, sessionID)
 	}, nil
 }

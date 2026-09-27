@@ -26,11 +26,14 @@ var (
 
 // Service holds the domain logic for authentication and multi-tenancy.
 type Service struct {
-	pool   *pgxpool.Pool
-	q      *db.Queries
-	issuer *TokenIssuer
-	cipher *secret.Cipher     // encrypts TOTP secrets (A.3); nil/disabled → 2FA setup refused
-	wa     *webauthn.WebAuthn // WebAuthn relying party (A.4); nil → WebAuthn unavailable
+	createSession func(context.Context, db.User) (string, error)
+	sessionActive func(context.Context, *Claims) bool
+	davGuard      davGuard
+	pool          *pgxpool.Pool
+	q             *db.Queries
+	issuer        *TokenIssuer
+	cipher        *secret.Cipher     // encrypts TOTP secrets (A.3); nil/disabled → 2FA setup refused
+	wa            *webauthn.WebAuthn // WebAuthn relying party (A.4); nil → WebAuthn unavailable
 	// lookupUser verifies a user against the DB in the middleware (role/existence check).
 	// Extracted as a field so the seam is testable without a live DB.
 	lookupUser func(context.Context, pgtype.UUID) (db.User, error)
@@ -68,6 +71,8 @@ func (s *Service) quotaFor(requested *int64, role string) pgtype.Int8 {
 func NewService(pool *pgxpool.Pool, issuer *TokenIssuer, cipher *secret.Cipher) *Service {
 	q := db.New(pool)
 	s := &Service{pool: pool, q: q, issuer: issuer, cipher: cipher, lookupUser: q.GetUserByID}
+	s.createSession = s.createBrowserSession
+	s.sessionActive = s.browserSessionActive
 	s.getUserByEmail = q.GetUserByEmail
 	// Post-password second factor is TOTP only. WebAuthn is a passwordless ALTERNATIVE
 	// login method (its own route), not a factor forced after a password — so a registered
@@ -104,7 +109,7 @@ func (s *Service) Register(ctx context.Context, email, password string) (string,
 	if err != nil {
 		return "", db.User{}, err
 	}
-	token, err := s.issueFor(user)
+	token, err := s.issueFor(ctx, user)
 	return token, user, err
 }
 
@@ -151,7 +156,7 @@ func (s *Service) Login(ctx context.Context, email, password string) (LoginResul
 		return LoginResult{MFAToken: mfaTok, Methods: methods, User: u}, nil
 	}
 
-	token, err := s.issueFor(u)
+	token, err := s.issueFor(ctx, u)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -232,9 +237,13 @@ func (s *Service) AdminCreateUser(ctx context.Context, email, password, role str
 // issueFor issues a web-session token with the lifetime the user chose in their own
 // settings (0 = never expires). Devices are deliberately not covered: a daemon's token
 // answers to the device's own lifecycle, not to a browser preference.
-func (s *Service) issueFor(u db.User) (string, error) {
+func (s *Service) issueFor(ctx context.Context, u db.User) (string, error) {
+	id, err := s.createSession(ctx, u)
+	if err != nil {
+		return "", err
+	}
 	return s.issuer.IssueTTL(db.UUIDString(u.ID), db.UUIDString(u.TenantID), u.Role, u.TokenVersion, "",
-		SessionTTL(u.SessionTtlMinutes))
+		SessionTTL(u.SessionTtlMinutes), id)
 }
 
 // issueForDevice issues a token bound to a specific device (sync daemon): it carries
@@ -273,7 +282,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID, current, newPasswo
 	if err != nil {
 		return "", err
 	}
-	return s.issueFor(updated)
+	return s.issueFor(ctx, updated)
 }
 
 // newWebdavSecret generates an app-specific password (plain, shown once)
@@ -312,14 +321,17 @@ func (s *Service) CreateWebdavPassword(ctx context.Context, userID, name string)
 	return dev, plain, nil
 }
 
-// VerifyWebdavPassword looks up a user by email and checks the app-specific
-// password against any of their WebDAV devices. Returns userID and deviceID.
-func (s *Service) VerifyWebdavPassword(ctx context.Context, email, password string) (userID, deviceID string, ok bool) {
+// verifyWebdavPassword checks current device credentials under DAV admission.
+// Callers must hold the shared verification slot and reserve an IP attempt.
+func (s *Service) verifyWebdavPassword(ctx context.Context, email, password string) (userID, deviceID string, ok bool) {
 	devs, err := s.q.ListWebdavDevicesByEmail(ctx, email)
 	if err != nil {
 		return "", "", false
 	}
 	for _, d := range devs {
+		if ctx.Err() != nil {
+			return "", "", false
+		}
 		if !d.SecretHash.Valid {
 			continue
 		}

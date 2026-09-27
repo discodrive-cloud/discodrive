@@ -51,11 +51,38 @@ export function clearSession() {
   setSession({ token: '', role: '', email: '' })
 }
 
+// Only compare identities locally; server-side JWT validation remains authoritative.
+function sameSession(a: string, b: string): boolean {
+  if (!a || !b) return false
+  if (a === b) return true
+  try {
+    const claims = (token: string) => JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+    const x = claims(a), y = claims(b)
+    return !!x.sid && x.sid === y.sid && x.sub === y.sub
+  } catch { return false }
+}
+
+export async function logoutSession(): Promise<boolean> {
+  const sess = useSession()
+  const token = sess.value.token
+  if (!token) return true
+  try {
+    await apiFetch('/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+  } catch (e: any) {
+    // Already expired/revoked also means that this token has no server access.
+    if (e?.response?.status !== 401) throw e
+  }
+  if (!sameSession(sess.value.token, token)) return !sess.value.token
+  clearSession()
+  return true
+}
+
 export function useApi() {
   const sess = useSession()
   const storageTick = useStorageTick()
 
   async function request<T = any>(path: string, opts: any = {}): Promise<T> {
+    const requestToken = sess.value.token
     const headers: Record<string, string> = { ...(opts.headers || {}) }
     if (sess.value.token) headers.Authorization = `Bearer ${sess.value.token}`
     try {
@@ -65,7 +92,7 @@ export function useApi() {
       // Only adopt a renewed token if it isn't older than the current one. A cached
       // or slow-in-flight response can carry a stale X-Token; saving it would regress
       // the session to an earlier (possibly expired) token and force a spurious logout.
-      if (fresh && fresh !== sess.value.token && tokenIssuedAt(fresh) >= tokenIssuedAt(sess.value.token)) {
+      if (sess.value.token === requestToken && fresh && fresh !== sess.value.token && tokenIssuedAt(fresh) >= tokenIssuedAt(sess.value.token)) {
         setSession({ ...sess.value, token: fresh })
       }
       // Anything that is not a read can change how much space the user occupies —
@@ -78,7 +105,7 @@ export function useApi() {
       }
       return res._data as T
     } catch (e: any) {
-      if (e?.response?.status === 401) {
+      if (e?.response?.status === 401 && sess.value.token === requestToken) {
         clearSession()
         await navigateTo('/login')
       }

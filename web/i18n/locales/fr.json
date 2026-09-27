@@ -27,6 +27,7 @@
     "copy": "Copier",
     "add": "Ajouter",
     "logout": "Se déconnecter",
+    "logout_error": "Impossible de fermer la session sur le serveur. Veuillez réessayer.",
     "dark_theme": "Thème sombre",
     "light_theme": "Thème clair",
     "no_limit": "sans limite",

@@ -30,10 +30,20 @@ func (s *Server) handleTOTPStatus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// POST /me/totp/setup — start enrolling: returns the otpauth URI + base32 secret (shown once).
+// POST /me/totp/setup {approval_token} — start enrolling: returns the otpauth URI + base32 secret (shown once).
 func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
-	url, secret, err := s.auth.SetupTOTP(r.Context(), auth.UserID(r.Context()))
+	var req struct {
+		ApprovalToken string `json:"approval_token"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8192)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	url, secret, err := s.auth.SetupTOTP(r.Context(), auth.UserID(r.Context()), req.ApprovalToken)
 	switch {
+	case errors.Is(err, auth.ErrApproval):
+		writeError(w, http.StatusForbidden, "confirm your identity to enable two-factor auth")
 	case errors.Is(err, auth.ErrTOTPNotConfigured):
 		writeError(w, http.StatusBadRequest, "two-factor auth is unavailable: server has no encryption key")
 	case errors.Is(err, auth.ErrTOTPAlreadyOn):
@@ -45,17 +55,23 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// POST /me/totp/confirm {code} — verify the first code, enable 2FA, return one-time backup codes.
+// POST /me/totp/confirm {code, approval_token} — verify the first code, enable 2FA, return one-time backup codes.
 func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 8192)
 	var req struct {
-		Code string `json:"code"`
+		Code          string `json:"code"`
+		ApprovalToken string `json:"approval_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	codes, err := s.auth.ConfirmTOTP(r.Context(), auth.UserID(r.Context()), req.Code)
+	codes, err := s.auth.ConfirmTOTP(r.Context(), auth.UserID(r.Context()), req.Code, req.ApprovalToken)
 	switch {
+	case errors.Is(err, auth.ErrApproval):
+		writeError(w, http.StatusForbidden, "identity confirmation expired or invalid; restart setup")
+	case errors.Is(err, auth.ErrTOTPAlreadyOn):
+		writeError(w, http.StatusConflict, "two-factor auth is already enabled")
 	case errors.Is(err, auth.ErrInvalidTOTPCode):
 		writeError(w, http.StatusBadRequest, "invalid code")
 	case errors.Is(err, auth.ErrTOTPNotEnabled):
@@ -82,6 +98,8 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.auth.DisableTOTP(r.Context(), auth.UserID(r.Context()), req.Password, req.Code)
 	switch {
+	case errors.Is(err, auth.ErrApproval):
+		writeError(w, http.StatusUnauthorized, "session expired; sign in again")
 	case errors.Is(err, auth.ErrInvalidCreds):
 		writeError(w, http.StatusUnauthorized, "invalid password")
 	case errors.Is(err, auth.ErrInvalidTOTPCode):

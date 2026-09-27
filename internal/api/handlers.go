@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -1094,28 +1093,5 @@ func (s *Server) trackLogin(r *http.Request, user db.User) {
 	}
 }
 
-// clientIP returns the caller's IP for rate limiting. X-Forwarded-For is trusted ONLY
-// when the immediate peer is a trusted reverse proxy (our nginx runs on a private or
-// loopback network); otherwise a directly-connected client could spoof XFF to bypass
-// rate limits. nginx ($proxy_add_x_forwarded_for) appends the real client as the LAST
-// entry, so we take the rightmost value.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" && isTrustedProxy(host) {
-		parts := strings.Split(xff, ",")
-		if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
-			return last
-		}
-	}
-	return host
-}
-
-// isTrustedProxy reports whether host is a private or loopback address — i.e. our own
-// reverse proxy rather than an arbitrary remote client.
-func isTrustedProxy(host string) bool {
-	ip := net.ParseIP(host)
-	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
-}
+// clientIP uses the address validated by the transport policy at the proxy boundary.
+func clientIP(r *http.Request) string { return httpsecurity.ClientIP(r) }

@@ -41,10 +41,11 @@ func buildStreamEnv(t *testing.T, email string) *streamEnv {
 	fileSvc := storage.NewFileService(pool, storage.NewLocalDisk(root))
 	s := &Server{auth: svc, q: q, files: fileSvc, storageRoot: root}
 
-	_, user, err := svc.Register(ctx, email, "password12")
+	token, user, err := svc.Register(ctx, email, "password12")
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	ctx = streamSessionContext(t, svc, token)
 	uid := user.ID
 	userID := db.UUIDString(uid)
 
@@ -221,7 +222,7 @@ func TestStreamRevocation(t *testing.T) {
 	nid := db.UUIDString(e.track.ID)
 
 	// Grantee gets access via a folder share, mints their own stream token.
-	_, grantee, err := e.svc.Register(e.ctx, "grantee@x.test", "password12")
+	granteeSession, grantee, err := e.svc.Register(e.ctx, "grantee@x.test", "password12")
 	if err != nil {
 		t.Fatalf("register grantee: %v", err)
 	}
@@ -229,7 +230,7 @@ func TestStreamRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("share: %v", err)
 	}
-	granteeMint, err := e.svc.StreamMinter(e.ctx, db.UUIDString(grantee.ID))
+	granteeMint, err := e.svc.StreamMinter(streamSessionContext(t, e.svc, granteeSession), db.UUIDString(grantee.ID))
 	if err != nil {
 		t.Fatalf("grantee minter: %v", err)
 	}
@@ -285,4 +286,16 @@ func TestStreamXAccelMode(t *testing.T) {
 	if rec.Body.Len() != 0 {
 		t.Fatalf("body must be empty in X-Accel mode, got %d bytes", rec.Body.Len())
 	}
+}
+
+func streamSessionContext(t *testing.T, svc *auth.Service, token string) context.Context {
+	t.Helper()
+	var ctx context.Context
+	r := httptest.NewRequest("GET", "/me", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	svc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ctx = r.Context() })).ServeHTTP(httptest.NewRecorder(), r)
+	if ctx == nil {
+		t.Fatal("stream fixture session rejected")
+	}
+	return ctx
 }

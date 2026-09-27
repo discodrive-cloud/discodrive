@@ -27,6 +27,7 @@
     "copy": "Copiar",
     "add": "Agregar",
     "logout": "Cerrar sesión",
+    "logout_error": "No se pudo cerrar la sesión en el servidor. Inténtelo de nuevo.",
     "dark_theme": "Tema oscuro",
     "light_theme": "Tema claro",
     "no_limit": "sin límite",

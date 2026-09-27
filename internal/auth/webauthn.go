@@ -335,7 +335,10 @@ func (s *Service) finishWebAuthnLogin(ctx context.Context, sessionToken string, 
 		return LoginResult{}, err
 	}
 
-	token, err := s.issueFor(loggedIn)
+	if purpose == "webauthn-approval" {
+		return LoginResult{User: loggedIn}, nil
+	}
+	token, err := s.issueFor(ctx, loggedIn)
 	if err != nil {
 		return LoginResult{}, err
 	}

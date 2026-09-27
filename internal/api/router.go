@@ -77,16 +77,23 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 
 	// authenticated (Bearer JWT, scoped by user_id/tenant_id)
 	prot := authSvc.Middleware
+	// Logout validates the signed browser token itself, allowing an expired token
+	// to revoke its session and media URLs without granting any other access.
+	mux.HandleFunc("POST /auth/logout", s.handleLogout)
 	mux.Handle("GET /me", prot(http.HandlerFunc(s.handleMe)))
 	mux.Handle("POST /me/apple-profile", prot(http.HandlerFunc(s.handleAppleProfile)))
 	mux.Handle("GET /me/storage", prot(http.HandlerFunc(s.handleMeStorage)))
 	mux.Handle("PUT /me/password", prot(http.HandlerFunc(s.handleChangePassword)))
 	mux.Handle("GET /me/totp", prot(http.HandlerFunc(s.handleTOTPStatus)))
-	mux.Handle("POST /me/totp/setup", prot(http.HandlerFunc(s.handleTOTPSetup)))
+	mux.Handle("POST /me/totp/setup", prot(http.HandlerFunc(s.rateLimited(s.handleTOTPSetup))))
 	mux.Handle("POST /me/totp/confirm", prot(http.HandlerFunc(s.rateLimited(s.handleTOTPConfirm))))
 	mux.Handle("DELETE /me/totp", prot(http.HandlerFunc(s.rateLimited(s.handleTOTPDisable))))
 	mux.Handle("POST /me/totp/backup-codes", prot(http.HandlerFunc(s.rateLimited(s.handleRegenerateBackupCodes))))
 	mux.Handle("GET /me/audit", prot(http.HandlerFunc(s.handleAuditList)))
+	// Shared identity confirmation for passkeys and TOTP enrollment.
+	mux.Handle("POST /me/identity/approval/password", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalPassword))))
+	mux.Handle("POST /me/identity/approval/begin", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalBegin))))
+	mux.Handle("POST /me/identity/approval/finish", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalFinish))))
 	mux.Handle("POST /me/webauthn/approval/password", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalPassword))))
 	mux.Handle("POST /me/webauthn/approval/begin", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalBegin))))
 	mux.Handle("POST /me/webauthn/approval/finish", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalFinish))))
@@ -312,5 +319,5 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	})
 	mux.Handle("/app/", http.StripPrefix("/app", spaHandler(ui)))
 
-	return mux
+	return limitAPIBodies(mux)
 }

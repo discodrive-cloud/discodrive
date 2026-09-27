@@ -81,6 +81,7 @@ type Querier interface {
 	AvailableMFAFactors(ctx context.Context, userID pgtype.UUID) (AvailableMFAFactorsRow, error)
 	BookAuthors(ctx context.Context, bookID pgtype.UUID) ([]BookAuthorsRow, error)
 	BookTags(ctx context.Context, bookID pgtype.UUID) ([]string, error)
+	BrowserSessionActive(ctx context.Context, arg BrowserSessionActiveParams) (bool, error)
 	BumpAddressbookCtag(ctx context.Context, id pgtype.UUID) error
 	BumpBookmarkGCSeq(ctx context.Context, arg BumpBookmarkGCSeqParams) error
 	BumpCalendarCtag(ctx context.Context, id pgtype.UUID) error
@@ -100,7 +101,7 @@ type Querier interface {
 	ClearPlaylistSongs(ctx context.Context, playlistID pgtype.UUID) error
 	ClearQuotaNotified(ctx context.Context) error
 	CompleteBootstrap(ctx context.Context) error
-	ConfirmUserTOTP(ctx context.Context, userID pgtype.UUID) error
+	ConfirmApprovedTOTP(ctx context.Context, arg ConfirmApprovedTOTPParams) (int64, error)
 	ConsumeAuthChallenge(ctx context.Context, arg ConsumeAuthChallengeParams) (int64, error)
 	// Atomically "claim" an approved pairing: a race between two polls → token exactly once.
 	ConsumePairingIfApproved(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
@@ -117,6 +118,7 @@ type Querier interface {
 	CreateAddressbook(ctx context.Context, arg CreateAddressbookParams) (Addressbook, error)
 	CreateBookmark(ctx context.Context, arg CreateBookmarkParams) error
 	CreateBrowserBookmark(ctx context.Context, arg CreateBrowserBookmarkParams) (BrowserBookmark, error)
+	CreateBrowserSession(ctx context.Context, arg CreateBrowserSessionParams) error
 	// == calendars ==
 	CreateCalendar(ctx context.Context, arg CreateCalendarParams) (Calendar, error)
 	CreateCalendarWithComponents(ctx context.Context, arg CreateCalendarWithComponentsParams) (Calendar, error)
@@ -144,6 +146,7 @@ type Querier interface {
 	DeleteBackupCodes(ctx context.Context, userID pgtype.UUID) error
 	DeleteBookByNode(ctx context.Context, nodeID pgtype.UUID) error
 	DeleteBookmark(ctx context.Context, arg DeleteBookmarkParams) error
+	DeleteBrowserSession(ctx context.Context, arg DeleteBrowserSessionParams) error
 	DeleteCalendar(ctx context.Context, arg DeleteCalendarParams) error
 	DeleteCalendarObject(ctx context.Context, arg DeleteCalendarObjectParams) (int64, error)
 	DeleteDevice(ctx context.Context, arg DeleteDeviceParams) error
@@ -217,6 +220,7 @@ type Querier interface {
 	GetUserForAuthUpdate(ctx context.Context, id pgtype.UUID) (User, error)
 	GetUserLanguage(ctx context.Context, id pgtype.UUID) (string, error)
 	GetUserSessionTTL(ctx context.Context, id pgtype.UUID) (int32, error)
+	// TOTP 2FA (A.3). Secret is AES-GCM ciphertext.
 	GetUserTOTP(ctx context.Context, userID pgtype.UUID) (UserTotp, error)
 	HardDeleteNode(ctx context.Context, id pgtype.UUID) error
 	HardDeleteSubtree(ctx context.Context, arg HardDeleteSubtreeParams) error
@@ -400,6 +404,7 @@ type Querier interface {
 	SongsMetaByNodeIDs(ctx context.Context, dollar_1 []pgtype.UUID) ([]SongsMetaByNodeIDsRow, error)
 	Star(ctx context.Context, arg StarParams) error
 	StarredItems(ctx context.Context, userID pgtype.UUID) ([]StarredItemsRow, error)
+	StartApprovedTOTP(ctx context.Context, arg StartApprovedTOTPParams) (int64, error)
 	// Sum of the quotas handed out to users, optionally excluding one (the user being
 	// edited). NULL exclude_id excludes nobody. Used to keep the handed-out total within
 	// the server-wide cap.
@@ -464,9 +469,6 @@ type Querier interface {
 	UpsertSetting(ctx context.Context, arg UpsertSettingParams) error
 	UpsertSong(ctx context.Context, arg UpsertSongParams) (Song, error)
 	UpsertSyncSettings(ctx context.Context, arg UpsertSyncSettingsParams) (SyncSetting, error)
-	// TOTP 2FA (A.3). Secret is AES-GCM ciphertext.
-	// Begin (or restart) TOTP setup: store an encrypted secret, not yet confirmed.
-	UpsertUserTOTP(ctx context.Context, arg UpsertUserTOTPParams) error
 	// Include published and staged bytes in one snapshot: publication followed by
 	// reservation release must never create a gap between separate usage reads.
 	// Used space of a single user, same definition as ListUsersWithUsage. This is the

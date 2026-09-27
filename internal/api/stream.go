@@ -43,7 +43,8 @@ func setInlineMediaHeaders(w http.ResponseWriter, mime, name string) {
 // which cannot send an Authorization header. Auth = a purpose=stream JWT in the URL,
 // scoped to exactly this node (minted by the media-listing endpoint). The token only
 // identifies the user; node access is re-checked live on every request, so share
-// revocation or access loss cuts an in-flight stream off immediately.
+// revocation or access loss rejects subsequent requests (including new ranges).
+// Bytes already being delivered by an authorized request cannot be recalled.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	userID, err := s.auth.ValidateStreamToken(r.Context(), r.URL.Query().Get("t"), id)

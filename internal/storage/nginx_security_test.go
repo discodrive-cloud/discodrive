@@ -32,7 +32,7 @@ func TestNginxRejectsSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	template := string(raw)
+	template := strings.ReplaceAll(string(raw), "${NGINX_CLOUDFLARED_PEER}", "unix:")
 	if strings.Count(template, "disable_symlinks on;") != 1 {
 		t.Fatal("TLS file serving must disable symlinks")
 	}
@@ -92,6 +92,7 @@ func TestNginxRejectsSymlinks(t *testing.T) {
 				t.Fatal(err)
 			}
 			req.Header.Set("Authorization", "Basic c2VjcmV0")
+			req.Header.Set("CF-Connecting-IP", "203.0.113.199")
 			req.Header.Set("X-Forwarded-Proto", "https")
 			resp, err := client.Do(req)
 			if err != nil {

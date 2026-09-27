@@ -54,7 +54,11 @@ func TestTOTPLifecycle(t *testing.T) {
 	userID := db.UUIDString(u.ID)
 
 	// --- setup ---
-	url, tsecret, err := svc.SetupTOTP(ctx, userID)
+	enrollmentApproval, err := svc.ApprovePasskeyWithPassword(ctx, userID, "pw", "", "totp:setup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	url, tsecret, err := svc.SetupTOTP(ctx, userID, enrollmentApproval)
 	if err != nil {
 		t.Fatalf("SetupTOTP: %v", err)
 	}
@@ -74,7 +78,7 @@ func TestTOTPLifecycle(t *testing.T) {
 
 	// --- confirm with a generated code ---
 	code, _ := totp.GenerateCode(tsecret, time.Now())
-	backup, err := svc.ConfirmTOTP(ctx, userID, code)
+	backup, err := svc.ConfirmTOTP(ctx, userID, code, enrollmentApproval)
 	if err != nil {
 		t.Fatalf("ConfirmTOTP: %v", err)
 	}

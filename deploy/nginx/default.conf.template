@@ -1,6 +1,6 @@
 # TLS is mandatory. The HTTP listener only rejects requests and is not published
 # by docker-compose. Never forward client-controlled X-Forwarded-Proto.
-# envsubst substitutes only APP_PORT; nginx runtime variables are preserved.
+# envsubst substitutes APP_PORT and NGINX_CLOUDFLARED_PEER; nginx runtime variables are preserved.
 server {
     listen 80;
     server_name _;
@@ -13,6 +13,11 @@ server {
 
 server {
     listen 443 ssl;
+    # Trust only the configured tunnel peer, never arbitrary private networks.
+    # Default unix: trusts no TCP peer (this server has no Unix listener).
+    set_real_ip_from ${NGINX_CLOUDFLARED_PEER};
+    real_ip_header CF-Connecting-IP;
+    real_ip_recursive off;
     server_name _;
     # Subsonic and public downloads may carry tokens in query parameters.
     access_log off;

@@ -48,10 +48,18 @@ function isActive(to: string) {
 const sidebarOpen = ref(false)
 watch(() => route.path, () => { sidebarOpen.value = false })
 
+const logoutBusy = ref(false)
+const logoutError = ref('')
 async function logout() {
+  if (logoutBusy.value) return
   if (!(await confirm(t('common.logout_confirm'), { confirmText: t('common.logout'), danger: true }))) return
-  clearSession()
-  navigateTo('/login')
+  logoutBusy.value = true
+  logoutError.value = ''
+  try {
+    if (await logoutSession()) await navigateTo('/login')
+  } catch {
+    logoutError.value = t('common.logout_error')
+  } finally { logoutBusy.value = false }
 }
 </script>
 
@@ -101,9 +109,10 @@ async function logout() {
           <Icon :name="theme === 'light' ? 'lucide:moon' : 'lucide:sun'" size="18" />
           {{ theme === 'light' ? t('common.dark_theme') : t('common.light_theme') }}
         </button>
-        <button class="btn-ghost w-full justify-start" @click="logout">
+        <button class="btn-ghost w-full justify-start" @click="logout" :disabled="logoutBusy">
           <Icon name="lucide:log-out" size="18" /> {{ t('common.logout') }}
         </button>
+        <p v-if="logoutError" class="px-2 text-xs text-danger" role="alert">{{ logoutError }}</p>
       </div>
     </aside>
 

@@ -18,6 +18,7 @@ func buildLoginService(t *testing.T, hash string, factors []string) *Service {
 	tid, _ := db.ParseUUID("22222222-2222-2222-2222-222222222222")
 	u := db.User{ID: uid, TenantID: tid, Role: "user", Email: "a@test.local", PasswordHash: hash}
 	return &Service{
+		createSession:    func(context.Context, db.User) (string, error) { return "test-session", nil },
 		issuer:           NewTokenIssuer("secret", time.Hour),
 		getUserByEmail:   func(context.Context, string) (db.User, error) { return u, nil },
 		availableFactors: func(context.Context, pgtype.UUID) ([]string, error) { return factors, nil },

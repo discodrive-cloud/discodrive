@@ -21,10 +21,10 @@ const validUUID = "11111111-1111-1111-1111-111111111111"
 func TestMiddleware_SlidingToken(t *testing.T) {
 	iss := NewTokenIssuer("secret", time.Hour)
 	uid, _ := db.ParseUUID(validUUID)
-	svc := &Service{issuer: iss, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
+	svc := &Service{issuer: iss, sessionActive: func(_ context.Context, c *Claims) bool { return c.SessionID == "test-session" }, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
 		return db.User{ID: uid, Role: "user"}, nil
 	}}
-	tok, err := iss.Issue(validUUID, "t1", "user", 0, "")
+	tok, err := iss.Issue(validUUID, "t1", "user", 0, "", "test-session")
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -66,10 +66,10 @@ func TestMiddleware_SlidingToken(t *testing.T) {
 // Ensures that deleting an account closes the active session.
 func TestMiddleware_DeletedUserRejected(t *testing.T) {
 	iss := NewTokenIssuer("secret", time.Hour)
-	svc := &Service{issuer: iss, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
+	svc := &Service{issuer: iss, sessionActive: func(_ context.Context, c *Claims) bool { return c.SessionID == "test-session" }, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
 		return db.User{}, errors.New("no such user")
 	}}
-	tok, _ := iss.Issue(validUUID, "t1", "admin", 0, "")
+	tok, _ := iss.Issue(validUUID, "t1", "admin", 0, "", "test-session")
 
 	h := svc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("handler must not be called for a deleted user")
@@ -89,10 +89,10 @@ func TestMiddleware_DeletedUserRejected(t *testing.T) {
 func TestMiddleware_RoleFromDBNotToken(t *testing.T) {
 	iss := NewTokenIssuer("secret", time.Hour)
 	uid, _ := db.ParseUUID(validUUID)
-	svc := &Service{issuer: iss, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
+	svc := &Service{issuer: iss, sessionActive: func(_ context.Context, c *Claims) bool { return c.SessionID == "test-session" }, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
 		return db.User{ID: uid, Role: "user"}, nil // already demoted in DB
 	}}
-	tok, _ := iss.Issue(validUUID, "t1", "admin", 0, "") // token still carries admin
+	tok, _ := iss.Issue(validUUID, "t1", "admin", 0, "", "test-session") // token still carries admin
 
 	var gotRole string
 	h := svc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +111,7 @@ func TestMiddleware_RoleFromDBNotToken(t *testing.T) {
 // the password step, not a completed login. Middleware rejects it with 401 before any DB lookup.
 func TestMiddleware_MFATokenRejected(t *testing.T) {
 	iss := NewTokenIssuer("secret", time.Hour)
-	svc := &Service{issuer: iss, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
+	svc := &Service{issuer: iss, sessionActive: func(_ context.Context, c *Claims) bool { return c.SessionID == "test-session" }, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
 		t.Error("lookupUser must not be called for an MFA-pending token")
 		return db.User{}, nil
 	}}
@@ -135,10 +135,10 @@ func TestMiddleware_MFATokenRejected(t *testing.T) {
 func TestMiddleware_MustChangePasswordGate(t *testing.T) {
 	iss := NewTokenIssuer("secret", time.Hour)
 	uid, _ := db.ParseUUID(validUUID)
-	svc := &Service{issuer: iss, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
+	svc := &Service{issuer: iss, sessionActive: func(_ context.Context, c *Claims) bool { return c.SessionID == "test-session" }, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
 		return db.User{ID: uid, Role: "user", MustChangePassword: true}, nil
 	}}
-	tok, _ := iss.Issue(validUUID, "t1", "user", 0, "")
+	tok, _ := iss.Issue(validUUID, "t1", "user", 0, "", "test-session")
 
 	h := svc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -166,10 +166,10 @@ func TestMiddleware_MustChangePasswordGate(t *testing.T) {
 func TestMiddleware_StaleTokenVersionRejected(t *testing.T) {
 	iss := NewTokenIssuer("secret", time.Hour)
 	uid, _ := db.ParseUUID(validUUID)
-	svc := &Service{issuer: iss, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
+	svc := &Service{issuer: iss, sessionActive: func(_ context.Context, c *Claims) bool { return c.SessionID == "test-session" }, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
 		return db.User{ID: uid, Role: "user", TokenVersion: 1}, nil // password was changed
 	}}
-	tok, _ := iss.Issue(validUUID, "t1", "user", 0, "") // old-version token
+	tok, _ := iss.Issue(validUUID, "t1", "user", 0, "", "test-session") // old-version token
 
 	h := svc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("handler must not be called for a stale token version")
@@ -191,10 +191,10 @@ func TestMiddleware_StaleTokenVersionRejected(t *testing.T) {
 func TestMiddleware_AuthedResponseIsNoStore(t *testing.T) {
 	iss := NewTokenIssuer("secret", time.Hour)
 	uid, _ := db.ParseUUID(validUUID)
-	svc := &Service{issuer: iss, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
+	svc := &Service{issuer: iss, sessionActive: func(_ context.Context, c *Claims) bool { return c.SessionID == "test-session" }, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
 		return db.User{ID: uid, Role: "user"}, nil
 	}}
-	tok, _ := iss.Issue(validUUID, "t1", "user", 0, "")
+	tok, _ := iss.Issue(validUUID, "t1", "user", 0, "", "test-session")
 	h := svc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -223,10 +223,10 @@ func TestMiddleware_RenewalUsesUserSessionTTL(t *testing.T) {
 	// their lifetime is the server default anyway (see the middleware).
 	renew := func(ttlMinutes int32) *Claims {
 		t.Helper()
-		svc := &Service{issuer: iss, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
+		svc := &Service{issuer: iss, sessionActive: func(_ context.Context, c *Claims) bool { return c.SessionID == "test-session" }, lookupUser: func(context.Context, pgtype.UUID) (db.User, error) {
 			return db.User{ID: uid, Role: "user", SessionTtlMinutes: ttlMinutes}, nil
 		}}
-		tok, _ := iss.Issue(validUUID, "t1", "user", 0, "")
+		tok, _ := iss.Issue(validUUID, "t1", "user", 0, "", "test-session")
 		h := svc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
 		req := httptest.NewRequest(http.MethodGet, "/x", nil)
 		req.Header.Set("Authorization", "Bearer "+tok)

@@ -27,6 +27,7 @@
     "copy": "Copy",
     "add": "Add",
     "logout": "Log out",
+    "logout_error": "Could not end the session on the server. Please try again.",
     "dark_theme": "Dark theme",
     "light_theme": "Light theme",
     "no_limit": "no limit",

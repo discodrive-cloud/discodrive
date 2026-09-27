@@ -17,6 +17,7 @@ type Policy struct {
 	allowLocalHTTP bool
 }
 type verifiedHTTPSKey struct{}
+type clientIPKey struct{}
 
 // New validates the proxy allowlist and keeps the development exception local.
 func New(cidrs, listenHost string, allowLocalHTTP bool) (*Policy, error) {
@@ -53,6 +54,44 @@ func peerIP(r *http.Request) netip.Addr {
 	return ip.Unmap()
 }
 
+// ClientIP returns a canonical address established at the transport boundary.
+// Without that boundary, forwarded headers are never trusted.
+func ClientIP(r *http.Request) string {
+	if ip, ok := r.Context().Value(clientIPKey{}).(string); ok {
+		return ip
+	}
+	if ip := peerIP(r); ip.IsValid() {
+		return ip.String()
+	}
+	return r.RemoteAddr
+}
+
+func (p *Policy) trustedPeer(r *http.Request) bool {
+	ip := peerIP(r)
+	for _, prefix := range p.proxies {
+		if prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Policy) clientIP(r *http.Request) string {
+	// The immediate trusted proxy must overwrite XFF with one address, not append
+	// an untrusted chain. Reject duplicate headers, lists, zones and malformed IPs.
+	values := r.Header.Values("X-Forwarded-For")
+	if p.trustedPeer(r) && len(values) == 1 {
+		ip, err := netip.ParseAddr(strings.TrimSpace(values[0]))
+		if err == nil && ip.Zone() == "" {
+			return ip.Unmap().String()
+		}
+	}
+	if ip := peerIP(r); ip.IsValid() {
+		return ip.String()
+	}
+	return r.RemoteAddr
+}
+
 func (p *Policy) isHTTPS(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
@@ -62,13 +101,7 @@ func (p *Policy) isHTTPS(r *http.Request) bool {
 	if len(values) != 1 || values[0] != "https" {
 		return false
 	}
-	ip := peerIP(r)
-	for _, prefix := range p.proxies {
-		if prefix.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return p.trustedPeer(r)
 }
 
 // IsHTTPS lets setup reuse the outer transport decision. Standalone handlers
@@ -94,6 +127,8 @@ func (p *Policy) Handler(next http.Handler) http.Handler {
 		if secure {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), verifiedHTTPSKey{}, secure)))
+		ctx := context.WithValue(r.Context(), verifiedHTTPSKey{}, secure)
+		ctx = context.WithValue(ctx, clientIPKey{}, p.clientIP(r))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

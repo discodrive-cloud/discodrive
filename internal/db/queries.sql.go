@@ -168,13 +168,23 @@ func (q *Queries) ClearQuotaNotified(ctx context.Context) error {
 	return err
 }
 
-const confirmUserTOTP = `-- name: ConfirmUserTOTP :exec
-UPDATE user_totp SET enabled = true, confirmed_at = now() WHERE user_id = $1
+const confirmApprovedTOTP = `-- name: ConfirmApprovedTOTP :execrows
+UPDATE user_totp SET enabled = true, confirmed_at = now(), approval_id = ''
+WHERE user_id = $1 AND NOT enabled AND approval_id = $2 AND secret = $3
 `
 
-func (q *Queries) ConfirmUserTOTP(ctx context.Context, userID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, confirmUserTOTP, userID)
-	return err
+type ConfirmApprovedTOTPParams struct {
+	UserID     pgtype.UUID `json:"user_id"`
+	ApprovalID string      `json:"approval_id"`
+	Secret     string      `json:"secret"`
+}
+
+func (q *Queries) ConfirmApprovedTOTP(ctx context.Context, arg ConfirmApprovedTOTPParams) (int64, error) {
+	result, err := q.db.Exec(ctx, confirmApprovedTOTP, arg.UserID, arg.ApprovalID, arg.Secret)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const consumePairingIfApproved = `-- name: ConsumePairingIfApproved :one
@@ -1381,9 +1391,11 @@ func (q *Queries) GetUserSessionTTL(ctx context.Context, id pgtype.UUID) (int32,
 }
 
 const getUserTOTP = `-- name: GetUserTOTP :one
-SELECT user_id, secret, enabled, confirmed_at, created_at FROM user_totp WHERE user_id = $1
+
+SELECT user_id, secret, enabled, confirmed_at, created_at, approval_id FROM user_totp WHERE user_id = $1
 `
 
+// TOTP 2FA (A.3). Secret is AES-GCM ciphertext.
 func (q *Queries) GetUserTOTP(ctx context.Context, userID pgtype.UUID) (UserTotp, error) {
 	row := q.db.QueryRow(ctx, getUserTOTP, userID)
 	var i UserTotp
@@ -1393,6 +1405,7 @@ func (q *Queries) GetUserTOTP(ctx context.Context, userID pgtype.UUID) (UserTotp
 		&i.Enabled,
 		&i.ConfirmedAt,
 		&i.CreatedAt,
+		&i.ApprovalID,
 	)
 	return i, err
 }
@@ -3045,6 +3058,28 @@ func (q *Queries) SoftDeleteSubtree(ctx context.Context, arg SoftDeleteSubtreePa
 	return err
 }
 
+const startApprovedTOTP = `-- name: StartApprovedTOTP :execrows
+INSERT INTO user_totp (user_id, secret, enabled, confirmed_at, approval_id)
+VALUES ($1, $2, false, NULL, $3)
+ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret,
+    enabled = false, confirmed_at = NULL, created_at = now(), approval_id = EXCLUDED.approval_id
+WHERE NOT user_totp.enabled
+`
+
+type StartApprovedTOTPParams struct {
+	UserID     pgtype.UUID `json:"user_id"`
+	Secret     string      `json:"secret"`
+	ApprovalID string      `json:"approval_id"`
+}
+
+func (q *Queries) StartApprovedTOTP(ctx context.Context, arg StartApprovedTOTPParams) (int64, error) {
+	result, err := q.db.Exec(ctx, startApprovedTOTP, arg.UserID, arg.Secret, arg.ApprovalID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const sumAssignedQuotas = `-- name: SumAssignedQuotas :one
 SELECT COALESCE(SUM(storage_quota), 0)::bigint AS assigned FROM users
 WHERE storage_quota IS NOT NULL
@@ -3527,25 +3562,6 @@ func (q *Queries) UpsertSetting(ctx context.Context, arg UpsertSettingParams) er
 		arg.IsSecret,
 		arg.UpdatedBy,
 	)
-	return err
-}
-
-const upsertUserTOTP = `-- name: UpsertUserTOTP :exec
-
-INSERT INTO user_totp (user_id, secret, enabled, confirmed_at)
-VALUES ($1, $2, false, NULL)
-ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret, enabled = false, confirmed_at = NULL, created_at = now()
-`
-
-type UpsertUserTOTPParams struct {
-	UserID pgtype.UUID `json:"user_id"`
-	Secret string      `json:"secret"`
-}
-
-// TOTP 2FA (A.3). Secret is AES-GCM ciphertext.
-// Begin (or restart) TOTP setup: store an encrypted secret, not yet confirmed.
-func (q *Queries) UpsertUserTOTP(ctx context.Context, arg UpsertUserTOTPParams) error {
-	_, err := q.db.Exec(ctx, upsertUserTOTP, arg.UserID, arg.Secret)
 	return err
 }
 

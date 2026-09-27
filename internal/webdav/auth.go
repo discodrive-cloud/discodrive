@@ -2,6 +2,7 @@ package webdav
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"discodrive/internal/auth"
@@ -23,16 +24,17 @@ func Auth(authSvc *auth.Service, settings SettingsReader, next http.Handler) htt
 			http.Error(w, "WebDAV is disabled", http.StatusForbidden)
 			return
 		}
-		email, pass, ok := r.BasicAuth()
-		if !ok {
+		userID, deviceID, err := authSvc.AuthenticateDAV(r)
+		if errors.Is(err, auth.ErrDAVBusy) {
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "authentication temporarily limited; retry later", http.StatusTooManyRequests)
+			return
+		}
+		if err != nil {
 			unauthorized(w)
 			return
 		}
-		userID, deviceID, ok := authSvc.VerifyWebdavPassword(r.Context(), email, pass)
-		if !ok {
-			unauthorized(w)
-			return
-		}
+
 		ctx := context.WithValue(r.Context(), ctxUserKey, userID)
 		ctx = context.WithValue(ctx, ctxDeviceKey, deviceID)
 		next.ServeHTTP(w, r.WithContext(ctx))

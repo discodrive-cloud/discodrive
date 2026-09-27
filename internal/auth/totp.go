@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/pquerna/otp/totp"
 
@@ -28,8 +29,12 @@ const (
 
 // SetupTOTP generates a fresh TOTP secret (stored encrypted, not yet enabled) and returns
 // the otpauth:// provisioning URI plus the base32 secret for manual entry. Requires an
-// encryption key; an already-enabled 2FA must be disabled before re-enrolling.
-func (s *Service) SetupTOTP(ctx context.Context, userID string) (otpauthURL, secret string, err error) {
+// encryption key and a fresh identity proof; an already-enabled 2FA must be disabled
+// before re-enrolling. The same proof must be presented when confirming the secret.
+func (s *Service) SetupTOTP(ctx context.Context, userID string, approvals ...string) (otpauthURL, secret string, err error) {
+	if len(approvals) != 1 {
+		return "", "", ErrApproval
+	}
 	if s.cipher == nil || !s.cipher.Enabled() {
 		return "", "", ErrTOTPNotConfigured
 	}
@@ -37,12 +42,35 @@ func (s *Service) SetupTOTP(ctx context.Context, userID string) (otpauthURL, sec
 	if err != nil {
 		return "", "", err
 	}
-	u, err := s.q.GetUserByID(ctx, uid)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", "", err
 	}
-	if existing, err := s.q.GetUserTOTP(ctx, uid); err == nil && existing.Enabled {
+	defer tx.Rollback(ctx)
+	q := s.q.WithTx(tx)
+	u, err := q.GetUserForAuthUpdate(ctx, uid)
+	if err != nil {
+		return "", "", err
+	}
+	c, err := s.approval(approvals[0], userID, "totp:setup", u.TokenVersion)
+	if err != nil {
+		return "", "", err
+	}
+	if ver, ok := TokenVersion(ctx); ok && (UserID(ctx) != userID || ver != u.TokenVersion) {
+		return "", "", ErrApproval
+	}
+	// Serialize setup, confirmation, disable and backup regeneration on the user.
+	if existing, err := q.GetUserTOTP(ctx, uid); err == nil && existing.Enabled {
 		return "", "", ErrTOTPAlreadyOn
+	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", "", err
+	}
+	consumed, err := consumeChallenge(ctx, q, "totp-setup-start:"+c.ID, c.ExpiresAt.Time)
+	if err != nil {
+		return "", "", err
+	}
+	if !consumed {
+		return "", "", ErrApproval
 	}
 	key, err := totp.Generate(totp.GenerateOpts{Issuer: totpIssuer, AccountName: u.Email})
 	if err != nil {
@@ -52,22 +80,58 @@ func (s *Service) SetupTOTP(ctx context.Context, userID string) (otpauthURL, sec
 	if err != nil {
 		return "", "", err
 	}
-	if err := s.q.UpsertUserTOTP(ctx, db.UpsertUserTOTPParams{UserID: uid, Secret: enc}); err != nil {
+	n, err := q.StartApprovedTOTP(ctx, db.StartApprovedTOTPParams{UserID: uid, Secret: enc, ApprovalID: c.ID})
+	if err != nil {
+		return "", "", err
+	}
+	if n != 1 {
+		return "", "", ErrTOTPAlreadyOn
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return "", "", err
 	}
 	return key.URL(), key.Secret(), nil
 }
 
-// ConfirmTOTP validates the first code against the pending secret, enables 2FA, and
-// (re)generates one-time backup codes — returned once, in plaintext.
-func (s *Service) ConfirmTOTP(ctx context.Context, userID, code string) ([]string, error) {
+// ConfirmTOTP enables exactly the enrollment authorized by the short-lived proof.
+// A failed code leaves the proof available; success consumes it with the backup codes.
+func (s *Service) ConfirmTOTP(ctx context.Context, userID, code string, approvals ...string) ([]string, error) {
+	if len(approvals) != 1 {
+		return nil, ErrApproval
+	}
 	uid, err := db.ParseUUID(userID)
 	if err != nil {
 		return nil, err
 	}
-	row, err := s.q.GetUserTOTP(ctx, uid)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	q := s.q.WithTx(tx)
+	u, err := q.GetUserForAuthUpdate(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.approval(approvals[0], userID, "totp:setup", u.TokenVersion)
+	if err != nil {
+		return nil, err
+	}
+	if ver, ok := TokenVersion(ctx); ok && (UserID(ctx) != userID || ver != u.TokenVersion) {
+		return nil, ErrApproval
+	}
+	row, err := q.GetUserTOTP(ctx, uid)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrTOTPNotEnabled
+	}
+	if err != nil {
+		return nil, err
+	}
+	if row.Enabled {
+		return nil, ErrTOTPAlreadyOn
+	}
+	if row.ApprovalID != c.ID {
+		return nil, ErrApproval
 	}
 	secret, err := s.cipher.Decrypt(row.Secret)
 	if err != nil {
@@ -76,18 +140,21 @@ func (s *Service) ConfirmTOTP(ctx context.Context, userID, code string) ([]strin
 	if !totp.Validate(code, secret) {
 		return nil, ErrInvalidTOTPCode
 	}
-
-	tx, err := s.pool.Begin(ctx)
+	consumed, err := consumeChallenge(ctx, q, c.Pur+":"+c.ID, c.ExpiresAt.Time)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
-	qtx := s.q.WithTx(tx)
-
-	if err := qtx.ConfirmUserTOTP(ctx, uid); err != nil {
+	if !consumed {
+		return nil, ErrApproval
+	}
+	n, err := q.ConfirmApprovedTOTP(ctx, db.ConfirmApprovedTOTPParams{UserID: uid, ApprovalID: c.ID, Secret: row.Secret})
+	if err != nil {
 		return nil, err
 	}
-	codes, err := issueBackupCodes(ctx, qtx, uid)
+	if n != 1 {
+		return nil, ErrApproval
+	}
+	codes, err := issueBackupCodes(ctx, q, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -124,15 +191,23 @@ func (s *Service) RegenerateBackupCodes(ctx context.Context, userID, code string
 	if err != nil {
 		return nil, err
 	}
-	if !s.verifyTOTP(ctx, uid, code) {
-		return nil, ErrInvalidTOTPCode
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	codes, err := issueBackupCodes(ctx, s.q.WithTx(tx), uid)
+	q := s.q.WithTx(tx)
+	u, err := q.GetUserForAuthUpdate(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+	if ver, ok := TokenVersion(ctx); ok && (UserID(ctx) != userID || ver != u.TokenVersion) {
+		return nil, ErrApproval
+	}
+	if !s.verifyTOTPWithQueries(ctx, q, uid, code) {
+		return nil, ErrInvalidTOTPCode
+	}
+	codes, err := issueBackupCodes(ctx, q, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -149,9 +224,18 @@ func (s *Service) DisableTOTP(ctx context.Context, userID, password, code string
 	if err != nil {
 		return err
 	}
-	u, err := s.q.GetUserByID(ctx, uid)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+	u, err := qtx.GetUserForAuthUpdate(ctx, uid)
+	if err != nil {
+		return err
+	}
+	if ver, ok := TokenVersion(ctx); ok && (UserID(ctx) != userID || ver != u.TokenVersion) {
+		return ErrApproval
 	}
 	ok, err := VerifyPassword(password, u.PasswordHash)
 	if err != nil {
@@ -160,7 +244,7 @@ func (s *Service) DisableTOTP(ctx context.Context, userID, password, code string
 	if !ok {
 		return ErrInvalidCreds
 	}
-	row, err := s.q.GetUserTOTP(ctx, uid)
+	row, err := qtx.GetUserTOTP(ctx, uid)
 	if err != nil || !row.Enabled {
 		return ErrTOTPNotEnabled
 	}
@@ -172,12 +256,6 @@ func (s *Service) DisableTOTP(ctx context.Context, userID, password, code string
 		return ErrInvalidTOTPCode
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	qtx := s.q.WithTx(tx)
 	if err := qtx.DeleteUserTOTP(ctx, uid); err != nil {
 		return err
 	}
@@ -229,7 +307,7 @@ func (s *Service) CompleteMFATOTP(ctx context.Context, mfaToken, code string) (L
 		return LoginResult{}, err
 	}
 	// Sign the version we verified above, never reload a newer generation here.
-	token, err := s.issueFor(u)
+	token, err := s.issueFor(ctx, u)
 	if err != nil {
 		return LoginResult{}, err
 	}

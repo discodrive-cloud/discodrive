@@ -127,6 +127,13 @@ type BrowserBookmark struct {
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
+type BrowserSession struct {
+	ID           string             `json:"id"`
+	UserID       pgtype.UUID        `json:"user_id"`
+	TokenVersion int64              `json:"token_version"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type Calendar struct {
 	ID         pgtype.UUID        `json:"id"`
 	UserID     pgtype.UUID        `json:"user_id"`
@@ -474,6 +481,7 @@ type UserTotp struct {
 	Enabled     bool               `json:"enabled"`
 	ConfirmedAt pgtype.Timestamptz `json:"confirmed_at"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ApprovalID  string             `json:"approval_id"`
 }
 
 type WebauthnCredential struct {

@@ -33,11 +33,12 @@ services:
   nginx:
     image: nginx:alpine
     restart: unless-stopped
-    # APP_PORT is substituted into default.conf.template by the image's envsubst step.
-    # The filter restricts substitution to APP_PORT so nginx vars ($host, $scheme, …) survive.
+    # The image substitutes only explicit deployment variables in the nginx template.
+    # Preserve nginx runtime variables ($host, $scheme, $remote_addr, ...).
     environment:
       APP_PORT: "${APP_PORT:-8080}"
-      NGINX_ENVSUBST_FILTER: "^APP_PORT$$"
+      NGINX_CLOUDFLARED_PEER: "${NGINX_CLOUDFLARED_PEER:-unix:}"
+      NGINX_ENVSUBST_FILTER: "^(APP_PORT|NGINX_CLOUDFLARED_PEER)$$"
       TZ: "${TZ:-UTC}"
     volumes:
       - ./deploy/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro

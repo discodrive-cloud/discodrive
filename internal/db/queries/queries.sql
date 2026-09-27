@@ -651,17 +651,8 @@ SELECT
 
 -- TOTP 2FA (A.3). Secret is AES-GCM ciphertext.
 
--- name: UpsertUserTOTP :exec
--- Begin (or restart) TOTP setup: store an encrypted secret, not yet confirmed.
-INSERT INTO user_totp (user_id, secret, enabled, confirmed_at)
-VALUES ($1, $2, false, NULL)
-ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret, enabled = false, confirmed_at = NULL, created_at = now();
-
 -- name: GetUserTOTP :one
 SELECT * FROM user_totp WHERE user_id = $1;
-
--- name: ConfirmUserTOTP :exec
-UPDATE user_totp SET enabled = true, confirmed_at = now() WHERE user_id = $1;
 
 -- name: DeleteUserTOTP :exec
 DELETE FROM user_totp WHERE user_id = $1;
@@ -709,3 +700,14 @@ SELECT * FROM audit_log WHERE user_id = $1 ORDER BY id DESC LIMIT $2;
 
 -- name: GetUserForAuthUpdate :one
 SELECT * FROM users WHERE id = $1 FOR UPDATE;
+
+-- name: StartApprovedTOTP :execrows
+INSERT INTO user_totp (user_id, secret, enabled, confirmed_at, approval_id)
+VALUES ($1, $2, false, NULL, $3)
+ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret,
+    enabled = false, confirmed_at = NULL, created_at = now(), approval_id = EXCLUDED.approval_id
+WHERE NOT user_totp.enabled;
+
+-- name: ConfirmApprovedTOTP :execrows
+UPDATE user_totp SET enabled = true, confirmed_at = now(), approval_id = ''
+WHERE user_id = $1 AND NOT enabled AND approval_id = $2 AND secret = $3;

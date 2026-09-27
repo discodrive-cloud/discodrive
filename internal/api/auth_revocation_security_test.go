@@ -40,7 +40,11 @@ func TestSecurityMFAAfterPasswordChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	uid := db.UUIDString(u.ID)
-	_, key, err := svc.SetupTOTP(ctx, uid)
+	enrollmentApproval, err := svc.ApprovePasskeyWithPassword(ctx, uid, "old-password", "", "totp:setup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, key, err := svc.SetupTOTP(ctx, uid, enrollmentApproval)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +52,7 @@ func TestSecurityMFAAfterPasswordChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = svc.ConfirmTOTP(ctx, uid, code); err != nil {
+	if _, err = svc.ConfirmTOTP(ctx, uid, code, enrollmentApproval); err != nil {
 		t.Fatal(err)
 	}
 	login, err := svc.Login(ctx, u.Email, "old-password")
@@ -158,7 +162,12 @@ func TestSecurityStreamAfterDeviceRevocation(t *testing.T) {
 
 func TestSecurityWebAuthnAssertionReplay(t *testing.T) {
 	ctx := context.Background()
-	pool, q, svc := bootstrapPairingDB(t)
+	pool, q, _ := bootstrapPairingDB(t)
+	cipher, err := secret.New(strings.Repeat("x", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := auth.NewService(pool, auth.NewTokenIssuer("secret", time.Hour), cipher)
 	_, u, err := svc.Register(ctx, "passkey-review@example.test", "password12")
 	if err != nil {
 		t.Fatal(err)
@@ -185,13 +194,14 @@ func TestSecurityWebAuthnAssertionReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	approvalMode := false
+	approvalAction := "register"
 	verificationFlags := byte(5)
 	ceremony := func() (string, []byte) {
 		t.Helper()
 		var sessionToken string
 		var err error
 		if approvalMode {
-			_, sessionToken, err = svc.BeginPasskeyApproval(ctx, db.UUIDString(u.ID), "register")
+			_, sessionToken, err = svc.BeginPasskeyApproval(ctx, db.UUIDString(u.ID), approvalAction)
 		} else {
 			_, sessionToken, err = svc.BeginWebAuthnLogin(ctx)
 		}
@@ -298,6 +308,24 @@ func TestSecurityWebAuthnAssertionReplay(t *testing.T) {
 	}
 	if _, err := svc.FinishPasskeyApproval(ctx, db.UUIDString(u.ID), stepToken, stepAssertion); !errors.Is(err, auth.ErrApproval) {
 		t.Fatalf("approval assertion replay: %v", err)
+	}
+	// The same verified existing key may authorize TOTP, but its grant cannot add a passkey.
+	approvalAction = "totp:setup"
+	stepToken, stepAssertion = ceremony()
+	totpGrant, err := svc.FinishPasskeyApproval(ctx, db.UUIDString(u.ID), stepToken, stepAssertion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.BeginWebAuthnRegistration(ctx, db.UUIDString(u.ID), totpGrant); err == nil {
+		t.Fatal("TOTP proof authorized passkey registration")
+	}
+	_, totpKey, err := svc.SetupTOTP(ctx, db.UUIDString(u.ID), totpGrant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	totpCode, _ := totp.GenerateCode(totpKey, time.Now())
+	if _, err := svc.ConfirmTOTP(ctx, db.UUIDString(u.ID), totpCode, totpGrant); err != nil {
+		t.Fatal(err)
 	}
 	verificationFlags = 1
 	stepToken, stepAssertion = ceremony()
