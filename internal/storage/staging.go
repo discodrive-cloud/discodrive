@@ -58,6 +58,13 @@ func (s *FileService) stage(ctx context.Context, owner pgtype.UUID, source io.Re
 		file.cleanup(s.st)
 		return nil, err
 	}
+	// The reader reserves ahead in blocks; give back what the file did not use.
+	if file.reservation != nil {
+		if err := file.reservation.Trim(size); err != nil {
+			file.cleanup(s.st)
+			return nil, err
+		}
+	}
 	file.size = size
 	file.hash = hash
 	return file, nil
