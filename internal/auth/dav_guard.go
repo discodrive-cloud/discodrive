@@ -116,6 +116,11 @@ func (s *Service) checkDAVPassword(ctx context.Context, email, password, peer st
 	if len(email) > 320 || len(password) > 1024 {
 		return "", "", ErrInvalidCreds
 	}
+	// A recent successful check needs neither Argon2 nor an admission slot: it proves
+	// knowledge of the password, which is what the per-IP failure budget guards.
+	if uid, did, ok := s.cachedWebdavPassword(ctx, email, password); ok {
+		return uid, did, nil
+	}
 	done, err := s.davGuard.begin(ctx, peer)
 	if err != nil {
 		return "", "", err

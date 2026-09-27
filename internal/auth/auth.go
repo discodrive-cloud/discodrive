@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"encoding/base32"
 	"errors"
@@ -29,6 +30,7 @@ type Service struct {
 	createSession func(context.Context, db.User) (string, error)
 	sessionActive func(context.Context, *Claims) bool
 	davGuard      davGuard
+	davCache      *davCache
 	pool          *pgxpool.Pool
 	q             *db.Queries
 	issuer        *TokenIssuer
@@ -70,7 +72,7 @@ func (s *Service) quotaFor(requested *int64, role string) pgtype.Int8 {
 
 func NewService(pool *pgxpool.Pool, issuer *TokenIssuer, cipher *secret.Cipher) *Service {
 	q := db.New(pool)
-	s := &Service{pool: pool, q: q, issuer: issuer, cipher: cipher, lookupUser: q.GetUserByID}
+	s := &Service{pool: pool, q: q, issuer: issuer, cipher: cipher, lookupUser: q.GetUserByID, davCache: newDAVCache()}
 	s.createSession = s.createBrowserSession
 	s.sessionActive = s.browserSessionActive
 	s.getUserByEmail = q.GetUserByEmail
@@ -335,8 +337,37 @@ func (s *Service) verifyWebdavPassword(ctx context.Context, email, password stri
 		if !d.SecretHash.Valid {
 			continue
 		}
-		if good, _ := VerifyPassword(password, d.SecretHash.String); good {
-			return db.UUIDString(d.UserID), db.UUIDString(d.ID), true
+		if good, _ := verifyPassword(password, d.SecretHash.String); good {
+			userID, deviceID = db.UUIDString(d.UserID), db.UUIDString(d.ID)
+			if s.davCache != nil {
+				s.davCache.store(email, password, davCacheEntry{userID: userID, deviceID: deviceID, secretHash: d.SecretHash.String})
+			}
+			return userID, deviceID, true
+		}
+	}
+	return "", "", false
+}
+
+// cachedWebdavPassword accepts credentials that passed Argon2 within davCacheTTL,
+// provided the device row still makes them valid: ListWebdavDevicesByEmail only returns
+// devices that are live, match the user's token version and whose user is not due a
+// password change, and the secret hash must be the one that was verified.
+func (s *Service) cachedWebdavPassword(ctx context.Context, email, password string) (userID, deviceID string, ok bool) {
+	if s.davCache == nil {
+		return "", "", false
+	}
+	e, hit := s.davCache.lookup(email, password)
+	if !hit {
+		return "", "", false
+	}
+	devs, err := s.q.ListWebdavDevicesByEmail(ctx, email)
+	if err != nil {
+		return "", "", false
+	}
+	for _, d := range devs {
+		if db.UUIDString(d.ID) == e.deviceID && d.SecretHash.Valid &&
+			hmac.Equal([]byte(d.SecretHash.String), []byte(e.secretHash)) {
+			return e.userID, e.deviceID, true
 		}
 	}
 	return "", "", false

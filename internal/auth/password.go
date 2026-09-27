@@ -42,6 +42,9 @@ func HashPassword(password string) (string, error) {
 }
 
 // VerifyPassword checks a password against a stored hash (constant-time comparison).
+// verifyPassword is VerifyPassword behind a seam, so tests can count Argon2 checks.
+var verifyPassword = VerifyPassword
+
 func VerifyPassword(password, encoded string) (bool, error) {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {
