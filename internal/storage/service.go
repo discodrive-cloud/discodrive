@@ -53,6 +53,8 @@ type FileService struct {
 	// may fire together, and two concurrent walks would race to insert the same
 	// discovered nodes.
 	rescanMu sync.Mutex
+	// busy holds paths an operation has changed on disk but not yet committed.
+	busy busyPaths
 }
 
 func NewFileService(pool *pgxpool.Pool, st Storage) *FileService {
@@ -173,6 +175,7 @@ func (s *FileService) CreateFolder(ctx context.Context, userID string, parentID 
 		return db.Node{}, err
 	}
 	rel := prefix + "/" + name
+	defer s.busy.hold(rel)()
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -224,6 +227,7 @@ func (s *FileService) Rename(ctx context.Context, userID, nodeID, newName string
 	owner := node.UserID
 	oldRel := node.DiskPath.String
 	newRel := parentDir(oldRel) + "/" + newName
+	defer s.busy.hold(oldRel, newRel)()
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -275,6 +279,7 @@ func (s *FileService) Move(ctx context.Context, userID, nodeID string, parentID 
 		return db.Node{}, ErrCycle
 	}
 	newRel := prefix + "/" + node.Name
+	defer s.busy.hold(oldRel, newRel)()
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -492,6 +497,7 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 		return PushResult{}, err
 	}
 	rel := prefix + "/" + name
+	defer s.busy.hold(rel)()
 
 	staged, err := s.stage(ctx, ownerUUID, r)
 	if err != nil {
@@ -560,6 +566,7 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 	// a separate copy named `name (conflict, device, date).ext`.
 	cname := conflictName(name, device, time.Now())
 	crel := prefix + "/" + cname
+	defer s.busy.hold(crel)()
 	if err := s.st.Move(tmpRel, crel); err != nil {
 		return PushResult{}, err
 	}
@@ -806,6 +813,9 @@ func (s *FileService) rescanUser(ctx context.Context, uid pgtype.UUID) error {
 		if tomb[e.Rel] {
 			continue // file belongs to a trashed node — leave it alone
 		}
+		if s.busy.covers(e.Rel) {
+			continue // an upload/rename owns this path until it commits
+		}
 		var parentUUID pgtype.UUID
 		if parent := parentDir(e.Rel); parent != userID {
 			p, ok := byPath[parent]
@@ -832,7 +842,7 @@ func (s *FileService) rescanUser(ctx context.Context, uid pgtype.UUID) error {
 	}
 
 	for path, n := range byPath {
-		if seen[path] {
+		if seen[path] || s.busy.covers(path) {
 			continue
 		}
 		if err := s.markMissing(ctx, uid, n); err != nil {
@@ -849,6 +859,14 @@ func (s *FileService) createDiscovered(ctx context.Context, uid, parentUUID pgty
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
+
+	// The node list was read before the walk: an operation may have committed this path
+	// since. Re-check (indexed) before hashing and importing it as a new file.
+	if n, err := qtx.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: uid, Path: e.Rel}); err == nil {
+		return n, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return db.Node{}, err
+	}
 
 	name := baseName(e.Rel)
 	var node db.Node
@@ -889,6 +907,21 @@ func (s *FileService) markMissing(ctx context.Context, uid pgtype.UUID, n db.Nod
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
+
+	// The node list was read before the walk: a rename/move/delete may have committed
+	// since. Act only if the node is still live at the path the walk did not find.
+	cur, err := qtx.GetNode(ctx, n.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if cur.DeletedAt.Valid || cur.DiskPath != n.DiskPath {
+		return nil
+	}
+	if ok, err := s.st.Exists(n.DiskPath.String); err != nil || ok {
+		return err
+	}
 
 	if err := qtx.SoftDeleteNode(ctx, n.ID); err != nil {
 		return err
@@ -1081,6 +1114,7 @@ func (s *FileService) Undelete(ctx context.Context, userID, nodeID string) (db.N
 	} else if !errors.Is(gerr, pgx.ErrNoRows) {
 		return db.Node{}, gerr
 	}
+	defer s.busy.hold(oldRel, newRel)()
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
