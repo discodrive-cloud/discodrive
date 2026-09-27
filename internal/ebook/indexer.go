@@ -27,7 +27,8 @@ func NewIndexer(q *db.Queries, storageRoot string) *Indexer {
 // IndexNode reads metadata from the e-book at diskPath and upserts the book
 // (plus its authors, tags, and cover) for the given user + file node.
 // The operation is idempotent.
-func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath string) error {
+func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath string) (err error) {
+	defer recoverParse(&err)
 	uid, err := db.ParseUUID(userID)
 	if err != nil {
 		return err
