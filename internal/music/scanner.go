@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"discodrive/internal/coalesce"
 	"discodrive/internal/db"
 	"discodrive/internal/music/tagwrite"
 	"discodrive/internal/storage"
@@ -315,10 +316,24 @@ func (ix *Indexer) RemoveNode(ctx context.Context, nodeID string) error {
 	return ix.q.DeleteSongByNode(ctx, nid)
 }
 
-// ScanFolder walks every live audio file under folderNodeID and indexes new or
+// scans keeps one music scan per user and folder in flight: the scan button, the
+// periodic tick and the fsnotify watcher used to index the same new files in parallel.
+var scans coalesce.Gate
+
+// ScanFolder indexes the folder, or — when a scan of it is already running — asks that
+// scan for one more pass and returns (0, nil) at once.
+func (ix *Indexer) ScanFolder(ctx context.Context, userID, folderNodeID string) (n int, err error) {
+	scans.Run(userID+"/"+folderNodeID, func() {
+		k, e := ix.scanFolder(ctx, userID, folderNodeID)
+		n, err = n+k, e
+	})
+	return n, err
+}
+
+// scanFolder walks every live audio file under folderNodeID and indexes new or
 // changed files, skipping songs whose row is already up to date. Returns the
 // count of files indexed (upserted).
-func (ix *Indexer) ScanFolder(ctx context.Context, userID, folderNodeID string) (int, error) {
+func (ix *Indexer) scanFolder(ctx context.Context, userID, folderNodeID string) (int, error) {
 	folderUID, err := db.ParseUUID(folderNodeID)
 	if err != nil {
 		return 0, err
