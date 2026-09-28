@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"discodrive"
@@ -35,6 +36,7 @@ import (
 	"discodrive/internal/notify"
 	"discodrive/internal/opds"
 	"discodrive/internal/quota"
+	"discodrive/internal/rescan"
 	"discodrive/internal/saved"
 	"discodrive/internal/secret"
 	"discodrive/internal/storage"
@@ -58,6 +60,20 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		runMigrate(cfg, os.Args[2:])
 		return
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "rescan" {
+		if cfg.DatabaseURL == "" {
+			log.Fatal("discodrive: DATABASE_URL is not set")
+		}
+		ctx := context.Background()
+		pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("discodrive: connecting to database: %v", err)
+		}
+		code := runRescan(ctx, db.New(pool), os.Args[2:], os.Stdout, time.Second)
+		pool.Close()
+		os.Exit(code)
 	}
 
 	runServer(cfg)
@@ -253,6 +269,13 @@ func runServer(cfg config.Config) {
 	// about the disk running out.
 	workerCfg.StorageTotal = cfg.StorageTotalBytes()
 	go worker.New(fileSvc, cfg.StorageRoot, queries, notifier, workerCfg, musicIdx, ebookIdx, savedSvc, bookmarksSvc).Run(ctx)
+	// Disk↔database reconciliation runs on demand: this startup request, the admin panel
+	// and `server rescan`. The runner is the only executor of the queue; a request left
+	// unfinished by a crash, or queued while the server was down, runs now as well.
+	if _, err := rescan.Enqueue(ctx, queries, pgtype.UUID{}, "startup"); err != nil {
+		log.Printf("discodrive: queueing startup rescan: %v", err)
+	}
+	go rescan.NewRunner(pool, fileSvc).Run(ctx)
 	// Reap abandoned resumable-upload sessions (idle > 1h) and their staged temp files.
 	go uploads.StartGC(ctx, 5*time.Minute, time.Hour)
 

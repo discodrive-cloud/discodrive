@@ -135,6 +135,7 @@ type Querier interface {
 	CreatePairing(ctx context.Context, arg CreatePairingParams) (DevicePairing, error)
 	CreatePlaylist(ctx context.Context, arg CreatePlaylistParams) (Playlist, error)
 	CreatePodcastChannel(ctx context.Context, arg CreatePodcastChannelParams) (PodcastChannel, error)
+	CreateRescanRequest(ctx context.Context, arg CreateRescanRequestParams) (RescanRequest, error)
 	CreateShare(ctx context.Context, arg CreateShareParams) (ResourceShare, error)
 	// Stage 0 base access layer. Queries are extended in steps 0.2–0.5.
 	CreateTenant(ctx context.Context, name string) (Tenant, error)
@@ -170,6 +171,7 @@ type Querier interface {
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) error
 	EnabledEbookUsers(ctx context.Context) ([]EnabledEbookUsersRow, error)
 	EnabledMusicUsers(ctx context.Context) ([]EnabledMusicUsersRow, error)
+	FinishRescanRequest(ctx context.Context, arg FinishRescanRequestParams) error
 	GCBrowserBookmarkTombstones(ctx context.Context, updatedAt pgtype.Timestamptz) ([]GCBrowserBookmarkTombstonesRow, error)
 	GetActiveShareByToken(ctx context.Context, token string) (ResourceShare, error)
 	GetAddressbook(ctx context.Context, id pgtype.UUID) (Addressbook, error)
@@ -208,6 +210,7 @@ type Querier interface {
 	GetPodcastChannelForUser(ctx context.Context, arg GetPodcastChannelForUserParams) (PodcastChannel, error)
 	// Returns the stored reading position for (user_id, document).
 	GetReadingProgress(ctx context.Context, arg GetReadingProgressParams) (ReadingProgress, error)
+	GetRescanRequest(ctx context.Context, id int64) (RescanRequest, error)
 	GetSavedItemForUser(ctx context.Context, arg GetSavedItemForUserParams) (SavedItem, error)
 	GetSetting(ctx context.Context, key string) (Setting, error)
 	GetShare(ctx context.Context, id pgtype.UUID) (ResourceShare, error)
@@ -275,11 +278,13 @@ type Querier interface {
 	// Nodes that have more than keep versions (trimming candidates).
 	ListNodesWithExcessVersions(ctx context.Context, keep interface{}) ([]pgtype.UUID, error)
 	ListNotificationPrefs(ctx context.Context, userID pgtype.UUID) ([]ListNotificationPrefsRow, error)
+	ListPendingRescanRequests(ctx context.Context) ([]RescanRequest, error)
 	ListPendingSavedItems(ctx context.Context, limit int32) ([]SavedItem, error)
 	ListPlaylistsByUser(ctx context.Context, userID pgtype.UUID) ([]Playlist, error)
 	ListPodcastChannelsForUser(ctx context.Context, userID pgtype.UUID) ([]PodcastChannel, error)
 	ListPublicSettings(ctx context.Context) ([]Setting, error)
 	ListQuotaCandidates(ctx context.Context) ([]ListQuotaCandidatesRow, error)
+	ListRecentRescanRequests(ctx context.Context, limit int32) ([]ListRecentRescanRequestsRow, error)
 	// Snapshots that duplicate a node's live content: leftovers from the scheme where a
 	// push snapshotted what it had just written. The cutoff keeps the job away from nodes
 	// being written right now, whose new snapshot is not committed yet.
@@ -303,8 +308,11 @@ type Querier interface {
 	ListStarredArtists(ctx context.Context, userID pgtype.UUID) ([]Artist, error)
 	// Returns accessible starred songs for a user, ordered by starred_at desc.
 	ListStarredSongs(ctx context.Context, userID pgtype.UUID) ([]Song, error)
+	// Names of trashed children of one folder: reconciliation must not re-import them.
+	ListTombstonedChildren(ctx context.Context, parentID pgtype.UUID) ([]string, error)
 	// Paths of trashed (soft-deleted) nodes — so a rescan doesn't re-import their files.
 	ListTombstonedNodePaths(ctx context.Context, userID pgtype.UUID) ([]pgtype.Text, error)
+	ListTombstonedRootChildren(ctx context.Context, userID pgtype.UUID) ([]string, error)
 	ListTrashNodes(ctx context.Context, userID pgtype.UUID) ([]Node, error)
 	ListTrashedSubtree(ctx context.Context, arg ListTrashedSubtreeParams) ([]ListTrashedSubtreeRow, error)
 	ListUnusedBackupCodes(ctx context.Context, userID pgtype.UUID) ([]BackupCode, error)
@@ -405,6 +413,7 @@ type Querier interface {
 	Star(ctx context.Context, arg StarParams) error
 	StarredItems(ctx context.Context, userID pgtype.UUID) ([]StarredItemsRow, error)
 	StartApprovedTOTP(ctx context.Context, arg StartApprovedTOTPParams) (int64, error)
+	StartRescanRequest(ctx context.Context, id int64) error
 	// Sum of the quotas handed out to users, optionally excluding one (the user being
 	// edited). NULL exclude_id excludes nobody. Used to keep the handed-out total within
 	// the server-wide cap.

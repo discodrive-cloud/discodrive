@@ -753,106 +753,27 @@ func (s *FileService) TrashGC(ctx context.Context, olderThan time.Duration) erro
 	return nil
 }
 
-// Rescan reconciles disk and DB for all users: files added outside the service are
-// imported into nodes+change_log; missing nodes are soft-deleted. One user's
-// failure does not block the others; all errors are joined into the result.
+// Rescan reconciles every user's tree with the database (see ReconcileUser). One user's
+// failure does not block the others; errors are joined into the result.
 func (s *FileService) Rescan(ctx context.Context) error {
-	s.rescanMu.Lock()
-	defer s.rescanMu.Unlock()
-
 	users, err := s.q.ListUserIDs(ctx)
 	if err != nil {
 		return err
 	}
 	var errs []error
 	for _, uid := range users {
-		if err := s.rescanUser(ctx, uid); err != nil {
+		st, err := s.ReconcileUser(ctx, uid)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("user %s: %w", db.UUIDString(uid), err))
 		}
-	}
-	return errors.Join(errs...)
-}
-
-func (s *FileService) rescanUser(ctx context.Context, uid pgtype.UUID) error {
-	userID := db.UUIDString(uid)
-	live, err := s.q.ListLiveNodes(ctx, uid)
-	if err != nil {
-		return err
-	}
-	byPath := make(map[string]db.Node, len(live))
-	for _, n := range live {
-		if n.DiskPath.Valid {
-			byPath[n.DiskPath.String] = n
-		}
-	}
-
-	// Paths of trashed nodes: their files remain on disk until GC, but rescan
-	// must NOT re-import them as "new" (otherwise soft-delete is resurrected).
-	tombs, err := s.q.ListTombstonedNodePaths(ctx, uid)
-	if err != nil {
-		return err
-	}
-	tomb := make(map[string]bool, len(tombs))
-	for _, p := range tombs {
-		if p.Valid {
-			tomb[p.String] = true
-		}
-	}
-
-	entries, partial, err := s.st.Walk(userID)
-	if err != nil {
-		return err
-	}
-	var errs []error
-	seen := make(map[string]bool, len(entries))
-	for _, e := range entries {
-		seen[e.Rel] = true
-		if _, ok := byPath[e.Rel]; ok {
-			continue
-		}
-		if tomb[e.Rel] {
-			continue // file belongs to a trashed node — leave it alone
-		}
-		if s.busy.covers(e.Rel) {
-			continue // an upload/rename owns this path until it commits
-		}
-		var parentUUID pgtype.UUID
-		if parent := parentDir(e.Rel); parent != userID {
-			p, ok := byPath[parent]
-			if !ok {
-				continue // parent not yet seen (will be picked up on the next pass)
-			}
-			parentUUID = p.ID
-		}
-		node, err := s.createDiscovered(ctx, uid, parentUUID, e)
-		if err != nil {
-			// One broken entry (unreadable file, name conflict) must not stop
-			// the import of everything else.
-			errs = append(errs, fmt.Errorf("%s: %w", e.Rel, err))
-			continue
-		}
-		byPath[e.Rel] = node
-	}
-
-	// An incomplete walk is no proof of deletion: skip the missing-node sweep
-	// so nodes under unreadable directories are not falsely soft-deleted.
-	if partial {
-		errs = append(errs, errors.New("walk incomplete (unreadable directories), missing-node sweep skipped"))
-		return errors.Join(errs...)
-	}
-
-	for path, n := range byPath {
-		if seen[path] || s.busy.covers(path) {
-			continue
-		}
-		if err := s.markMissing(ctx, uid, n); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+		for _, e := range st.ErrorText {
+			errs = append(errs, fmt.Errorf("user %s: %s", db.UUIDString(uid), e))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (s *FileService) createDiscovered(ctx context.Context, uid, parentUUID pgtype.UUID, e DiskEntry) (db.Node, error) {
+func (s *FileService) createDiscovered(ctx context.Context, uid, parentUUID pgtype.UUID, rel string, isDir bool) (db.Node, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return db.Node{}, err
@@ -862,29 +783,29 @@ func (s *FileService) createDiscovered(ctx context.Context, uid, parentUUID pgty
 
 	// The node list was read before the walk: an operation may have committed this path
 	// since. Re-check (indexed) before hashing and importing it as a new file.
-	if n, err := qtx.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: uid, Path: e.Rel}); err == nil {
+	if n, err := qtx.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: uid, Path: rel}); err == nil {
 		return n, nil
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return db.Node{}, err
 	}
 
-	name := baseName(e.Rel)
+	name := baseName(rel)
 	var node db.Node
-	if e.IsDir {
+	if isDir {
 		node, err = qtx.CreateNode(ctx, db.CreateNodeParams{
-			UserID: uid, ParentID: parentUUID, Name: name, IsDir: true, DiskPath: text(e.Rel),
+			UserID: uid, ParentID: parentUUID, Name: name, IsDir: true, DiskPath: text(rel),
 		})
 		if err != nil {
 			return db.Node{}, mapInsertErr(err)
 		}
 	} else {
-		size, sha, herr := s.hashFile(e.Rel)
+		size, sha, herr := s.hashFile(rel)
 		if herr != nil {
 			return db.Node{}, herr
 		}
 		node, err = qtx.CreateNode(ctx, db.CreateNodeParams{
 			UserID: uid, ParentID: parentUUID, Name: name, IsDir: false,
-			Size: int8val(size), ContentHash: text(sha), DiskPath: text(e.Rel), Mime: text(detectMime(name)),
+			Size: int8val(size), ContentHash: text(sha), DiskPath: text(rel), Mime: text(detectMime(name)),
 		})
 		if err != nil {
 			return db.Node{}, mapInsertErr(err)

@@ -23,6 +23,22 @@ type DiskEntry struct {
 var ErrPathEscape = errors.New("path escapes storage root")
 
 // Storage abstracts the file store (designed to support future S3 backends).
+// ItemKind classifies a directory entry for reconciliation.
+type ItemKind int
+
+const (
+	KindFile  ItemKind = iota // regular file
+	KindDir                   // directory
+	KindOther                 // symlink, device, socket… — never imported
+)
+
+// DirItem is one entry of a single directory level.
+type DirItem struct {
+	Name string
+	Kind ItemKind
+	Size int64 // regular files only
+}
+
 type Storage interface {
 	// WriteFile writes content at the given relative path (creating parents),
 	// and returns the size and sha256 hex digest.
@@ -50,6 +66,9 @@ type Storage interface {
 	// paths. Unreadable directories are skipped rather than aborting the walk;
 	// partial reports whether anything was skipped (the listing is incomplete).
 	Walk(rel string) (entries []DiskEntry, partial bool, err error)
+	// ReadDir lists one directory level without following symlinks. A missing
+	// directory returns an error satisfying os.IsNotExist.
+	ReadDir(rel string) ([]DirItem, error)
 }
 
 // LocalDisk is a Storage implementation backed by the local filesystem rooted at root.
@@ -251,4 +270,38 @@ func (d *LocalDisk) Walk(rel string) ([]DiskEntry, bool, error) {
 	}
 	walk(r, rel)
 	return out, partial, nil
+}
+
+func (d *LocalDisk) ReadDir(rel string) ([]DirItem, error) {
+	r, err := d.directory(rel, false)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	f, err := r.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	entries, err := f.ReadDir(-1)
+	f.Close()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DirItem, 0, len(entries))
+	for _, e := range entries {
+		info, err := r.Lstat(e.Name())
+		if err != nil {
+			continue // vanished between ReadDir and Lstat
+		}
+		it := DirItem{Name: e.Name(), Kind: KindOther}
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+		case info.IsDir():
+			it.Kind = KindDir
+		case info.Mode().IsRegular():
+			it.Kind, it.Size = KindFile, info.Size()
+		}
+		out = append(out, it)
+	}
+	return out, nil
 }
