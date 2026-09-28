@@ -406,6 +406,7 @@ type Querier interface {
 	SetBrowserBookmarkTitleIfEmpty(ctx context.Context, arg SetBrowserBookmarkTitleIfEmptyParams) (int64, error)
 	SetCalendarColor(ctx context.Context, arg SetCalendarColorParams) error
 	SetCalendarName(ctx context.Context, arg SetCalendarNameParams) error
+	SetCalendarOrder(ctx context.Context, arg SetCalendarOrderParams) error
 	SetDeviceTokenHash(ctx context.Context, arg SetDeviceTokenHashParams) error
 	SetEbookCredentials(ctx context.Context, arg SetEbookCredentialsParams) error
 	// The cursor only moves forward: a catch-up that started before a folder switch must

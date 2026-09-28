@@ -270,3 +270,27 @@ func TestPrincipalAnswersAppleRootDiscovery(t *testing.T) {
 		t.Fatalf("principal did not return calendar-home-set:\n%s", rec.Body.String())
 	}
 }
+
+func TestProppatchPersistsCalendarOrder(t *testing.T) {
+	h, userID, uri := setup(t)
+	calPath := "/caldav/" + userID + "/cal/" + uri + "/"
+	const propfindOrder = `<?xml version="1.0" encoding="UTF-8"?>
+<propfind xmlns="DAV:" xmlns:A="http://apple.com/ns/ical/"><prop><A:calendar-order/></prop></propfind>`
+
+	before := do(t, h, "PROPFIND", calPath, propfindOrder)
+	if strings.Contains(before.Body.String(), ">0<") || strings.Contains(before.Body.String(), "200 OK") {
+		t.Fatalf("no order was set, but PROPFIND returned one:\n%s", before.Body.String())
+	}
+
+	pp := do(t, h, "PROPPATCH", calPath, `<?xml version="1.0" encoding="UTF-8"?>
+<A:propertyupdate xmlns:A="DAV:"><A:set><A:prop><E:calendar-order xmlns:E="http://apple.com/ns/ical/">3</E:calendar-order></A:prop></A:set></A:propertyupdate>`)
+	if pp.Code != http.StatusMultiStatus {
+		t.Fatalf("PROPPATCH code=%d body=%s", pp.Code, pp.Body.String())
+	}
+
+	after := do(t, h, "PROPFIND", calPath, propfindOrder)
+	body := after.Body.String()
+	if after.Code != http.StatusMultiStatus || !strings.Contains(body, ">3</calendar-order>") {
+		t.Fatalf("PROPFIND did not return the saved calendar-order (code %d):\n%s", after.Code, body)
+	}
+}

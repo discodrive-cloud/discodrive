@@ -271,7 +271,7 @@ func (q *Queries) CreateAddressbook(ctx context.Context, arg CreateAddressbookPa
 }
 
 const createCalendar = `-- name: CreateCalendar :one
-INSERT INTO calendars (user_id, uri, name, color) VALUES ($1, $2, $3, $4) RETURNING id, user_id, uri, name, color, ctag, created_at, components
+INSERT INTO calendars (user_id, uri, name, color) VALUES ($1, $2, $3, $4) RETURNING id, user_id, uri, name, color, ctag, created_at, components, sort_order
 `
 
 type CreateCalendarParams struct {
@@ -299,12 +299,13 @@ func (q *Queries) CreateCalendar(ctx context.Context, arg CreateCalendarParams) 
 		&i.Ctag,
 		&i.CreatedAt,
 		&i.Components,
+		&i.SortOrder,
 	)
 	return i, err
 }
 
 const createCalendarWithComponents = `-- name: CreateCalendarWithComponents :one
-INSERT INTO calendars (user_id, uri, name, color, components) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, uri, name, color, ctag, created_at, components
+INSERT INTO calendars (user_id, uri, name, color, components) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, uri, name, color, ctag, created_at, components, sort_order
 `
 
 type CreateCalendarWithComponentsParams struct {
@@ -333,6 +334,7 @@ func (q *Queries) CreateCalendarWithComponents(ctx context.Context, arg CreateCa
 		&i.Ctag,
 		&i.CreatedAt,
 		&i.Components,
+		&i.SortOrder,
 	)
 	return i, err
 }
@@ -936,7 +938,7 @@ func (q *Queries) GetAddressbookObject(ctx context.Context, arg GetAddressbookOb
 }
 
 const getCalendar = `-- name: GetCalendar :one
-SELECT id, user_id, uri, name, color, ctag, created_at, components FROM calendars WHERE id = $1
+SELECT id, user_id, uri, name, color, ctag, created_at, components, sort_order FROM calendars WHERE id = $1
 `
 
 func (q *Queries) GetCalendar(ctx context.Context, id pgtype.UUID) (Calendar, error) {
@@ -951,12 +953,13 @@ func (q *Queries) GetCalendar(ctx context.Context, id pgtype.UUID) (Calendar, er
 		&i.Ctag,
 		&i.CreatedAt,
 		&i.Components,
+		&i.SortOrder,
 	)
 	return i, err
 }
 
 const getCalendarByURI = `-- name: GetCalendarByURI :one
-SELECT id, user_id, uri, name, color, ctag, created_at, components FROM calendars WHERE uri = $1
+SELECT id, user_id, uri, name, color, ctag, created_at, components, sort_order FROM calendars WHERE uri = $1
 `
 
 func (q *Queries) GetCalendarByURI(ctx context.Context, uri string) (Calendar, error) {
@@ -971,6 +974,7 @@ func (q *Queries) GetCalendarByURI(ctx context.Context, uri string) (Calendar, e
 		&i.Ctag,
 		&i.CreatedAt,
 		&i.Components,
+		&i.SortOrder,
 	)
 	return i, err
 }
@@ -1779,7 +1783,7 @@ func (q *Queries) ListCalendarObjects(ctx context.Context, calendarID pgtype.UUI
 }
 
 const listCalendars = `-- name: ListCalendars :many
-SELECT id, user_id, uri, name, color, ctag, created_at, components FROM calendars WHERE user_id = $1 ORDER BY created_at
+SELECT id, user_id, uri, name, color, ctag, created_at, components, sort_order FROM calendars WHERE user_id = $1 ORDER BY created_at
 `
 
 func (q *Queries) ListCalendars(ctx context.Context, userID pgtype.UUID) ([]Calendar, error) {
@@ -1800,6 +1804,7 @@ func (q *Queries) ListCalendars(ctx context.Context, userID pgtype.UUID) ([]Cale
 			&i.Ctag,
 			&i.CreatedAt,
 			&i.Components,
+			&i.SortOrder,
 		); err != nil {
 			return nil, err
 		}
@@ -3109,6 +3114,21 @@ type SetCalendarNameParams struct {
 
 func (q *Queries) SetCalendarName(ctx context.Context, arg SetCalendarNameParams) error {
 	_, err := q.db.Exec(ctx, setCalendarName, arg.ID, arg.Name, arg.UserID)
+	return err
+}
+
+const setCalendarOrder = `-- name: SetCalendarOrder :exec
+UPDATE calendars SET sort_order = $2 WHERE id = $1 AND user_id = $3
+`
+
+type SetCalendarOrderParams struct {
+	ID        pgtype.UUID `json:"id"`
+	SortOrder pgtype.Int4 `json:"sort_order"`
+	UserID    pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) SetCalendarOrder(ctx context.Context, arg SetCalendarOrderParams) error {
+	_, err := q.db.Exec(ctx, setCalendarOrder, arg.ID, arg.SortOrder, arg.UserID)
 	return err
 }
 

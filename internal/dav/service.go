@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"discodrive/internal/db"
@@ -124,6 +125,18 @@ func (s *Service) SetCalendarColor(ctx context.Context, userID, calID, color str
 		return err
 	}
 	return s.q.SetCalendarColor(ctx, db.SetCalendarColorParams{ID: cid, Color: color, UserID: uid})
+}
+
+func (s *Service) SetCalendarOrder(ctx context.Context, userID, calID string, order int32) error {
+	uid, err := db.ParseUUID(userID)
+	if err != nil {
+		return err
+	}
+	cid, err := db.ParseUUID(calID)
+	if err != nil {
+		return err
+	}
+	return s.q.SetCalendarOrder(ctx, db.SetCalendarOrderParams{ID: cid, SortOrder: pgtype.Int4{Int32: order, Valid: true}, UserID: uid})
 }
 
 func (s *Service) SetCalendarName(ctx context.Context, userID, calID, name string) error {

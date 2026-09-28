@@ -11,10 +11,10 @@ import (
 	"github.com/beevik/etree"
 )
 
-// go-webdav does not know Apple's calendar-color property: it lands in a 404 propstat, and
-// macOS Calendar re-sends its local color via PROPPATCH on every sync. We intercept PROPFIND,
-// pass it through go-webdav into a buffer, and inject calendar-color for calendar collections
-// that have a stored color (only when the client requested it).
+// go-webdav does not know Apple's calendar-color and calendar-order properties: they land in a
+// 404 propstat, and macOS Calendar re-sends them via PROPPATCH on every sync. We intercept
+// PROPFIND, pass it through go-webdav into a buffer, and inject the stored values for calendar
+// collections (only when the client requested them).
 
 const appleICalNS = "http://apple.com/ns/ical/"
 
@@ -39,12 +39,12 @@ func (b *bufResponseWriter) Write(p []byte) (int, error) {
 	return b.body.Write(p)
 }
 
-// HandlePropfind passes PROPFIND through go-webdav and injects calendar-color for calendars.
-// Requests that do not ask for calendar-color are streamed through untouched.
+// HandlePropfind passes PROPFIND through go-webdav and injects calendar-color / calendar-order.
+// Requests that ask for neither are streamed through untouched.
 func (b *Backend) HandlePropfind(w http.ResponseWriter, r *http.Request, dav http.Handler) {
 	raw, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewReader(raw))
-	if !bytes.Contains(raw, []byte("calendar-color")) {
+	if !bytes.Contains(raw, []byte("calendar-color")) && !bytes.Contains(raw, []byte("calendar-order")) {
 		dav.ServeHTTP(w, r)
 		return
 	}
@@ -82,10 +82,18 @@ func (b *Backend) augmentPropfind(ctx context.Context, body []byte) []byte {
 			continue // calendar collections only (not principal/home-set/object)
 		}
 		cal, err := b.resolveCalendar(ctx, uri)
-		if err != nil || cal.Color == "" {
-			continue // no stored color: keep the 404 so the client pushes its own
+		if err != nil {
+			continue
 		}
-		wantColor := false
+		// only stored values are injected: an unset one keeps its 404, so the client pushes its own
+		stored := map[string]string{}
+		if cal.Color != "" {
+			stored["calendar-color"] = appleColor(cal.Color)
+		}
+		if cal.SortOrder.Valid {
+			stored["calendar-order"] = strconv.Itoa(int(cal.SortOrder.Int32))
+		}
+		var found []string
 		for _, ps := range resp.SelectElements("propstat") {
 			status := ps.SelectElement("status")
 			if status == nil || !strings.Contains(status.Text(), "404") {
@@ -96,8 +104,8 @@ func (b *Backend) augmentPropfind(ctx context.Context, body []byte) []byte {
 				continue
 			}
 			for _, el := range prop.ChildElements() {
-				if el.Tag == "calendar-color" && el.NamespaceURI() == appleICalNS {
-					wantColor = true
+				if _, ok := stored[el.Tag]; ok && el.NamespaceURI() == appleICalNS {
+					found = append(found, el.Tag)
 					prop.RemoveChild(el)
 				}
 			}
@@ -105,13 +113,16 @@ func (b *Backend) augmentPropfind(ctx context.Context, body []byte) []byte {
 				resp.RemoveChild(ps)
 			}
 		}
-		if !wantColor {
+		if len(found) == 0 {
 			continue
 		}
 		ps := resp.CreateElement("propstat")
-		c := ps.CreateElement("prop").CreateElement("calendar-color")
-		c.CreateAttr("xmlns", appleICalNS)
-		c.SetText(appleColor(cal.Color))
+		prop := ps.CreateElement("prop")
+		for _, tag := range found {
+			el := prop.CreateElement(tag)
+			el.CreateAttr("xmlns", appleICalNS)
+			el.SetText(stored[tag])
+		}
 		ps.CreateElement("status").SetText("HTTP/1.1 200 OK")
 		changed = true
 	}

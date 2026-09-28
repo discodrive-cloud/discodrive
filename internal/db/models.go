@@ -143,6 +143,7 @@ type Calendar struct {
 	Ctag       int64              `json:"ctag"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	Components string             `json:"components"`
+	SortOrder  pgtype.Int4        `json:"sort_order"`
 }
 
 type CalendarObject struct {
