@@ -113,6 +113,8 @@ func (f *readFile) Stat() (fs.FileInfo, error)         { return f.info, nil }
 // dirFile is a webdav.File for directories (PROPFIND): serves children via Readdir.
 type dirFile struct {
 	info     nodeInfo
+	load     func() ([]fs.FileInfo, error) // lists the children on first Readdir
+	loaded   bool
 	children []fs.FileInfo
 }
 
@@ -122,6 +124,13 @@ func (d *dirFile) Seek(int64, int) (int64, error) { return 0, errIsDir }
 func (d *dirFile) Write([]byte) (int, error)      { return 0, errIsDir }
 func (d *dirFile) Stat() (fs.FileInfo, error)     { return d.info, nil }
 func (d *dirFile) Readdir(count int) ([]fs.FileInfo, error) {
+	if !d.loaded {
+		children, err := d.load()
+		if err != nil {
+			return nil, err
+		}
+		d.children, d.loaded = children, true
+	}
 	if count <= 0 {
 		return d.children, nil
 	}
@@ -180,6 +189,7 @@ func (w *writeFile) Close() error {
 		return err
 	}
 	_, err := w.svc.Push(w.ctx, w.userID, w.parentID, w.name, nil, w.deviceID, w.tmp)
+	memoFrom(w.ctx).clear() // the handler Stats the file right after, for its ETag
 	return mapErr(err)
 }
 

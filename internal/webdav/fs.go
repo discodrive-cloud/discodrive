@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync/atomic"
 
 	"golang.org/x/net/webdav"
 
@@ -44,6 +45,9 @@ type FileSystem = webdav.FileSystem
 type fsImpl struct {
 	svc    *storage.FileService
 	userID string
+	// dbCalls counts node lookups and folder listings, so tests can tell how a request
+	// scales with folder size.
+	dbCalls atomic.Int64
 }
 
 // NewFileSystem constructs a webdav.FileSystem for a specific user's file tree.
@@ -69,6 +73,21 @@ func deviceOf(ctx context.Context) string {
 	return "webdav"
 }
 
+// lookup resolves a cleaned DAV path to its node, answering from the request's memo when
+// a folder listing earlier in the same request already returned it.
+func (f *fsImpl) lookup(ctx context.Context, name string) (db.Node, error) {
+	memo := memoFrom(ctx)
+	if n, ok := memo.get(name); ok {
+		return n, nil
+	}
+	f.dbCalls.Add(1)
+	n, err := f.svc.NodeByPath(ctx, f.userID, name)
+	if err == nil {
+		memo.put(name, n)
+	}
+	return n, err
+}
+
 func (f *fsImpl) Stat(ctx context.Context, name string) (fs.FileInfo, error) {
 	name = clean(name)
 	if name == "/" {
@@ -77,7 +96,7 @@ func (f *fsImpl) Stat(ctx context.Context, name string) (fs.FileInfo, error) {
 	if isMacJunk(path.Base(name)) {
 		return nil, os.ErrNotExist // macOS junk files are not exposed
 	}
-	n, err := f.svc.NodeByPath(ctx, f.userID, name)
+	n, err := f.lookup(ctx, name)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -94,6 +113,7 @@ func (f *fsImpl) Mkdir(ctx context.Context, name string, _ os.FileMode) error {
 		return nil // pretend it was created — nothing is materialized
 	}
 	_, err = f.svc.CreateFolder(ctx, f.userID, parentID, leaf)
+	memoFrom(ctx).clear()
 	return mapErr(err)
 }
 
@@ -102,10 +122,11 @@ func (f *fsImpl) RemoveAll(ctx context.Context, name string) error {
 	if isMacJunk(path.Base(name)) {
 		return nil // macOS junk files do not exist — nothing to delete
 	}
-	n, err := f.svc.NodeByPath(ctx, f.userID, name)
+	n, err := f.lookup(ctx, name)
 	if err != nil {
 		return mapErr(err)
 	}
+	defer memoFrom(ctx).clear()
 	return mapErr(f.svc.Delete(ctx, f.userID, db.UUIDString(n.ID)))
 }
 
@@ -118,10 +139,11 @@ func (f *fsImpl) Rename(ctx context.Context, oldName, newName string) error {
 	if isMacJunk(path.Base(oldName)) || isMacJunk(path.Base(newName)) {
 		return nil // macOS junk files are not materialized — nothing to move
 	}
-	n, err := f.svc.NodeByPath(ctx, f.userID, oldName)
+	n, err := f.lookup(ctx, oldName)
 	if err != nil {
 		return mapErr(err)
 	}
+	defer memoFrom(ctx).clear()
 	id := db.UUIDString(n.ID)
 	if path.Dir(oldName) != path.Dir(newName) {
 		newParentID, _, err := f.parentOf(ctx, newName)
@@ -147,6 +169,7 @@ func (f *fsImpl) OpenFile(ctx context.Context, name string, flag int, _ os.FileM
 		if isMacJunk(leaf) {
 			return &discardFile{name: leaf}, nil // accept and discard
 		}
+		memoFrom(ctx).clear() // the path is about to change (writeFile clears again on Close)
 		parentID, leaf, err := f.parentOf(ctx, name)
 		if err != nil {
 			return nil, err
@@ -159,17 +182,17 @@ func (f *fsImpl) OpenFile(ctx context.Context, name string, flag int, _ os.FileM
 			parentID: parentID, name: leaf, tmp: tmp, expect: declaredLength(ctx)}, nil
 	}
 	if name == "/" {
-		return f.dir(ctx, nodeInfo{name: "/", dir: true}, "")
+		return f.dir(ctx, "/", nodeInfo{name: "/", dir: true}, ""), nil
 	}
 	if isMacJunk(leaf) {
 		return nil, os.ErrNotExist // macOS junk files do not exist for reading
 	}
-	n, err := f.svc.NodeByPath(ctx, f.userID, name)
+	n, err := f.lookup(ctx, name)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	if n.IsDir {
-		return f.dir(ctx, infoFromNode(n), db.UUIDString(n.ID))
+		return f.dir(ctx, name, infoFromNode(n), db.UUIDString(n.ID)), nil
 	}
 	// Lazy: defer opening the backing content until the first Read/Seek so a metadata-only
 	// PROPFIND never touches file bytes (see readFile).
@@ -186,31 +209,39 @@ func (f *fsImpl) OpenFile(ctx context.Context, name string, flag int, _ os.FileM
 	}, nil
 }
 
-// dir builds a directory webdav.File: lists children (root or a named node).
-func (f *fsImpl) dir(ctx context.Context, info nodeInfo, nodeID string) (webdav.File, error) {
-	var (
-		kids []db.Node
-		err  error
-	)
-	if nodeID == "" {
-		kids, err = f.svc.RootChildren(ctx, f.userID)
-	} else {
-		kids, err = f.svc.ListChildren(ctx, f.userID, nodeID)
-	}
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	children := make([]fs.FileInfo, 0, len(kids))
-	for _, k := range kids {
-		// Don't expose macOS junk nodes (.DS_Store, ._*) over WebDAV. Besides being noise,
-		// Stat()/OpenFile() report them as non-existent, which would abort the whole PROPFIND
-		// walk if they slipped into a listing.
-		if isMacJunk(k.Name) {
-			continue
+// dir builds a directory webdav.File for the folder at name. Its children are listed
+// only when Readdir asks for them: PROPFIND opens every child folder to read its
+// properties, and listing each of those was wasted work. The listing also fills the
+// request's memo, so the Stat/OpenFile that follow for each child need no query.
+func (f *fsImpl) dir(ctx context.Context, name string, info nodeInfo, nodeID string) webdav.File {
+	return &dirFile{info: info, load: func() ([]fs.FileInfo, error) {
+		f.dbCalls.Add(1)
+		var (
+			kids []db.Node
+			err  error
+		)
+		if nodeID == "" {
+			kids, err = f.svc.RootChildren(ctx, f.userID)
+		} else {
+			kids, err = f.svc.ListChildren(ctx, f.userID, nodeID)
 		}
-		children = append(children, infoFromNode(k))
-	}
-	return &dirFile{info: info, children: children}, nil
+		if err != nil {
+			return nil, mapErr(err)
+		}
+		memo := memoFrom(ctx)
+		children := make([]fs.FileInfo, 0, len(kids))
+		for _, k := range kids {
+			// Don't expose macOS junk nodes (.DS_Store, ._*) over WebDAV. Besides being noise,
+			// Stat()/OpenFile() report them as non-existent, which would abort the whole PROPFIND
+			// walk if they slipped into a listing.
+			if isMacJunk(k.Name) {
+				continue
+			}
+			memo.put(path.Join(name, k.Name), k)
+			children = append(children, infoFromNode(k))
+		}
+		return children, nil
+	}}
 }
 
 // parentOf resolves the parent directory of a path → its nodeID (nil = root) and the leaf name.
@@ -219,7 +250,7 @@ func (f *fsImpl) parentOf(ctx context.Context, name string) (*string, string, er
 	if dir == "/" || dir == "." {
 		return nil, leaf, nil
 	}
-	pn, err := f.svc.NodeByPath(ctx, f.userID, dir)
+	pn, err := f.lookup(ctx, dir)
 	if err != nil {
 		return nil, "", mapErr(err)
 	}

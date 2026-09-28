@@ -80,7 +80,7 @@ func Handler(svc *storage.FileService, prefix string) http.Handler {
 				}
 			},
 		}
-		h.ServeHTTP(w, r)
+		h.ServeHTTP(w, r.WithContext(withNodeMemo(r.Context())))
 	})
 }
 
