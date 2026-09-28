@@ -310,6 +310,12 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 		mux.Handle("/.well-known/carddav", carddav.WellKnown())
 	}
 
+	// Apple accounts re-discover from the bare host (see dav_root.go).
+	if caldavHandler != nil || carddavHandler != nil {
+		mux.Handle("OPTIONS /{$}", davRoot(caldavHandler, carddavHandler))
+		mux.Handle("PROPFIND /{$}", davRoot(caldavHandler, carddavHandler))
+	}
+
 	if subsonicHandler != nil {
 		mux.Handle("/rest/", subsonicHandler)
 	}

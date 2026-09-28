@@ -56,6 +56,11 @@ func Handler(authSvc *auth.Service, settings SettingsReader, backend *Backend, d
 			backend.HandleMkcalendar(w, r.WithContext(ctx))
 			return
 		}
+		// PROPFIND: pass through go-webdav and inject calendar-color (see propfind_augment.go).
+		if r.Method == "PROPFIND" {
+			backend.HandlePropfind(w, r.WithContext(ctx), dav)
+			return
+		}
 		if r.Method == http.MethodPut {
 			ctx = WithRawBody(ctx, raw)
 		}

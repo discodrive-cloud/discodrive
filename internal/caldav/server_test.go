@@ -43,9 +43,18 @@ func setup(t *testing.T) (http.Handler, string, string) {
 	svc := dav.NewService(pool)
 	cal, _ := svc.CreateCalendar(ctx, userID, "Личный", "")
 
-	h := &godavcaldav.Handler{Backend: caldav.New(svc), Prefix: "/caldav"}
+	backend := caldav.New(svc)
+	h := &godavcaldav.Handler{Backend: backend, Prefix: "/caldav"}
 	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c := caldav.WithUserID(r.Context(), userID)
+		switch r.Method {
+		case "PROPPATCH":
+			backend.HandleProppatch(w, r.WithContext(c))
+			return
+		case "PROPFIND":
+			backend.HandlePropfind(w, r.WithContext(c), h)
+			return
+		}
 		if r.Method == http.MethodPut {
 			raw, _ := io.ReadAll(r.Body)
 			c = caldav.WithRawBody(c, raw)
@@ -61,6 +70,10 @@ func do(t *testing.T, h http.Handler, method, path, body string) *httptest.Respo
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if method == http.MethodPut {
 		req.Header.Set("Content-Type", "text/calendar; charset=utf-8")
+	} else if body != "" {
+		req.Header.Set("Content-Type", "application/xml; charset=utf-8")
+	} else if body != "" {
+		req.Header.Set("Content-Type", "application/xml; charset=utf-8")
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -210,5 +223,33 @@ func TestSharedCalendarVisibleAndWritable(t *testing.T) {
 	putRec := doAs(t, h, granteeID, http.MethodPut, newObjPath, newObj2)
 	if putRec.Code != http.StatusCreated && putRec.Code != http.StatusNoContent && putRec.Code != http.StatusOK {
 		t.Fatalf("grantee PUT code=%d body=%s", putRec.Code, putRec.Body.String())
+	}
+}
+
+const propfindColor = `<?xml version="1.0" encoding="UTF-8"?>
+<propfind xmlns="DAV:" xmlns:A="http://apple.com/ns/ical/"><prop><displayname/><A:calendar-color/></prop></propfind>`
+
+func TestProppatchPersistsCalendarColor(t *testing.T) {
+	h, userID, uri := setup(t)
+	calPath := "/caldav/" + userID + "/cal/" + uri + "/"
+
+	before := do(t, h, "PROPFIND", calPath, propfindColor)
+	if strings.Contains(before.Body.String(), "#") {
+		t.Fatalf("no color was set, but PROPFIND returned one:\n%s", before.Body.String())
+	}
+
+	pp := do(t, h, "PROPPATCH", calPath, `<?xml version="1.0" encoding="UTF-8"?>
+<A:propertyupdate xmlns:A="DAV:"><A:set><A:prop><B:calendar-color xmlns:B="http://apple.com/ns/ical/" symbolic-color="custom">#1BADF8FF</B:calendar-color></A:prop></A:set></A:propertyupdate>`)
+	if pp.Code != http.StatusMultiStatus {
+		t.Fatalf("PROPPATCH code=%d body=%s", pp.Code, pp.Body.String())
+	}
+
+	after := do(t, h, "PROPFIND", calPath, propfindColor)
+	if after.Code != http.StatusMultiStatus {
+		t.Fatalf("PROPFIND code=%d body=%s", after.Code, after.Body.String())
+	}
+	body := after.Body.String()
+	if !strings.Contains(body, "#1badf8FF") || !strings.Contains(body, "http://apple.com/ns/ical/") {
+		t.Fatalf("PROPFIND did not return the saved calendar-color:\n%s", body)
 	}
 }
