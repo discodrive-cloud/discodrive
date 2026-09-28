@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -33,7 +34,7 @@ func HashPassword(password string) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	hash := argon2.IDKey([]byte(password), salt, p.time, p.memory, p.threads, p.keyLen)
+	hash := argonKey([]byte(password), salt, p.time, p.memory, p.threads, p.keyLen)
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, p.memory, p.time, p.threads,
 		base64.RawStdEncoding.EncodeToString(salt),
@@ -41,10 +42,10 @@ func HashPassword(password string) (string, error) {
 	), nil
 }
 
-// VerifyPassword checks a password against a stored hash (constant-time comparison).
 // verifyPassword is VerifyPassword behind a seam, so tests can count Argon2 checks.
 var verifyPassword = VerifyPassword
 
+// VerifyPassword checks a password against a stored hash (constant-time comparison).
 func VerifyPassword(password, encoded string) (bool, error) {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {
@@ -66,6 +67,16 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	if err != nil {
 		return false, ErrInvalidHash
 	}
-	got := argon2.IDKey([]byte(password), salt, p.time, p.memory, p.threads, uint32(len(want)))
+	got := argonKey([]byte(password), salt, p.time, p.memory, p.threads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
+}
+
+// argonKey runs Argon2id after a garbage collection. Its work area (m KiB, 64 MiB by
+// default) is one allocation, and the previous check left the GC target near twice
+// that, so up to ~100 MiB of garbage may be sitting uncollected: allocating on top of
+// it OOM-killed the server on 128 MB machines. Checks are rare (logins, and a DAV
+// client once per cache TTL), so a collection each costs little.
+func argonKey(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
+	runtime.GC()
+	return argon2.IDKey(password, salt, time, memory, threads, keyLen)
 }
