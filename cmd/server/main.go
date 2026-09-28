@@ -62,6 +62,20 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "rescan" {
+		if cfg.DatabaseURL == "" {
+			log.Fatal("discodrive: DATABASE_URL is not set")
+		}
+		ctx := context.Background()
+		pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("discodrive: connecting to database: %v", err)
+		}
+		code := runRescan(ctx, db.New(pool), os.Args[2:], os.Stdout, time.Second)
+		pool.Close()
+		os.Exit(code)
+	}
+
 	runServer(cfg)
 }
 
