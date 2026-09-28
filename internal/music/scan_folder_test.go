@@ -111,3 +111,42 @@ func TestScanFolderIndexesSubtree(t *testing.T) {
 		t.Errorf("second ScanFolder: count=%d, want 0 (files unchanged)", count2)
 	}
 }
+
+// The scan picks work with one query: a second scan of an unchanged folder indexes
+// nothing, and a touched file (modified_at moved forward) is picked up again.
+func TestScanFolderPicksOnlyStale(t *testing.T) {
+	requireFFmpeg(t)
+	q, ctx := setupDB(t)
+	userID := makeTenant(t, q, ctx)
+	uid, _ := db.ParseUUID(userID)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "music"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	folder, _ := q.CreateNode(ctx, db.CreateNodeParams{UserID: uid, Name: "music", IsDir: true,
+		DiskPath: pgtype.Text{String: "music", Valid: true}})
+	var tracks []db.Node
+	for _, name := range []string{"a.mp3", "b.mp3"} {
+		synthesizeAudio(t, filepath.Join(root, "music", name), name, "Artist", "Album", "mp3")
+		n, err := q.CreateNode(ctx, db.CreateNodeParams{UserID: uid, ParentID: folder.ID, Name: name,
+			DiskPath: pgtype.Text{String: "music/" + name, Valid: true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tracks = append(tracks, n)
+	}
+	ix := NewIndexer(q, root)
+	fid := db.UUIDString(folder.ID)
+	if n, err := ix.ScanFolder(ctx, userID, fid); err != nil || n != 2 {
+		t.Fatalf("first scan: %d %v, want 2", n, err)
+	}
+	if n, err := ix.ScanFolder(ctx, userID, fid); err != nil || n != 0 {
+		t.Fatalf("rescan of an unchanged folder indexed %d (%v), want 0", n, err)
+	}
+	if _, err := q.BumpNodeVersion(ctx, tracks[0].ID); err != nil { // modified_at = now()
+		t.Fatal(err)
+	}
+	if n, err := ix.ScanFolder(ctx, userID, fid); err != nil || n != 1 {
+		t.Fatalf("after touching one file: %d %v, want 1", n, err)
+	}
+}

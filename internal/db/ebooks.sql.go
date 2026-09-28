@@ -607,6 +607,38 @@ func (q *Queries) DeleteBookByNode(ctx context.Context, nodeID pgtype.UUID) erro
 	return err
 }
 
+const deleteBooksUnderPath = `-- name: DeleteBooksUnderPath :many
+DELETE FROM books WHERE books.user_id = $1 AND node_id IN (
+    SELECT id FROM nodes WHERE nodes.user_id = $1
+      AND disk_path LIKE $2::text || '/%')
+RETURNING cover_path
+`
+
+type DeleteBooksUnderPathParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	Prefix string      `json:"prefix"`
+}
+
+func (q *Queries) DeleteBooksUnderPath(ctx context.Context, arg DeleteBooksUnderPathParams) ([]pgtype.Text, error) {
+	rows, err := q.db.Query(ctx, deleteBooksUnderPath, arg.UserID, arg.Prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.Text{}
+	for rows.Next() {
+		var cover_path pgtype.Text
+		if err := rows.Scan(&cover_path); err != nil {
+			return nil, err
+		}
+		items = append(items, cover_path)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const enabledEbookUsers = `-- name: EnabledEbookUsers :many
 SELECT user_id, folder_node_id FROM ebook_settings WHERE enabled = true AND folder_node_id IS NOT NULL
 `
@@ -668,7 +700,7 @@ func (q *Queries) GetBookByNode(ctx context.Context, nodeID pgtype.UUID) (Book, 
 }
 
 const getEbookSettings = `-- name: GetEbookSettings :one
-SELECT user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, token_version FROM ebook_settings WHERE user_id = $1
+SELECT user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, token_version, indexed_seq FROM ebook_settings WHERE user_id = $1
 `
 
 func (q *Queries) GetEbookSettings(ctx context.Context, userID pgtype.UUID) (EbookSetting, error) {
@@ -683,12 +715,13 @@ func (q *Queries) GetEbookSettings(ctx context.Context, userID pgtype.UUID) (Ebo
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.TokenVersion,
+		&i.IndexedSeq,
 	)
 	return i, err
 }
 
 const getEbookSettingsByApiKey = `-- name: GetEbookSettingsByApiKey :one
-SELECT s.user_id, s.enabled, s.folder_node_id, s.password_cipher, s.api_key, s.created_at, s.updated_at, s.token_version FROM ebook_settings s JOIN users u ON u.id = s.user_id
+SELECT s.user_id, s.enabled, s.folder_node_id, s.password_cipher, s.api_key, s.created_at, s.updated_at, s.token_version, s.indexed_seq FROM ebook_settings s JOIN users u ON u.id = s.user_id
 WHERE s.api_key = $1 AND s.token_version = u.token_version AND NOT u.must_change_password
 `
 
@@ -704,6 +737,7 @@ func (q *Queries) GetEbookSettingsByApiKey(ctx context.Context, apiKey pgtype.Te
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.TokenVersion,
+		&i.IndexedSeq,
 	)
 	return i, err
 }
@@ -737,6 +771,92 @@ type InsertBookTagParams struct {
 func (q *Queries) InsertBookTag(ctx context.Context, arg InsertBookTagParams) error {
 	_, err := q.db.Exec(ctx, insertBookTag, arg.BookID, arg.Tag)
 	return err
+}
+
+const listStaleBookNodes = `-- name: ListStaleBookNodes :many
+WITH RECURSIVE subtree AS (
+    SELECT nodes.id FROM nodes WHERE nodes.id = $1
+    UNION ALL
+    SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id WHERE n.deleted_at IS NULL
+)
+SELECT n.id, n.user_id, n.parent_id, n.name, n.is_dir, n.size, n.content_hash, n.disk_path, n.mime, n.is_vault, n.version, n.modified_at, n.modified_by, n.deleted_at, n.created_at, n.is_conflict_loser, n.conflict_of FROM nodes n JOIN subtree s ON n.id = s.id
+LEFT JOIN books b ON b.node_id = n.id
+WHERE NOT n.is_dir AND n.deleted_at IS NULL
+  AND (b.id IS NULL OR (NOT b.metadata_edited AND b.updated_at < n.modified_at))
+`
+
+func (q *Queries) ListStaleBookNodes(ctx context.Context, id pgtype.UUID) ([]Node, error) {
+	rows, err := q.db.Query(ctx, listStaleBookNodes, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Node{}
+	for rows.Next() {
+		var i Node
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ParentID,
+			&i.Name,
+			&i.IsDir,
+			&i.Size,
+			&i.ContentHash,
+			&i.DiskPath,
+			&i.Mime,
+			&i.IsVault,
+			&i.Version,
+			&i.ModifiedAt,
+			&i.ModifiedBy,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.IsConflictLoser,
+			&i.ConflictOf,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pruneBooksOutsideFolder = `-- name: PruneBooksOutsideFolder :many
+WITH RECURSIVE subtree AS (
+    SELECT nodes.id FROM nodes WHERE nodes.id = $2
+    UNION ALL
+    SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id
+)
+DELETE FROM books WHERE books.user_id = $1
+  AND node_id NOT IN (SELECT id FROM subtree)
+RETURNING cover_path
+`
+
+type PruneBooksOutsideFolderParams struct {
+	UserID   pgtype.UUID `json:"user_id"`
+	FolderID pgtype.UUID `json:"folder_id"`
+}
+
+func (q *Queries) PruneBooksOutsideFolder(ctx context.Context, arg PruneBooksOutsideFolderParams) ([]pgtype.Text, error) {
+	rows, err := q.db.Query(ctx, pruneBooksOutsideFolder, arg.UserID, arg.FolderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.Text{}
+	for rows.Next() {
+		var cover_path pgtype.Text
+		if err := rows.Scan(&cover_path); err != nil {
+			return nil, err
+		}
+		items = append(items, cover_path)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const searchAccessibleBooks = `-- name: SearchAccessibleBooks :many
@@ -860,6 +980,20 @@ func (q *Queries) SetEbookCredentials(ctx context.Context, arg SetEbookCredentia
 		arg.ApiKey,
 		arg.TokenVersion,
 	)
+	return err
+}
+
+const setEbookIndexedSeq = `-- name: SetEbookIndexedSeq :exec
+UPDATE ebook_settings SET indexed_seq = $2 WHERE user_id = $1
+`
+
+type SetEbookIndexedSeqParams struct {
+	UserID     pgtype.UUID `json:"user_id"`
+	IndexedSeq int64       `json:"indexed_seq"`
+}
+
+func (q *Queries) SetEbookIndexedSeq(ctx context.Context, arg SetEbookIndexedSeqParams) error {
+	_, err := q.db.Exec(ctx, setEbookIndexedSeq, arg.UserID, arg.IndexedSeq)
 	return err
 }
 
@@ -993,7 +1127,7 @@ INSERT INTO ebook_settings (user_id, enabled, folder_node_id, updated_at)
 VALUES ($1, $2, $3, now())
 ON CONFLICT (user_id) DO UPDATE SET enabled = EXCLUDED.enabled,
     folder_node_id = EXCLUDED.folder_node_id, updated_at = now()
-RETURNING user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, token_version
+RETURNING user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, token_version, indexed_seq
 `
 
 type UpsertEbookSettingsParams struct {
@@ -1014,6 +1148,7 @@ func (q *Queries) UpsertEbookSettings(ctx context.Context, arg UpsertEbookSettin
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.TokenVersion,
+		&i.IndexedSeq,
 	)
 	return i, err
 }

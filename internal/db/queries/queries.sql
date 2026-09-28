@@ -718,3 +718,19 @@ WHERE NOT user_totp.enabled;
 -- name: ConfirmApprovedTOTP :execrows
 UPDATE user_totp SET enabled = true, confirmed_at = now(), approval_id = ''
 WHERE user_id = $1 AND NOT enabled AND approval_id = $2 AND secret = $3;
+
+-- A node whether live or trashed: a library whose folder was trashed must still learn
+-- that folder's path to drop everything under it.
+-- name: GetNodeAnyState :one
+SELECT * FROM nodes WHERE id = $1;
+
+-- name: GetUserChangeSeq :one
+SELECT change_seq FROM users WHERE id = $1;
+
+-- Changes after seq with each node's current state, for library indexing.
+-- name: ListChangesAfter :many
+SELECT cl.seq, n.id AS node_id, n.is_dir, n.disk_path, (n.deleted_at IS NOT NULL)::bool AS deleted
+FROM change_log cl JOIN nodes n ON n.id = cl.node_id
+WHERE cl.user_id = $1 AND cl.seq > $2
+ORDER BY cl.seq
+LIMIT $3;

@@ -881,3 +881,35 @@ FROM songs s
 LEFT JOIN artists a ON a.id = s.artist_id
 LEFT JOIN albums al ON al.id = s.album_id
 WHERE s.node_id = ANY($1::uuid[]);
+
+-- name: SetMusicIndexedSeq :exec
+UPDATE music_settings SET indexed_seq = $2 WHERE user_id = $1;
+
+-- Library rows of every node under a folder path (the folder was trashed or left the
+-- library folder; the change log records only the folder itself).
+-- name: DeleteSongsUnderPath :exec
+DELETE FROM songs WHERE songs.user_id = sqlc.arg(user_id) AND node_id IN (
+    SELECT id FROM nodes WHERE nodes.user_id = sqlc.arg(user_id)
+      AND disk_path LIKE sqlc.arg(prefix)::text || '/%');
+
+-- Files of the folder's subtree whose song row is missing, older than the file, or
+-- predates duration probing — the whole scan in one query instead of one per file.
+-- name: ListStaleSongNodes :many
+WITH RECURSIVE subtree AS (
+    SELECT nodes.id FROM nodes WHERE nodes.id = $1
+    UNION ALL
+    SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id WHERE n.deleted_at IS NULL
+)
+SELECT n.* FROM nodes n JOIN subtree s ON n.id = s.id
+LEFT JOIN songs sg ON sg.node_id = n.id
+WHERE NOT n.is_dir AND n.deleted_at IS NULL
+  AND (sg.id IS NULL OR sg.duration IS NULL OR sg.updated_at < n.modified_at);
+
+-- name: PruneSongsOutsideFolder :exec
+WITH RECURSIVE subtree AS (
+    SELECT nodes.id FROM nodes WHERE nodes.id = sqlc.arg(folder_id)
+    UNION ALL
+    SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id
+)
+DELETE FROM songs WHERE songs.user_id = sqlc.arg(user_id)
+  AND node_id NOT IN (SELECT id FROM subtree);

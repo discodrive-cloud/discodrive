@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base32"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -13,6 +15,7 @@ import (
 
 	"discodrive/internal/auth"
 	"discodrive/internal/db"
+	"discodrive/internal/ebook"
 )
 
 // ebookSettingsResponse is the shape returned by GET and PUT /me/ebooks.
@@ -109,6 +112,11 @@ func (s *Server) handlePutEbookSettings(w http.ResponseWriter, r *http.Request) 
 		folderNodeID = nid
 	}
 
+	prev, err := s.q.GetEbookSettings(r.Context(), uid)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	es, err := s.q.UpsertEbookSettings(r.Context(), db.UpsertEbookSettingsParams{
 		UserID:       uid,
 		Enabled:      req.Enabled,
@@ -117,6 +125,9 @@ func (s *Server) handlePutEbookSettings(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
+	}
+	if req.Enabled && folderNodeID.Valid && (folderNodeID != prev.FolderNodeID || !prev.Enabled) {
+		s.reindexEbookFolder(r.Context(), uid, folderNodeID, folderNodeID != prev.FolderNodeID)
 	}
 	writeJSON(w, http.StatusOK, s.buildEbookSettingsResponse(r, es, uid))
 }
@@ -203,4 +214,25 @@ func (s *Server) handleDeleteEbookPassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+// reindexEbookFolder is reindexMusicFolder for the e-book library.
+func (s *Server) reindexEbookFolder(ctx context.Context, uid, folder pgtype.UUID, changed bool) {
+	if seq, err := s.q.GetUserChangeSeq(ctx, uid); err == nil {
+		_ = s.q.SetEbookIndexedSeq(ctx, db.SetEbookIndexedSeqParams{UserID: uid, IndexedSeq: seq})
+	}
+	if changed {
+		covers, _ := s.q.PruneBooksOutsideFolder(ctx, db.PruneBooksOutsideFolderParams{UserID: uid, FolderID: folder})
+		for _, c := range covers {
+			if c.Valid && c.String != "" {
+				_ = ebook.RemoveCover(s.storageRoot, c.String)
+			}
+		}
+	}
+	userID, folderID := db.UUIDString(uid), db.UUIDString(folder)
+	go func() {
+		if _, err := ebook.NewIndexer(s.q, s.storageRoot).ScanFolder(context.Background(), userID, folderID); err != nil {
+			log.Printf("discodrive: ebook scan after a settings change: %v", err)
+		}
+	}()
 }

@@ -1133,6 +1133,37 @@ func (q *Queries) GetNode(ctx context.Context, id pgtype.UUID) (Node, error) {
 	return i, err
 }
 
+const getNodeAnyState = `-- name: GetNodeAnyState :one
+SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes WHERE id = $1
+`
+
+// A node whether live or trashed: a library whose folder was trashed must still learn
+// that folder's path to drop everything under it.
+func (q *Queries) GetNodeAnyState(ctx context.Context, id pgtype.UUID) (Node, error) {
+	row := q.db.QueryRow(ctx, getNodeAnyState, id)
+	var i Node
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ParentID,
+		&i.Name,
+		&i.IsDir,
+		&i.Size,
+		&i.ContentHash,
+		&i.DiskPath,
+		&i.Mime,
+		&i.IsVault,
+		&i.Version,
+		&i.ModifiedAt,
+		&i.ModifiedBy,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.IsConflictLoser,
+		&i.ConflictOf,
+	)
+	return i, err
+}
+
 const getNodeForUser = `-- name: GetNodeForUser :one
 SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
 `
@@ -1338,6 +1369,17 @@ func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 		&i.SessionTtlMinutes,
 	)
 	return i, err
+}
+
+const getUserChangeSeq = `-- name: GetUserChangeSeq :one
+SELECT change_seq FROM users WHERE id = $1
+`
+
+func (q *Queries) GetUserChangeSeq(ctx context.Context, id pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, getUserChangeSeq, id)
+	var change_seq int64
+	err := row.Scan(&change_seq)
+	return change_seq, err
 }
 
 const getUserForAuthUpdate = `-- name: GetUserForAuthUpdate :one
@@ -1727,6 +1769,55 @@ func (q *Queries) ListCalendars(ctx context.Context, userID pgtype.UUID) ([]Cale
 			&i.Ctag,
 			&i.CreatedAt,
 			&i.Components,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChangesAfter = `-- name: ListChangesAfter :many
+SELECT cl.seq, n.id AS node_id, n.is_dir, n.disk_path, (n.deleted_at IS NOT NULL)::bool AS deleted
+FROM change_log cl JOIN nodes n ON n.id = cl.node_id
+WHERE cl.user_id = $1 AND cl.seq > $2
+ORDER BY cl.seq
+LIMIT $3
+`
+
+type ListChangesAfterParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	Seq    int64       `json:"seq"`
+	Limit  int32       `json:"limit"`
+}
+
+type ListChangesAfterRow struct {
+	Seq      int64       `json:"seq"`
+	NodeID   pgtype.UUID `json:"node_id"`
+	IsDir    bool        `json:"is_dir"`
+	DiskPath pgtype.Text `json:"disk_path"`
+	Deleted  bool        `json:"deleted"`
+}
+
+// Changes after seq with each node's current state, for library indexing.
+func (q *Queries) ListChangesAfter(ctx context.Context, arg ListChangesAfterParams) ([]ListChangesAfterRow, error) {
+	rows, err := q.db.Query(ctx, listChangesAfter, arg.UserID, arg.Seq, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChangesAfterRow{}
+	for rows.Next() {
+		var i ListChangesAfterRow
+		if err := rows.Scan(
+			&i.Seq,
+			&i.NodeID,
+			&i.IsDir,
+			&i.DiskPath,
+			&i.Deleted,
 		); err != nil {
 			return nil, err
 		}

@@ -338,12 +338,10 @@ func (ix *Indexer) scanFolder(ctx context.Context, userID, folderNodeID string) 
 	if err != nil {
 		return 0, err
 	}
-
-	nodes, err := ix.q.ListFileNodesUnderFolder(ctx, folderUID)
+	nodes, err := ix.q.ListStaleSongNodes(ctx, folderUID)
 	if err != nil {
 		return 0, err
 	}
-
 	count := 0
 	for _, node := range nodes {
 		if !node.DiskPath.Valid {
@@ -353,29 +351,61 @@ func (ix *Indexer) scanFolder(ctx context.Context, userID, folderNodeID string) 
 		if !IsAudioFile(absPath) {
 			continue
 		}
-
-		nodeIDStr := db.UUIDString(node.ID)
-
-		// Change-gate: skip if song is already indexed, up to date by timestamp,
-		// AND has been probed for duration. NULL duration marks legacy rows
-		// indexed before probing existed — re-index those once to enrich them;
-		// a valid 0 means "probed, nothing to extract" and is left alone.
-		existing, err := ix.q.GetSongByNode(ctx, node.ID)
-		if err == nil && node.ModifiedAt.Valid && existing.UpdatedAt.Valid {
-			upToDate := !existing.UpdatedAt.Time.Before(node.ModifiedAt.Time)
-			if upToDate && existing.Duration.Valid {
-				continue
-			}
-		} else if !errors.Is(err, pgx.ErrNoRows) && err != nil {
-			// Log and continue; don't abort the whole scan for one file.
-			continue
-		}
-
-		if err := ix.IndexNode(ctx, userID, nodeIDStr, absPath); err != nil {
-			// Non-fatal: skip unreadable files.
-			continue
+		if err := ix.IndexNode(ctx, userID, db.UUIDString(node.ID), absPath); err != nil {
+			continue // non-fatal: skip unreadable files
 		}
 		count++
 	}
 	return count, nil
+}
+
+func (ix *Indexer) Name() string { return "music" }
+
+func (ix *Indexer) State(ctx context.Context, userID pgtype.UUID) (string, int64, bool, error) {
+	ms, err := ix.q.GetMusicSettings(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, false, nil
+	} else if err != nil {
+		return "", 0, false, err
+	}
+	if !ms.Enabled || !ms.FolderNodeID.Valid {
+		return "", 0, false, nil
+	}
+	// Trashed or not: when the library folder itself goes to the trash, its own "delete"
+	// in the log must still be matched against its path to drop everything under it.
+	folder, err := ix.q.GetNodeAnyState(ctx, ms.FolderNodeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, false, nil // purged: the cascade already removed its songs
+	} else if err != nil {
+		return "", 0, false, err
+	}
+	return folder.DiskPath.String, ms.IndexedSeq, true, nil
+}
+
+func (ix *Indexer) SetCursor(ctx context.Context, userID pgtype.UUID, seq int64) error {
+	return ix.q.SetMusicIndexedSeq(ctx, db.SetMusicIndexedSeqParams{UserID: userID, IndexedSeq: seq})
+}
+
+func (ix *Indexer) Accepts(diskPath string) bool { return IsAudioFile(diskPath) }
+
+func (ix *Indexer) Index(ctx context.Context, userID, nodeID, diskPath string) error {
+	return ix.IndexNode(ctx, userID, nodeID, filepath.Join(ix.storageRoot, diskPath))
+}
+
+func (ix *Indexer) Remove(ctx context.Context, nodeID string) error {
+	return ix.RemoveNode(ctx, nodeID)
+}
+
+func (ix *Indexer) IndexUnder(ctx context.Context, userID, dirNodeID string) error {
+	_, err := ix.ScanFolder(ctx, userID, dirNodeID)
+	return err
+}
+
+func (ix *Indexer) RemoveUnder(ctx context.Context, userID pgtype.UUID, dirPath string) error {
+	return ix.q.DeleteSongsUnderPath(ctx, db.DeleteSongsUnderPathParams{UserID: userID, Prefix: likePrefix(dirPath)})
+}
+
+// likePrefix escapes LIKE wildcards: folder names may contain % and _.
+func likePrefix(p string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p)
 }

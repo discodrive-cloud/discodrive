@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base32"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -13,6 +15,7 @@ import (
 
 	"discodrive/internal/auth"
 	"discodrive/internal/db"
+	"discodrive/internal/music"
 )
 
 // musicSettingsResponse is the shape returned by GET and PUT /me/music.
@@ -114,6 +117,11 @@ func (s *Server) handlePutMusicSettings(w http.ResponseWriter, r *http.Request) 
 	if req.TagEditVersioning != nil {
 		versioning = *req.TagEditVersioning
 	}
+	prev, err := s.q.GetMusicSettings(r.Context(), uid)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	ms, err := s.q.UpsertMusicSettings(r.Context(), db.UpsertMusicSettingsParams{
 		UserID:            uid,
 		Enabled:           req.Enabled,
@@ -123,6 +131,9 @@ func (s *Server) handlePutMusicSettings(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
+	}
+	if req.Enabled && folderNodeID.Valid && (folderNodeID != prev.FolderNodeID || !prev.Enabled) {
+		s.reindexMusicFolder(r.Context(), uid, folderNodeID, folderNodeID != prev.FolderNodeID)
 	}
 	writeJSON(w, http.StatusOK, s.buildMusicSettingsResponse(r, ms, uid))
 }
@@ -221,4 +232,22 @@ func lowercaseBase32(s string) string {
 		}
 	}
 	return string(b)
+}
+
+// reindexMusicFolder follows a library folder switch or switch-on: the change-log cursor
+// starts at the present BEFORE the full scan, so changes that arrive while it runs are
+// picked up by the catch-up rather than lost; entries outside the new folder are dropped.
+func (s *Server) reindexMusicFolder(ctx context.Context, uid, folder pgtype.UUID, changed bool) {
+	if seq, err := s.q.GetUserChangeSeq(ctx, uid); err == nil {
+		_ = s.q.SetMusicIndexedSeq(ctx, db.SetMusicIndexedSeqParams{UserID: uid, IndexedSeq: seq})
+	}
+	if changed {
+		_ = s.q.PruneSongsOutsideFolder(ctx, db.PruneSongsOutsideFolderParams{UserID: uid, FolderID: folder})
+	}
+	userID, folderID := db.UUIDString(uid), db.UUIDString(folder)
+	go func() {
+		if _, err := music.NewIndexer(s.q, s.storageRoot).ScanFolder(context.Background(), userID, folderID); err != nil {
+			log.Printf("discodrive: music scan after a settings change: %v", err)
+		}
+	}()
 }

@@ -32,6 +32,7 @@ import (
 	"discodrive/internal/ebook"
 	"discodrive/internal/httpsecurity"
 	"discodrive/internal/kosync"
+	"discodrive/internal/library"
 	"discodrive/internal/music"
 	"discodrive/internal/notify"
 	"discodrive/internal/opds"
@@ -276,6 +277,9 @@ func runServer(cfg config.Config) {
 		log.Printf("discodrive: queueing startup rescan: %v", err)
 	}
 	go rescan.NewRunner(pool, fileSvc).Run(ctx)
+	// Libraries follow the change log: a catch-up per user whose files changed, and for
+	// everyone at start.
+	go library.NewTracker(pool, musicIdx, ebookIdx).Run(ctx)
 	// Reap abandoned resumable-upload sessions (idle > 1h) and their staged temp files.
 	go uploads.StartGC(ctx, 5*time.Minute, time.Hour)
 
