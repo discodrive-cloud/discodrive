@@ -274,3 +274,13 @@ SELECT n.* FROM nodes n JOIN subtree s ON n.id = s.id
 LEFT JOIN books b ON b.node_id = n.id
 WHERE NOT n.is_dir AND n.deleted_at IS NULL
   AND (b.id IS NULL OR (NOT b.metadata_edited AND b.updated_at < n.modified_at));
+
+-- name: PruneBooksOutsideFolder :many
+WITH RECURSIVE subtree AS (
+    SELECT nodes.id FROM nodes WHERE nodes.id = sqlc.arg(folder_id)
+    UNION ALL
+    SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id
+)
+DELETE FROM books WHERE books.user_id = sqlc.arg(user_id)
+  AND node_id NOT IN (SELECT id FROM subtree)
+RETURNING cover_path;

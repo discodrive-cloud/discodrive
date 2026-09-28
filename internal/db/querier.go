@@ -352,6 +352,8 @@ type Querier interface {
 	NextBookmarkSeq(ctx context.Context, id pgtype.UUID) (int64, error)
 	NextChangeSeq(ctx context.Context, id pgtype.UUID) (int64, error)
 	NotificationPrefsForEvent(ctx context.Context, arg NotificationPrefsForEventParams) ([]NotificationPrefsForEventRow, error)
+	PruneBooksOutsideFolder(ctx context.Context, arg PruneBooksOutsideFolderParams) ([]pgtype.Text, error)
+	PruneSongsOutsideFolder(ctx context.Context, arg PruneSongsOutsideFolderParams) error
 	// Returns accessible songs in random order with optional genre/year filters.
 	// Pass NULL for genre, from_year, to_year to skip those filters.
 	RandomAccessibleSongs(ctx context.Context, arg RandomAccessibleSongsParams) ([]RandomAccessibleSongsRow, error)

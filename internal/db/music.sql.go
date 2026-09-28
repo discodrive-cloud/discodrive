@@ -2531,6 +2531,26 @@ func (q *Queries) MaxPlaylistPosition(ctx context.Context, playlistID pgtype.UUI
 	return coalesce, err
 }
 
+const pruneSongsOutsideFolder = `-- name: PruneSongsOutsideFolder :exec
+WITH RECURSIVE subtree AS (
+    SELECT nodes.id FROM nodes WHERE nodes.id = $2
+    UNION ALL
+    SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id
+)
+DELETE FROM songs WHERE songs.user_id = $1
+  AND node_id NOT IN (SELECT id FROM subtree)
+`
+
+type PruneSongsOutsideFolderParams struct {
+	UserID   pgtype.UUID `json:"user_id"`
+	FolderID pgtype.UUID `json:"folder_id"`
+}
+
+func (q *Queries) PruneSongsOutsideFolder(ctx context.Context, arg PruneSongsOutsideFolderParams) error {
+	_, err := q.db.Exec(ctx, pruneSongsOutsideFolder, arg.UserID, arg.FolderID)
+	return err
+}
+
 const randomAccessibleSongs = `-- name: RandomAccessibleSongs :many
 WITH RECURSIVE shared_subtree AS (
     SELECT resource_id AS node_id FROM resource_shares

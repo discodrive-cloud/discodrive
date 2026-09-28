@@ -823,6 +823,42 @@ func (q *Queries) ListStaleBookNodes(ctx context.Context, id pgtype.UUID) ([]Nod
 	return items, nil
 }
 
+const pruneBooksOutsideFolder = `-- name: PruneBooksOutsideFolder :many
+WITH RECURSIVE subtree AS (
+    SELECT nodes.id FROM nodes WHERE nodes.id = $2
+    UNION ALL
+    SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id
+)
+DELETE FROM books WHERE books.user_id = $1
+  AND node_id NOT IN (SELECT id FROM subtree)
+RETURNING cover_path
+`
+
+type PruneBooksOutsideFolderParams struct {
+	UserID   pgtype.UUID `json:"user_id"`
+	FolderID pgtype.UUID `json:"folder_id"`
+}
+
+func (q *Queries) PruneBooksOutsideFolder(ctx context.Context, arg PruneBooksOutsideFolderParams) ([]pgtype.Text, error) {
+	rows, err := q.db.Query(ctx, pruneBooksOutsideFolder, arg.UserID, arg.FolderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.Text{}
+	for rows.Next() {
+		var cover_path pgtype.Text
+		if err := rows.Scan(&cover_path); err != nil {
+			return nil, err
+		}
+		items = append(items, cover_path)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const searchAccessibleBooks = `-- name: SearchAccessibleBooks :many
 WITH RECURSIVE shared_subtree AS (
     SELECT resource_id AS node_id FROM resource_shares
