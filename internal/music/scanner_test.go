@@ -3,7 +3,6 @@ package music
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -12,6 +11,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"discodrive/internal/db"
+	"discodrive/internal/music/musictest"
 )
 
 // setupDB spins up a Postgres testcontainer, runs migrations, and returns a
@@ -58,34 +58,9 @@ func makeTenant(t *testing.T, q *db.Queries, ctx context.Context) string {
 }
 
 // requireFFmpeg skips the test when ffmpeg is not available on PATH.
-func requireFFmpeg(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not found on PATH")
-	}
-}
 
 // synthesizeAudio creates a short test audio file at dst using ffmpeg.
 // title, artist, album are embedded as metadata tags.
-func synthesizeAudio(t *testing.T, dst, title, artist, album, format string) {
-	t.Helper()
-	args := []string{
-		"-y",
-		"-f", "lavfi",
-		"-i", "sine=frequency=440:duration=1",
-		"-metadata", "title=" + title,
-		"-metadata", "artist=" + artist,
-		"-metadata", "album=" + album,
-	}
-	if format == "mp3" {
-		args = append(args, "-codec:a", "libmp3lame", "-b:a", "64k")
-	}
-	args = append(args, dst)
-	out, err := exec.Command("ffmpeg", args...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("ffmpeg: %v\n%s", err, out)
-	}
-}
 
 // TestReadMetaMP3 synthesizes a 1-second MP3 and asserts that ReadMeta extracts
 // the embedded tags.
@@ -232,4 +207,10 @@ func TestResolveCoverPath(t *testing.T) {
 	if got != coverPath {
 		t.Errorf("got %q, want %q", got, coverPath)
 	}
+}
+
+func requireFFmpeg(t *testing.T) { musictest.RequireFFmpeg(t) }
+
+func synthesizeAudio(t *testing.T, dst, title, artist, album, format string) {
+	musictest.SynthesizeAudio(t, dst, title, artist, album, format)
 }

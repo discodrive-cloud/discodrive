@@ -198,3 +198,67 @@ func (ix *Indexer) RemoveNode(ctx context.Context, nodeID string) error {
 
 	return ix.q.DeleteBookByNode(ctx, nid)
 }
+
+func (ix *Indexer) Name() string { return "ebooks" }
+
+func (ix *Indexer) State(ctx context.Context, userID pgtype.UUID) (string, int64, bool, error) {
+	es, err := ix.q.GetEbookSettings(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, false, nil
+	} else if err != nil {
+		return "", 0, false, err
+	}
+	if !es.Enabled || !es.FolderNodeID.Valid {
+		return "", 0, false, nil
+	}
+	// Trashed or not: when the library folder itself goes to the trash, its own "delete"
+	// in the log must still be matched against its path to drop everything under it.
+	folder, err := ix.q.GetNodeAnyState(ctx, es.FolderNodeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, false, nil // purged: the cascade already removed its songs
+	} else if err != nil {
+		return "", 0, false, err
+	}
+	return folder.DiskPath.String, es.IndexedSeq, true, nil
+}
+
+func (ix *Indexer) SetCursor(ctx context.Context, userID pgtype.UUID, seq int64) error {
+	return ix.q.SetEbookIndexedSeq(ctx, db.SetEbookIndexedSeqParams{UserID: userID, IndexedSeq: seq})
+}
+
+func (ix *Indexer) Accepts(diskPath string) bool { return IsBookFile(diskPath) }
+
+func (ix *Indexer) Index(ctx context.Context, userID, nodeID, diskPath string) error {
+	nid, err := db.ParseUUID(nodeID)
+	if err != nil {
+		return err
+	}
+	if b, err := ix.q.GetBookByNode(ctx, nid); err == nil && b.MetadataEdited {
+		return nil // hand-edited metadata is never overwritten by the file
+	}
+	return ix.IndexNode(ctx, userID, nodeID, filepath.Join(ix.storageRoot, diskPath))
+}
+
+func (ix *Indexer) Remove(ctx context.Context, nodeID string) error {
+	return ix.RemoveNode(ctx, nodeID)
+}
+
+func (ix *Indexer) IndexUnder(ctx context.Context, userID, dirNodeID string) error {
+	_, err := ix.ScanFolder(ctx, userID, dirNodeID)
+	return err
+}
+
+func (ix *Indexer) RemoveUnder(ctx context.Context, userID pgtype.UUID, dirPath string) error {
+	covers, err := ix.q.DeleteBooksUnderPath(ctx, db.DeleteBooksUnderPathParams{UserID: userID, Prefix: likePrefix(dirPath)})
+	for _, c := range covers {
+		if c.Valid && c.String != "" {
+			_ = RemoveCover(ix.storageRoot, c.String)
+		}
+	}
+	return err
+}
+
+// likePrefix escapes LIKE wildcards: folder names may contain % and _.
+func likePrefix(p string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p)
+}

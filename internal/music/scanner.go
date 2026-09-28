@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/dhowden/tag"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"discodrive/internal/coalesce"
@@ -356,4 +357,55 @@ func (ix *Indexer) scanFolder(ctx context.Context, userID, folderNodeID string) 
 		count++
 	}
 	return count, nil
+}
+
+func (ix *Indexer) Name() string { return "music" }
+
+func (ix *Indexer) State(ctx context.Context, userID pgtype.UUID) (string, int64, bool, error) {
+	ms, err := ix.q.GetMusicSettings(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, false, nil
+	} else if err != nil {
+		return "", 0, false, err
+	}
+	if !ms.Enabled || !ms.FolderNodeID.Valid {
+		return "", 0, false, nil
+	}
+	// Trashed or not: when the library folder itself goes to the trash, its own "delete"
+	// in the log must still be matched against its path to drop everything under it.
+	folder, err := ix.q.GetNodeAnyState(ctx, ms.FolderNodeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, false, nil // purged: the cascade already removed its songs
+	} else if err != nil {
+		return "", 0, false, err
+	}
+	return folder.DiskPath.String, ms.IndexedSeq, true, nil
+}
+
+func (ix *Indexer) SetCursor(ctx context.Context, userID pgtype.UUID, seq int64) error {
+	return ix.q.SetMusicIndexedSeq(ctx, db.SetMusicIndexedSeqParams{UserID: userID, IndexedSeq: seq})
+}
+
+func (ix *Indexer) Accepts(diskPath string) bool { return IsAudioFile(diskPath) }
+
+func (ix *Indexer) Index(ctx context.Context, userID, nodeID, diskPath string) error {
+	return ix.IndexNode(ctx, userID, nodeID, filepath.Join(ix.storageRoot, diskPath))
+}
+
+func (ix *Indexer) Remove(ctx context.Context, nodeID string) error {
+	return ix.RemoveNode(ctx, nodeID)
+}
+
+func (ix *Indexer) IndexUnder(ctx context.Context, userID, dirNodeID string) error {
+	_, err := ix.ScanFolder(ctx, userID, dirNodeID)
+	return err
+}
+
+func (ix *Indexer) RemoveUnder(ctx context.Context, userID pgtype.UUID, dirPath string) error {
+	return ix.q.DeleteSongsUnderPath(ctx, db.DeleteSongsUnderPathParams{UserID: userID, Prefix: likePrefix(dirPath)})
+}
+
+// likePrefix escapes LIKE wildcards: folder names may contain % and _.
+func likePrefix(p string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p)
 }
