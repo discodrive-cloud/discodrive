@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path"
 
 	"github.com/jackc/pgx/v5"
@@ -51,7 +50,9 @@ func (s *FileService) ReconcileUser(ctx context.Context, userID pgtype.UUID) (Re
 	defer s.rescanMu.Unlock()
 	var st ReconcileStats
 	rel := db.UUIDString(userID)
-	if _, err := s.st.ReadDir(rel); os.IsNotExist(err) {
+	// Exists, not ReadDir: the root is listed once, inside reconcileDir, after its
+	// database children are read.
+	if ok, err := s.st.Exists(rel); err == nil && !ok {
 		return st, nil // nothing stored for this user yet
 	}
 	s.reconcileDir(ctx, userID, pgtype.UUID{}, rel, &st)
