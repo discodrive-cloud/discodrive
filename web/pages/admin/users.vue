@@ -80,6 +80,19 @@ async function remove(u: UserRow) {
     error.value = e?.data?.error || t('admin.error_delete')
   }
 }
+
+const notice = ref('')
+
+async function rescan(id: string) {
+  error.value = ''
+  notice.value = ''
+  try {
+    await request('/admin/rescan', { method: 'POST', body: { user_id: id } })
+    notice.value = t('admin.rescan_queued')
+  } catch (e: any) {
+    error.value = e?.data?.error || t('admin.error_rescan')
+  }
+}
 </script>
 
 <template>
@@ -94,6 +107,7 @@ async function remove(u: UserRow) {
     <p v-if="error" class="mb-4 flex items-center gap-2 text-sm text-danger">
       <Icon name="lucide:triangle-alert" size="16" /> {{ error }}
     </p>
+    <p v-if="notice" class="mb-4 text-sm text-muted">{{ notice }}</p>
 
     <form v-if="showCreate" class="card mb-4 grid gap-3 p-4 sm:grid-cols-5" @submit.prevent="create">
       <input v-model="draft.email" type="email" class="input sm:col-span-2" :placeholder="t('admin.placeholder_email')" autocomplete="off" />
@@ -145,6 +159,9 @@ async function remove(u: UserRow) {
                   <button class="btn-ghost px-2 py-1" @click="editId = ''"><Icon name="lucide:x" size="16" /></button>
                 </template>
                 <template v-else>
+                  <button class="btn-ghost px-2 py-1" :title="t('admin.rescan_user')" @click="rescan(u.id)">
+                    <Icon name="lucide:refresh-cw" size="16" />
+                  </button>
                   <button class="btn-ghost px-2 py-1" @click="startEdit(u)"><Icon name="lucide:pencil" size="16" /></button>
                   <button v-if="u.email !== session.email"
                           class="btn-danger px-2 py-1" @click="remove(u)"><Icon name="lucide:trash-2" size="16" /></button>
