@@ -422,7 +422,10 @@
     "library_save_error": "Could not save",
     "notif_totp_enabled": "Two-factor authentication enabled",
     "notif_totp_disabled": "Two-factor authentication disabled",
-    "notif_device_paired": "App or device connected"
+    "notif_device_paired": "App or device connected",
+    "pair_title": "Pair a device",
+    "pair_hint": "For the sync daemon, dd-cli and the browser extension: they show a pairing code — enter it here.",
+    "pair_btn": "Enter pairing code"
   },
   "pair": {
     "title": "Device pairing",
@@ -434,12 +437,16 @@
     "btn_pair": "Pair",
     "btn_cancel": "Cancel",
     "done": "Done. You can return to the app on the device.",
-    "error_no_code": "No pairing code in the link.",
     "error_not_found": "Pairing code not found or expired.",
     "error_load": "Could not load pairing.",
     "error_already": "Pairing already processed.",
     "error_expired": "Pairing code expired, please retry on device.",
-    "error_pair": "Could not pair device."
+    "error_pair": "Could not pair device.",
+    "enter_hint": "Enter the code shown by the device or program you are connecting.",
+    "code": "Pairing code",
+    "btn_next": "Continue",
+    "error_code_format": "The code looks like ABCD-EFGH: 8 letters and digits.",
+    "btn_other_code": "Enter another code"
   },
   "admin": {
     "rescan_user": "Rescan files",
