@@ -201,6 +201,7 @@ type EbookSetting struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 	TokenVersion   int64              `json:"token_version"`
+	IndexedSeq     int64              `json:"indexed_seq"`
 }
 
 type FileVersion struct {
@@ -244,6 +245,7 @@ type MusicSetting struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	TagEditVersioning bool               `json:"tag_edit_versioning"`
 	TokenVersion      int64              `json:"token_version"`
+	IndexedSeq        int64              `json:"indexed_seq"`
 }
 
 type Node struct {

@@ -254,3 +254,12 @@ WHERE id = $1 AND user_id = $2;
 -- name: SetBookMetadataEdited :exec
 UPDATE books SET metadata_edited = $2, updated_at = now()
 WHERE id = $1;
+
+-- name: SetEbookIndexedSeq :exec
+UPDATE ebook_settings SET indexed_seq = $2 WHERE user_id = $1;
+
+-- name: DeleteBooksUnderPath :many
+DELETE FROM books WHERE books.user_id = sqlc.arg(user_id) AND node_id IN (
+    SELECT id FROM nodes WHERE nodes.user_id = sqlc.arg(user_id)
+      AND disk_path LIKE sqlc.arg(prefix)::text || '/%')
+RETURNING cover_path;

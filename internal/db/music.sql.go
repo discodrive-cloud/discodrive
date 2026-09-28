@@ -1522,6 +1522,24 @@ func (q *Queries) DeleteSongByNode(ctx context.Context, nodeID pgtype.UUID) erro
 	return err
 }
 
+const deleteSongsUnderPath = `-- name: DeleteSongsUnderPath :exec
+DELETE FROM songs WHERE songs.user_id = $1 AND node_id IN (
+    SELECT id FROM nodes WHERE nodes.user_id = $1
+      AND disk_path LIKE $2::text || '/%')
+`
+
+type DeleteSongsUnderPathParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	Prefix string      `json:"prefix"`
+}
+
+// Library rows of every node under a folder path (the folder was trashed or left the
+// library folder; the change log records only the folder itself).
+func (q *Queries) DeleteSongsUnderPath(ctx context.Context, arg DeleteSongsUnderPathParams) error {
+	_, err := q.db.Exec(ctx, deleteSongsUnderPath, arg.UserID, arg.Prefix)
+	return err
+}
+
 const enabledMusicUsers = `-- name: EnabledMusicUsers :many
 SELECT user_id, folder_node_id FROM music_settings WHERE enabled = true AND folder_node_id IS NOT NULL
 `
@@ -1637,7 +1655,7 @@ func (q *Queries) GetEpisodeForUser(ctx context.Context, arg GetEpisodeForUserPa
 }
 
 const getMusicSettings = `-- name: GetMusicSettings :one
-SELECT user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, tag_edit_versioning, token_version FROM music_settings WHERE user_id = $1
+SELECT user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, tag_edit_versioning, token_version, indexed_seq FROM music_settings WHERE user_id = $1
 `
 
 func (q *Queries) GetMusicSettings(ctx context.Context, userID pgtype.UUID) (MusicSetting, error) {
@@ -1653,12 +1671,13 @@ func (q *Queries) GetMusicSettings(ctx context.Context, userID pgtype.UUID) (Mus
 		&i.UpdatedAt,
 		&i.TagEditVersioning,
 		&i.TokenVersion,
+		&i.IndexedSeq,
 	)
 	return i, err
 }
 
 const getMusicSettingsByApiKey = `-- name: GetMusicSettingsByApiKey :one
-SELECT s.user_id, s.enabled, s.folder_node_id, s.password_cipher, s.api_key, s.created_at, s.updated_at, s.tag_edit_versioning, s.token_version FROM music_settings s JOIN users u ON u.id = s.user_id
+SELECT s.user_id, s.enabled, s.folder_node_id, s.password_cipher, s.api_key, s.created_at, s.updated_at, s.tag_edit_versioning, s.token_version, s.indexed_seq FROM music_settings s JOIN users u ON u.id = s.user_id
 WHERE s.api_key = $1 AND s.token_version = u.token_version AND NOT u.must_change_password
 `
 
@@ -1675,6 +1694,7 @@ func (q *Queries) GetMusicSettingsByApiKey(ctx context.Context, apiKey pgtype.Te
 		&i.UpdatedAt,
 		&i.TagEditVersioning,
 		&i.TokenVersion,
+		&i.IndexedSeq,
 	)
 	return i, err
 }
@@ -3020,6 +3040,20 @@ func (q *Queries) SetMusicCredentials(ctx context.Context, arg SetMusicCredentia
 	return err
 }
 
+const setMusicIndexedSeq = `-- name: SetMusicIndexedSeq :exec
+UPDATE music_settings SET indexed_seq = $2 WHERE user_id = $1
+`
+
+type SetMusicIndexedSeqParams struct {
+	UserID     pgtype.UUID `json:"user_id"`
+	IndexedSeq int64       `json:"indexed_seq"`
+}
+
+func (q *Queries) SetMusicIndexedSeq(ctx context.Context, arg SetMusicIndexedSeqParams) error {
+	_, err := q.db.Exec(ctx, setMusicIndexedSeq, arg.UserID, arg.IndexedSeq)
+	return err
+}
+
 const setPodcastChannelCoverPath = `-- name: SetPodcastChannelCoverPath :exec
 UPDATE podcast_channels SET cover_path = $2 WHERE id = $1 AND user_id = $3
 `
@@ -3602,7 +3636,7 @@ ON CONFLICT (user_id) DO UPDATE SET enabled = EXCLUDED.enabled,
     folder_node_id = EXCLUDED.folder_node_id,
     tag_edit_versioning = EXCLUDED.tag_edit_versioning,
     updated_at = now()
-RETURNING user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, tag_edit_versioning, token_version
+RETURNING user_id, enabled, folder_node_id, password_cipher, api_key, created_at, updated_at, tag_edit_versioning, token_version, indexed_seq
 `
 
 type UpsertMusicSettingsParams struct {
@@ -3630,6 +3664,7 @@ func (q *Queries) UpsertMusicSettings(ctx context.Context, arg UpsertMusicSettin
 		&i.UpdatedAt,
 		&i.TagEditVersioning,
 		&i.TokenVersion,
+		&i.IndexedSeq,
 	)
 	return i, err
 }

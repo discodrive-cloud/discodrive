@@ -147,6 +147,7 @@ type Querier interface {
 	DeleteBackupCodes(ctx context.Context, userID pgtype.UUID) error
 	DeleteBookByNode(ctx context.Context, nodeID pgtype.UUID) error
 	DeleteBookmark(ctx context.Context, arg DeleteBookmarkParams) error
+	DeleteBooksUnderPath(ctx context.Context, arg DeleteBooksUnderPathParams) ([]pgtype.Text, error)
 	DeleteBrowserSession(ctx context.Context, arg DeleteBrowserSessionParams) error
 	DeleteCalendar(ctx context.Context, arg DeleteCalendarParams) error
 	DeleteCalendarObject(ctx context.Context, arg DeleteCalendarObjectParams) (int64, error)
@@ -165,6 +166,9 @@ type Querier interface {
 	DeleteSetting(ctx context.Context, key string) error
 	DeleteShare(ctx context.Context, id pgtype.UUID) error
 	DeleteSongByNode(ctx context.Context, nodeID pgtype.UUID) error
+	// Library rows of every node under a folder path (the folder was trashed or left the
+	// library folder; the change log records only the folder itself).
+	DeleteSongsUnderPath(ctx context.Context, arg DeleteSongsUnderPathParams) error
 	DeleteUploadReservation(ctx context.Context, id string) error
 	DeleteUser(ctx context.Context, id pgtype.UUID) error
 	DeleteUserTOTP(ctx context.Context, userID pgtype.UUID) error
@@ -198,6 +202,9 @@ type Querier interface {
 	GetMusicSettings(ctx context.Context, userID pgtype.UUID) (MusicSetting, error)
 	GetMusicSettingsByApiKey(ctx context.Context, apiKey pgtype.Text) (MusicSetting, error)
 	GetNode(ctx context.Context, id pgtype.UUID) (Node, error)
+	// A node whether live or trashed: a library whose folder was trashed must still learn
+	// that folder's path to drop everything under it.
+	GetNodeAnyState(ctx context.Context, id pgtype.UUID) (Node, error)
 	GetNodeForUser(ctx context.Context, arg GetNodeForUserParams) (Node, error)
 	GetPairingByCodeHash(ctx context.Context, deviceCodeHash string) (DevicePairing, error)
 	GetPairingByUserCode(ctx context.Context, userCode string) (DevicePairing, error)
@@ -220,6 +227,7 @@ type Querier interface {
 	GetUploadReservation(ctx context.Context, id string) (UploadReservation, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
+	GetUserChangeSeq(ctx context.Context, id pgtype.UUID) (int64, error)
 	GetUserForAuthUpdate(ctx context.Context, id pgtype.UUID) (User, error)
 	GetUserLanguage(ctx context.Context, id pgtype.UUID) (string, error)
 	GetUserSessionTTL(ctx context.Context, id pgtype.UUID) (int32, error)
@@ -258,6 +266,8 @@ type Querier interface {
 	ListBrowserBookmarksNeedingFavicon(ctx context.Context, limit int32) ([]BrowserBookmark, error)
 	ListCalendarObjects(ctx context.Context, calendarID pgtype.UUID) ([]CalendarObject, error)
 	ListCalendars(ctx context.Context, userID pgtype.UUID) ([]Calendar, error)
+	// Changes after seq with each node's current state, for library indexing.
+	ListChangesAfter(ctx context.Context, arg ListChangesAfterParams) ([]ListChangesAfterRow, error)
 	// Delta sync: changes after seq, with the node's current state.
 	// LIMIT — pagination: large deltas aren't returned in a single chunk (3.1).
 	// content_hash — lets the client tell a real change from a touch.
@@ -387,9 +397,11 @@ type Querier interface {
 	SetCalendarName(ctx context.Context, arg SetCalendarNameParams) error
 	SetDeviceTokenHash(ctx context.Context, arg SetDeviceTokenHashParams) error
 	SetEbookCredentials(ctx context.Context, arg SetEbookCredentialsParams) error
+	SetEbookIndexedSeq(ctx context.Context, arg SetEbookIndexedSeqParams) error
 	SetEpisodeDownloaded(ctx context.Context, arg SetEpisodeDownloadedParams) error
 	SetEpisodeStatus(ctx context.Context, arg SetEpisodeStatusParams) error
 	SetMusicCredentials(ctx context.Context, arg SetMusicCredentialsParams) error
+	SetMusicIndexedSeq(ctx context.Context, arg SetMusicIndexedSeqParams) error
 	SetPodcastChannelCoverPath(ctx context.Context, arg SetPodcastChannelCoverPathParams) error
 	SetPodcastChannelMeta(ctx context.Context, arg SetPodcastChannelMetaParams) error
 	SetRating(ctx context.Context, arg SetRatingParams) error

@@ -881,3 +881,13 @@ FROM songs s
 LEFT JOIN artists a ON a.id = s.artist_id
 LEFT JOIN albums al ON al.id = s.album_id
 WHERE s.node_id = ANY($1::uuid[]);
+
+-- name: SetMusicIndexedSeq :exec
+UPDATE music_settings SET indexed_seq = $2 WHERE user_id = $1;
+
+-- Library rows of every node under a folder path (the folder was trashed or left the
+-- library folder; the change log records only the folder itself).
+-- name: DeleteSongsUnderPath :exec
+DELETE FROM songs WHERE songs.user_id = sqlc.arg(user_id) AND node_id IN (
+    SELECT id FROM nodes WHERE nodes.user_id = sqlc.arg(user_id)
+      AND disk_path LIKE sqlc.arg(prefix)::text || '/%');
