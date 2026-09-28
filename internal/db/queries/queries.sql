@@ -190,6 +190,11 @@ RETURNING *;
 -- name: GetNode :one
 SELECT * FROM nodes WHERE id = $1 AND deleted_at IS NULL;
 
+-- The live node, locked for the rest of the transaction: a writer that re-checks and
+-- then updates must not interleave with another writer's commit.
+-- name: GetNodeForUpdate :one
+SELECT * FROM nodes WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
+
 -- name: GetNodeForUser :one
 SELECT * FROM nodes WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL;
 

@@ -1164,6 +1164,37 @@ func (q *Queries) GetNodeAnyState(ctx context.Context, id pgtype.UUID) (Node, er
 	return i, err
 }
 
+const getNodeForUpdate = `-- name: GetNodeForUpdate :one
+SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
+`
+
+// The live node, locked for the rest of the transaction: a writer that re-checks and
+// then updates must not interleave with another writer's commit.
+func (q *Queries) GetNodeForUpdate(ctx context.Context, id pgtype.UUID) (Node, error) {
+	row := q.db.QueryRow(ctx, getNodeForUpdate, id)
+	var i Node
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ParentID,
+		&i.Name,
+		&i.IsDir,
+		&i.Size,
+		&i.ContentHash,
+		&i.DiskPath,
+		&i.Mime,
+		&i.IsVault,
+		&i.Version,
+		&i.ModifiedAt,
+		&i.ModifiedBy,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.IsConflictLoser,
+		&i.ConflictOf,
+	)
+	return i, err
+}
+
 const getNodeForUser = `-- name: GetNodeForUser :one
 SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
 `

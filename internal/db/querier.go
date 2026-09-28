@@ -205,6 +205,9 @@ type Querier interface {
 	// A node whether live or trashed: a library whose folder was trashed must still learn
 	// that folder's path to drop everything under it.
 	GetNodeAnyState(ctx context.Context, id pgtype.UUID) (Node, error)
+	// The live node, locked for the rest of the transaction: a writer that re-checks and
+	// then updates must not interleave with another writer's commit.
+	GetNodeForUpdate(ctx context.Context, id pgtype.UUID) (Node, error)
 	GetNodeForUser(ctx context.Context, arg GetNodeForUserParams) (Node, error)
 	GetPairingByCodeHash(ctx context.Context, deviceCodeHash string) (DevicePairing, error)
 	GetPairingByUserCode(ctx context.Context, userCode string) (DevicePairing, error)

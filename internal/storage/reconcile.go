@@ -177,7 +177,9 @@ func (s *FileService) markChanged(ctx context.Context, uid pgtype.UUID, n db.Nod
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
-	cur, err := qtx.GetNode(ctx, n.ID)
+	// Locked: an upload committing between this check and the update would otherwise
+	// have its size and hash overwritten with ones from older content.
+	cur, err := qtx.GetNodeForUpdate(ctx, n.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	} else if err != nil {
