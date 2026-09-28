@@ -3,8 +3,8 @@ ALTER TABLE music_settings ADD COLUMN indexed_seq bigint NOT NULL DEFAULT 0;
 ALTER TABLE ebook_settings ADD COLUMN indexed_seq bigint NOT NULL DEFAULT 0;
 
 -- Existing libraries were indexed by the periodic scan: start them at the present, so the
--- first start does not replay each user's whole history. Startup reconciliation covers
--- anything the old scan might have missed.
+-- first start does not replay each user's whole history. The library heal that runs at
+-- every start (one stale-files query per library) covers anything the old scan missed.
 UPDATE music_settings m SET indexed_seq = u.change_seq FROM users u WHERE u.id = m.user_id;
 UPDATE ebook_settings e SET indexed_seq = u.change_seq FROM users u WHERE u.id = e.user_id;
 

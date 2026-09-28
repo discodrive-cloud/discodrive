@@ -238,11 +238,17 @@ func lowercaseBase32(s string) string {
 // starts at the present BEFORE the full scan, so changes that arrive while it runs are
 // picked up by the catch-up rather than lost; entries outside the new folder are dropped.
 func (s *Server) reindexMusicFolder(ctx context.Context, uid, folder pgtype.UUID, changed bool) {
-	if seq, err := s.q.GetUserChangeSeq(ctx, uid); err == nil {
-		_ = s.q.SetMusicIndexedSeq(ctx, db.SetMusicIndexedSeqParams{UserID: uid, IndexedSeq: seq})
+	seq, err := s.q.GetUserChangeSeq(ctx, uid)
+	if err == nil {
+		err = s.q.SetMusicIndexedSeq(ctx, db.SetMusicIndexedSeqParams{UserID: uid, IndexedSeq: seq})
+	}
+	if err != nil {
+		log.Printf("discodrive: music cursor after a settings change: %v", err)
 	}
 	if changed {
-		_ = s.q.PruneSongsOutsideFolder(ctx, db.PruneSongsOutsideFolderParams{UserID: uid, FolderID: folder})
+		if err := s.q.PruneSongsOutsideFolder(ctx, db.PruneSongsOutsideFolderParams{UserID: uid, FolderID: folder}); err != nil {
+			log.Printf("discodrive: dropping songs outside the new music folder: %v", err)
+		}
 	}
 	userID, folderID := db.UUIDString(uid), db.UUIDString(folder)
 	go func() {

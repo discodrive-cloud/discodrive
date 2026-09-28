@@ -984,7 +984,7 @@ func (q *Queries) SetEbookCredentials(ctx context.Context, arg SetEbookCredentia
 }
 
 const setEbookIndexedSeq = `-- name: SetEbookIndexedSeq :exec
-UPDATE ebook_settings SET indexed_seq = $2 WHERE user_id = $1
+UPDATE ebook_settings SET indexed_seq = GREATEST(indexed_seq, $2) WHERE user_id = $1
 `
 
 type SetEbookIndexedSeqParams struct {
@@ -992,6 +992,8 @@ type SetEbookIndexedSeqParams struct {
 	IndexedSeq int64       `json:"indexed_seq"`
 }
 
+// The cursor only moves forward: a catch-up that started before a folder switch must
+// not undo the cursor the switch set.
 func (q *Queries) SetEbookIndexedSeq(ctx context.Context, arg SetEbookIndexedSeqParams) error {
 	_, err := q.db.Exec(ctx, setEbookIndexedSeq, arg.UserID, arg.IndexedSeq)
 	return err

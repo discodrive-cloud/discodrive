@@ -3113,7 +3113,7 @@ func (q *Queries) SetMusicCredentials(ctx context.Context, arg SetMusicCredentia
 }
 
 const setMusicIndexedSeq = `-- name: SetMusicIndexedSeq :exec
-UPDATE music_settings SET indexed_seq = $2 WHERE user_id = $1
+UPDATE music_settings SET indexed_seq = GREATEST(indexed_seq, $2) WHERE user_id = $1
 `
 
 type SetMusicIndexedSeqParams struct {
@@ -3121,6 +3121,8 @@ type SetMusicIndexedSeqParams struct {
 	IndexedSeq int64       `json:"indexed_seq"`
 }
 
+// The cursor only moves forward: a catch-up that started before a folder switch must
+// not undo the cursor the switch set.
 func (q *Queries) SetMusicIndexedSeq(ctx context.Context, arg SetMusicIndexedSeqParams) error {
 	_, err := q.db.Exec(ctx, setMusicIndexedSeq, arg.UserID, arg.IndexedSeq)
 	return err

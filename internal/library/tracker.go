@@ -26,6 +26,9 @@ type Library interface {
 	Remove(ctx context.Context, nodeID string) error
 	IndexUnder(ctx context.Context, userID, dirNodeID string) error
 	RemoveUnder(ctx context.Context, userID pgtype.UUID, dirPath string) error
+	// Heal realigns the library with its folder regardless of the cursor (retries
+	// failed rows, drops rows outside the folder).
+	Heal(ctx context.Context, userID pgtype.UUID) error
 }
 
 const pageSize = 500
@@ -124,6 +127,7 @@ func (t *Tracker) listen(ctx context.Context) error {
 		return err
 	}
 	t.catchUpAll(ctx) // at start and after every reconnect: nothing logged meanwhile is lost
+	t.healAll(ctx)    // and nothing a failed catch-up skipped stays missing
 	for {
 		n, err := conn.Conn().WaitForNotification(ctx)
 		if err != nil {
@@ -174,5 +178,23 @@ func (t *Tracker) catchUpAll(ctx context.Context) {
 	}
 	for _, u := range users {
 		t.catchUpUser(ctx, db.UUIDString(u))
+	}
+}
+
+func (t *Tracker) healAll(ctx context.Context) {
+	users, err := t.q.ListUserIDs(ctx)
+	if err != nil {
+		log.Printf("discodrive: library heal: %v", err)
+		return
+	}
+	for _, u := range users {
+		userID := db.UUIDString(u)
+		for _, lib := range t.libs {
+			t.gate.Run(lib.Name()+"/"+userID, func() {
+				if err := lib.Heal(ctx, u); err != nil && ctx.Err() == nil {
+					log.Printf("discodrive: %s heal user=%s: %v", lib.Name(), userID, err)
+				}
+			})
+		}
 	}
 }

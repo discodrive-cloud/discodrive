@@ -262,3 +262,32 @@ func (ix *Indexer) RemoveUnder(ctx context.Context, userID pgtype.UUID, dirPath 
 func likePrefix(p string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p)
 }
+
+// Heal is music.Indexer.Heal for the e-book library.
+func (ix *Indexer) Heal(ctx context.Context, userID pgtype.UUID) error {
+	es, err := ix.q.GetEbookSettings(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if !es.Enabled || !es.FolderNodeID.Valid {
+		return nil
+	}
+	if _, err := ix.q.GetNode(ctx, es.FolderNodeID); errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	covers, err := ix.q.PruneBooksOutsideFolder(ctx, db.PruneBooksOutsideFolderParams{UserID: userID, FolderID: es.FolderNodeID})
+	for _, c := range covers {
+		if c.Valid && c.String != "" {
+			_ = RemoveCover(ix.storageRoot, c.String)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	_, err = ix.ScanFolder(ctx, db.UUIDString(userID), db.UUIDString(es.FolderNodeID))
+	return err
+}

@@ -255,8 +255,10 @@ WHERE id = $1 AND user_id = $2;
 UPDATE books SET metadata_edited = $2, updated_at = now()
 WHERE id = $1;
 
+-- The cursor only moves forward: a catch-up that started before a folder switch must
+-- not undo the cursor the switch set.
 -- name: SetEbookIndexedSeq :exec
-UPDATE ebook_settings SET indexed_seq = $2 WHERE user_id = $1;
+UPDATE ebook_settings SET indexed_seq = GREATEST(indexed_seq, $2) WHERE user_id = $1;
 
 -- name: DeleteBooksUnderPath :many
 DELETE FROM books WHERE books.user_id = sqlc.arg(user_id) AND node_id IN (

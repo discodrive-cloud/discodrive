@@ -112,6 +112,8 @@ func (f *fakeLib) RemoveUnder(_ context.Context, _ pgtype.UUID, dirPath string) 
 	return nil
 }
 
+func (f *fakeLib) Heal(context.Context, pgtype.UUID) error { return nil }
+
 func id(n db.Node) string { return db.UUIDString(n.ID) }
 
 func push(t *testing.T, e *env, parent *string, name string) db.Node {
@@ -374,5 +376,60 @@ func TestTrashedBookLeavesEbookLibrary(t *testing.T) {
 	}
 	if n := books(); n != 0 {
 		t.Fatalf("a trashed book is still in the library (%d)", n)
+	}
+}
+
+// A row the change log already went past — a failed index, or a file missed when the
+// cursor was started at the present — must not stay out of the library for good, and
+// rows outside the library folder must go: Heal does both.
+func TestHealRepairsWhatTheCursorSkipped(t *testing.T) {
+	musictest.RequireFFmpeg(t)
+	e := newEnv(t)
+	ctx := context.Background()
+	folder, _ := e.fs.CreateFolder(ctx, e.userID, nil, "Music")
+	fid := id(folder)
+	skipped := pushAudio(t, e, &fid, "skipped.mp3")
+	outside := pushAudio(t, e, nil, "outside.mp3")
+	ix := music.NewIndexer(e.q, e.root)
+	if _, err := e.q.UpsertMusicSettings(ctx, db.UpsertMusicSettingsParams{UserID: e.uid, Enabled: true,
+		FolderNodeID: folder.ID, TagEditVersioning: true}); err != nil {
+		t.Fatal(err)
+	}
+	seq, _ := e.q.GetUserChangeSeq(ctx, e.uid)
+	if err := ix.SetCursor(ctx, e.uid, seq); err != nil { // the log is "done"
+		t.Fatal(err)
+	}
+	// A stale row outside the folder (e.g. left by an earlier folder).
+	if err := ix.Index(ctx, e.userID, id(outside), outside.DiskPath.String); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ix.Heal(ctx, e.uid); err != nil {
+		t.Fatal(err)
+	}
+	songs, _ := e.q.AccessibleSongs(ctx, e.uid)
+	if len(songs) != 1 || songs[0].NodeID != skipped.ID {
+		t.Fatalf("songs after heal %+v: want only the skipped track", songs)
+	}
+}
+
+// The cursor never moves backwards: a catch-up that read the settings before a folder
+// switch must not undo the switch's cursor.
+func TestCursorNeverMovesBack(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	if _, err := e.q.UpsertMusicSettings(ctx, db.UpsertMusicSettingsParams{UserID: e.uid, Enabled: true, TagEditVersioning: true}); err != nil {
+		t.Fatal(err)
+	}
+	ix := music.NewIndexer(e.q, e.root)
+	if err := ix.SetCursor(ctx, e.uid, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.SetCursor(ctx, e.uid, 4); err != nil {
+		t.Fatal(err)
+	}
+	ms, _ := e.q.GetMusicSettings(ctx, e.uid)
+	if ms.IndexedSeq != 10 {
+		t.Fatalf("cursor %d after setting 10 then 4, want 10", ms.IndexedSeq)
 	}
 }

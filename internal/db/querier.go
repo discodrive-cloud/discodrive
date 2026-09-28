@@ -406,10 +406,14 @@ type Querier interface {
 	SetCalendarName(ctx context.Context, arg SetCalendarNameParams) error
 	SetDeviceTokenHash(ctx context.Context, arg SetDeviceTokenHashParams) error
 	SetEbookCredentials(ctx context.Context, arg SetEbookCredentialsParams) error
+	// The cursor only moves forward: a catch-up that started before a folder switch must
+	// not undo the cursor the switch set.
 	SetEbookIndexedSeq(ctx context.Context, arg SetEbookIndexedSeqParams) error
 	SetEpisodeDownloaded(ctx context.Context, arg SetEpisodeDownloadedParams) error
 	SetEpisodeStatus(ctx context.Context, arg SetEpisodeStatusParams) error
 	SetMusicCredentials(ctx context.Context, arg SetMusicCredentialsParams) error
+	// The cursor only moves forward: a catch-up that started before a folder switch must
+	// not undo the cursor the switch set.
 	SetMusicIndexedSeq(ctx context.Context, arg SetMusicIndexedSeqParams) error
 	SetPodcastChannelCoverPath(ctx context.Context, arg SetPodcastChannelCoverPathParams) error
 	SetPodcastChannelMeta(ctx context.Context, arg SetPodcastChannelMetaParams) error

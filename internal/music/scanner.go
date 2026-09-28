@@ -409,3 +409,29 @@ func (ix *Indexer) RemoveUnder(ctx context.Context, userID pgtype.UUID, dirPath 
 func likePrefix(p string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p)
 }
+
+// Heal brings the library back in line with its folder regardless of the cursor: rows
+// outside the folder are dropped and stale or missing files inside it indexed. Run at
+// startup, it retries rows whose indexing failed and covers files the change log never
+// offered (e.g. before the cursor was started at the present).
+func (ix *Indexer) Heal(ctx context.Context, userID pgtype.UUID) error {
+	ms, err := ix.q.GetMusicSettings(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if !ms.Enabled || !ms.FolderNodeID.Valid {
+		return nil
+	}
+	if _, err := ix.q.GetNode(ctx, ms.FolderNodeID); errors.Is(err, pgx.ErrNoRows) {
+		return nil // the folder is trashed: its catch-up already dropped the rows
+	} else if err != nil {
+		return err
+	}
+	if err := ix.q.PruneSongsOutsideFolder(ctx, db.PruneSongsOutsideFolderParams{UserID: userID, FolderID: ms.FolderNodeID}); err != nil {
+		return err
+	}
+	_, err = ix.ScanFolder(ctx, db.UUIDString(userID), db.UUIDString(ms.FolderNodeID))
+	return err
+}

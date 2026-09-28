@@ -882,8 +882,10 @@ LEFT JOIN artists a ON a.id = s.artist_id
 LEFT JOIN albums al ON al.id = s.album_id
 WHERE s.node_id = ANY($1::uuid[]);
 
+-- The cursor only moves forward: a catch-up that started before a folder switch must
+-- not undo the cursor the switch set.
 -- name: SetMusicIndexedSeq :exec
-UPDATE music_settings SET indexed_seq = $2 WHERE user_id = $1;
+UPDATE music_settings SET indexed_seq = GREATEST(indexed_seq, $2) WHERE user_id = $1;
 
 -- Library rows of every node under a folder path (the folder was trashed or left the
 -- library folder; the change log records only the folder itself).
