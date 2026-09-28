@@ -11,17 +11,17 @@ import (
 
 // pausingDisk parks the first Move whose destination ends with target, after the move
 // is done on disk: the operation's database transaction is still open at that point.
-// With onWalk set it instead parks inside Walk, after Rescan has read the database.
+// With onRead set it instead parks inside Walk, after Rescan has read the database.
 type pausingDisk struct {
 	storage.Storage
 	target  string
-	onWalk  bool
+	onRead  bool
 	paused  chan struct{}
 	release chan struct{}
 }
 
-func newPausingDisk(target string, onWalk bool) *pausingDisk {
-	return &pausingDisk{target: target, onWalk: onWalk, paused: make(chan struct{}), release: make(chan struct{})}
+func newPausingDisk(target string, onRead bool) *pausingDisk {
+	return &pausingDisk{target: target, onRead: onRead, paused: make(chan struct{}), release: make(chan struct{})}
 }
 
 func (p *pausingDisk) park() {
@@ -36,17 +36,17 @@ func (p *pausingDisk) park() {
 
 func (p *pausingDisk) Move(oldRel, newRel string) error {
 	err := p.Storage.Move(oldRel, newRel)
-	if !p.onWalk && p.target != "" && strings.HasSuffix(newRel, p.target) {
+	if !p.onRead && p.target != "" && strings.HasSuffix(newRel, p.target) {
 		p.park()
 	}
 	return err
 }
 
-func (p *pausingDisk) Walk(rel string) ([]storage.DiskEntry, bool, error) {
-	if p.onWalk {
+func (p *pausingDisk) ReadDir(rel string) ([]storage.DirItem, error) {
+	if p.onRead {
 		p.park()
 	}
-	return p.Storage.Walk(rel)
+	return p.Storage.ReadDir(rel)
 }
 
 // rescanDuring runs Rescan while op is parked and fails if Rescan does not come back

@@ -303,8 +303,11 @@ type Querier interface {
 	ListStarredArtists(ctx context.Context, userID pgtype.UUID) ([]Artist, error)
 	// Returns accessible starred songs for a user, ordered by starred_at desc.
 	ListStarredSongs(ctx context.Context, userID pgtype.UUID) ([]Song, error)
+	// Names of trashed children of one folder: reconciliation must not re-import them.
+	ListTombstonedChildren(ctx context.Context, parentID pgtype.UUID) ([]string, error)
 	// Paths of trashed (soft-deleted) nodes — so a rescan doesn't re-import their files.
 	ListTombstonedNodePaths(ctx context.Context, userID pgtype.UUID) ([]pgtype.Text, error)
+	ListTombstonedRootChildren(ctx context.Context, userID pgtype.UUID) ([]string, error)
 	ListTrashNodes(ctx context.Context, userID pgtype.UUID) ([]Node, error)
 	ListTrashedSubtree(ctx context.Context, arg ListTrashedSubtreeParams) ([]ListTrashedSubtreeRow, error)
 	ListUnusedBackupCodes(ctx context.Context, userID pgtype.UUID) ([]BackupCode, error)

@@ -217,6 +217,13 @@ SELECT * FROM nodes WHERE user_id = $1 AND deleted_at IS NULL;
 SELECT disk_path FROM nodes
 WHERE user_id = $1 AND deleted_at IS NOT NULL AND disk_path IS NOT NULL;
 
+-- Names of trashed children of one folder: reconciliation must not re-import them.
+-- name: ListTombstonedChildren :many
+SELECT name FROM nodes WHERE parent_id = $1 AND deleted_at IS NOT NULL;
+
+-- name: ListTombstonedRootChildren :many
+SELECT name FROM nodes WHERE user_id = $1 AND parent_id IS NULL AND deleted_at IS NOT NULL;
+
 -- name: ListExpiredTombstones :many
 SELECT id, user_id, disk_path, is_dir FROM nodes
 WHERE deleted_at IS NOT NULL AND deleted_at < $1;

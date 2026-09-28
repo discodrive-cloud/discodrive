@@ -2421,6 +2421,31 @@ func (q *Queries) ListSharesForUser(ctx context.Context, sharedWithUser pgtype.U
 	return items, nil
 }
 
+const listTombstonedChildren = `-- name: ListTombstonedChildren :many
+SELECT name FROM nodes WHERE parent_id = $1 AND deleted_at IS NOT NULL
+`
+
+// Names of trashed children of one folder: reconciliation must not re-import them.
+func (q *Queries) ListTombstonedChildren(ctx context.Context, parentID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listTombstonedChildren, parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTombstonedNodePaths = `-- name: ListTombstonedNodePaths :many
 SELECT disk_path FROM nodes
 WHERE user_id = $1 AND deleted_at IS NOT NULL AND disk_path IS NOT NULL
@@ -2440,6 +2465,30 @@ func (q *Queries) ListTombstonedNodePaths(ctx context.Context, userID pgtype.UUI
 			return nil, err
 		}
 		items = append(items, disk_path)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTombstonedRootChildren = `-- name: ListTombstonedRootChildren :many
+SELECT name FROM nodes WHERE user_id = $1 AND parent_id IS NULL AND deleted_at IS NOT NULL
+`
+
+func (q *Queries) ListTombstonedRootChildren(ctx context.Context, userID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listTombstonedRootChildren, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
