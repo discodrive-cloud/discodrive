@@ -550,6 +550,9 @@ UPDATE calendars SET name = $2 WHERE id = $1 AND user_id = $3;
 -- name: SetCalendarColor :exec
 UPDATE calendars SET color = $2 WHERE id = $1 AND user_id = $3;
 
+-- name: SetCalendarOrder :exec
+UPDATE calendars SET sort_order = $2 WHERE id = $1 AND user_id = $3;
+
 -- name: BumpCalendarCtag :exec
 UPDATE calendars SET ctag = ctag + 1 WHERE id = $1;
 
