@@ -34,3 +34,14 @@ func TestWellKnownRedirects(t *testing.T) {
 		t.Fatalf("well-known: code=%d loc=%q", rec.Code, rec.Header().Get("Location"))
 	}
 }
+
+func TestAsPrincipalRewritesOnlyRoot(t *testing.T) {
+	root := asPrincipal(httptest.NewRequest("PROPFIND", "/", nil), "u1")
+	if root.URL.Path != principalPath("u1") || root.RequestURI != principalPath("u1") {
+		t.Fatalf("root was served at %q (RequestURI %q), want the principal", root.URL.Path, root.RequestURI)
+	}
+	other := httptest.NewRequest("PROPFIND", prefix+"/u1/", nil)
+	if got := asPrincipal(other, "u1"); got != other {
+		t.Fatalf("non-root request must pass through unchanged, got %q", got.URL.Path)
+	}
+}

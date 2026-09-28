@@ -32,9 +32,9 @@ func TestDAVRootRoutesToCalDAVOrCardDAV(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, body, wantTarget, wantPath string
 	}{
-		{"caldav propfind", "PROPFIND", calBody, "cal", "/caldav/"},
-		{"carddav propfind", "PROPFIND", cardBody, "card", "/carddav/"},
-		{"options", http.MethodOptions, "", "cal", "/caldav/"},
+		{"caldav propfind", "PROPFIND", calBody, "cal", "/"},
+		{"carddav propfind", "PROPFIND", cardBody, "card", "/"},
+		{"options", http.MethodOptions, "", "cal", "/"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cal := &fakeDAV{name: "cal", dav: "1, 3, calendar-access"}
@@ -73,7 +73,7 @@ func TestDAVRootWithOnlyCardDAV(t *testing.T) {
 	card := &fakeDAV{dav: "1, 3, addressbook"}
 	rec := httptest.NewRecorder()
 	davRoot(nil, card).ServeHTTP(rec, httptest.NewRequest("PROPFIND", "/", strings.NewReader("<propfind xmlns=\"DAV:\"/>")))
-	if card.path != "/carddav/" {
+	if card.path != "/" {
 		t.Fatalf("with CalDAV off, root must go to CardDAV, got %q", card.path)
 	}
 }

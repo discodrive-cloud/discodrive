@@ -253,3 +253,20 @@ func TestProppatchPersistsCalendarColor(t *testing.T) {
 		t.Fatalf("PROPFIND did not return the saved calendar-color:\n%s", body)
 	}
 }
+
+// Apple re-discovers the account from "/" with this body and reads calendar-home-set straight
+// from the answer; the middleware serves "/" as the user's principal (see asPrincipal).
+func TestPrincipalAnswersAppleRootDiscovery(t *testing.T) {
+	h, userID, _ := setup(t)
+	rec := do(t, h, "PROPFIND", "/caldav/"+userID+"/", `<?xml version="1.0" encoding="UTF-8"?>
+<A:propfind xmlns:A="DAV:"><A:prop>
+<B:calendar-home-set xmlns:B="urn:ietf:params:xml:ns:caldav"/>
+<A:current-user-principal/><A:principal-URL/><A:displayname/>
+</A:prop></A:propfind>`)
+	if rec.Code != http.StatusMultiStatus {
+		t.Fatalf("PROPFIND principal code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "/caldav/"+userID+"/cal/") {
+		t.Fatalf("principal did not return calendar-home-set:\n%s", rec.Body.String())
+	}
+}

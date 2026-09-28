@@ -9,22 +9,21 @@ import (
 
 // davRoot answers OPTIONS/PROPFIND on "/". Apple accounts from our profile carry the bare host
 // as HostName, and dataaccessd periodically re-discovers the account from "/"; a 405 there shows
-// up as "… is not a location that supports this request" in Calendar. The request is served by
-// the CalDAV handler as if it came to /caldav/ (auth, enable flag and current-user-principal
-// live there), or by the CardDAV handler when the body asks for CardDAV properties.
+// up as "… is not a location that supports this request" in Calendar. The request is passed to
+// the CalDAV handler (or the CardDAV one when the body asks for CardDAV properties), which after
+// auth answers "/" as the user's principal: Apple reads calendar-home-set straight from it.
 func davRoot(caldavH, carddavH http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		target, path := caldavH, "/caldav/"
+		target := caldavH
 		if caldavH == nil || bytes.Contains(body, []byte("urn:ietf:params:xml:ns:carddav")) {
-			target, path = carddavH, "/carddav/"
+			target = carddavH
 		}
 		if target == nil {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		r2 := r.Clone(r.Context())
-		r2.URL.Path, r2.URL.RawPath, r2.RequestURI = path, "", path
 		r2.Body = io.NopCloser(bytes.NewReader(body))
 		if r.Method == http.MethodOptions && caldavH != nil && carddavH != nil {
 			w = &davHeaderWriter{ResponseWriter: w}
