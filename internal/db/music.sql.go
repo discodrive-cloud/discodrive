@@ -2286,6 +2286,58 @@ func (q *Queries) ListPodcastChannelsForUser(ctx context.Context, userID pgtype.
 	return items, nil
 }
 
+const listStaleSongNodes = `-- name: ListStaleSongNodes :many
+WITH RECURSIVE subtree AS (
+    SELECT nodes.id FROM nodes WHERE nodes.id = $1
+    UNION ALL
+    SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id WHERE n.deleted_at IS NULL
+)
+SELECT n.id, n.user_id, n.parent_id, n.name, n.is_dir, n.size, n.content_hash, n.disk_path, n.mime, n.is_vault, n.version, n.modified_at, n.modified_by, n.deleted_at, n.created_at, n.is_conflict_loser, n.conflict_of FROM nodes n JOIN subtree s ON n.id = s.id
+LEFT JOIN songs sg ON sg.node_id = n.id
+WHERE NOT n.is_dir AND n.deleted_at IS NULL
+  AND (sg.id IS NULL OR sg.duration IS NULL OR sg.updated_at < n.modified_at)
+`
+
+// Files of the folder's subtree whose song row is missing, older than the file, or
+// predates duration probing — the whole scan in one query instead of one per file.
+func (q *Queries) ListStaleSongNodes(ctx context.Context, id pgtype.UUID) ([]Node, error) {
+	rows, err := q.db.Query(ctx, listStaleSongNodes, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Node{}
+	for rows.Next() {
+		var i Node
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ParentID,
+			&i.Name,
+			&i.IsDir,
+			&i.Size,
+			&i.ContentHash,
+			&i.DiskPath,
+			&i.Mime,
+			&i.IsVault,
+			&i.Version,
+			&i.ModifiedAt,
+			&i.ModifiedBy,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.IsConflictLoser,
+			&i.ConflictOf,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStarredAlbums = `-- name: ListStarredAlbums :many
 WITH RECURSIVE shared_subtree AS (
     SELECT resource_id AS node_id FROM resource_shares

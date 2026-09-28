@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/dhowden/tag"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"discodrive/internal/coalesce"
@@ -338,12 +337,10 @@ func (ix *Indexer) scanFolder(ctx context.Context, userID, folderNodeID string) 
 	if err != nil {
 		return 0, err
 	}
-
-	nodes, err := ix.q.ListFileNodesUnderFolder(ctx, folderUID)
+	nodes, err := ix.q.ListStaleSongNodes(ctx, folderUID)
 	if err != nil {
 		return 0, err
 	}
-
 	count := 0
 	for _, node := range nodes {
 		if !node.DiskPath.Valid {
@@ -353,27 +350,8 @@ func (ix *Indexer) scanFolder(ctx context.Context, userID, folderNodeID string) 
 		if !IsAudioFile(absPath) {
 			continue
 		}
-
-		nodeIDStr := db.UUIDString(node.ID)
-
-		// Change-gate: skip if song is already indexed, up to date by timestamp,
-		// AND has been probed for duration. NULL duration marks legacy rows
-		// indexed before probing existed — re-index those once to enrich them;
-		// a valid 0 means "probed, nothing to extract" and is left alone.
-		existing, err := ix.q.GetSongByNode(ctx, node.ID)
-		if err == nil && node.ModifiedAt.Valid && existing.UpdatedAt.Valid {
-			upToDate := !existing.UpdatedAt.Time.Before(node.ModifiedAt.Time)
-			if upToDate && existing.Duration.Valid {
-				continue
-			}
-		} else if !errors.Is(err, pgx.ErrNoRows) && err != nil {
-			// Log and continue; don't abort the whole scan for one file.
-			continue
-		}
-
-		if err := ix.IndexNode(ctx, userID, nodeIDStr, absPath); err != nil {
-			// Non-fatal: skip unreadable files.
-			continue
+		if err := ix.IndexNode(ctx, userID, db.UUIDString(node.ID), absPath); err != nil {
+			continue // non-fatal: skip unreadable files
 		}
 		count++
 	}

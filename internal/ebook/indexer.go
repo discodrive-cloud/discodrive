@@ -155,12 +155,10 @@ func (ix *Indexer) scanFolder(ctx context.Context, userID, folderNodeID string) 
 	if err != nil {
 		return 0, err
 	}
-
-	nodes, err := ix.q.ListFileNodesUnderFolder(ctx, folderUID)
+	nodes, err := ix.q.ListStaleBookNodes(ctx, folderUID)
 	if err != nil {
 		return 0, err
 	}
-
 	count := 0
 	for _, node := range nodes {
 		if !node.DiskPath.Valid {
@@ -170,29 +168,8 @@ func (ix *Indexer) scanFolder(ctx context.Context, userID, folderNodeID string) 
 		if !IsBookFile(absPath) {
 			continue
 		}
-
-		nodeIDStr := db.UUIDString(node.ID)
-
-		// Change-gate: skip if the book row is newer than the node's modified_at,
-		// and ALWAYS skip books whose metadata was edited by hand (their DB values
-		// must not be clobbered by a file rescan, even if the file's mtime changed).
-		existing, err := ix.q.GetBookByNode(ctx, node.ID)
-		if err == nil {
-			if existing.MetadataEdited {
-				continue
-			}
-			if node.ModifiedAt.Valid && existing.UpdatedAt.Valid &&
-				!existing.UpdatedAt.Time.Before(node.ModifiedAt.Time) {
-				continue
-			}
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			// Non-fatal: skip this file, continue scanning.
-			continue
-		}
-
-		if err := ix.IndexNode(ctx, userID, nodeIDStr, absPath); err != nil {
-			// Non-fatal: skip unreadable files.
-			continue
+		if err := ix.IndexNode(ctx, userID, db.UUIDString(node.ID), absPath); err != nil {
+			continue // non-fatal: skip unreadable files
 		}
 		count++
 	}

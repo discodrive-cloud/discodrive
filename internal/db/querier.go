@@ -305,6 +305,10 @@ type Querier interface {
 	ListSecretKeys(ctx context.Context) ([]string, error)
 	ListSharesForResource(ctx context.Context, arg ListSharesForResourceParams) ([]ResourceShare, error)
 	ListSharesForUser(ctx context.Context, sharedWithUser pgtype.UUID) ([]ResourceShare, error)
+	ListStaleBookNodes(ctx context.Context, id pgtype.UUID) ([]Node, error)
+	// Files of the folder's subtree whose song row is missing, older than the file, or
+	// predates duration probing — the whole scan in one query instead of one per file.
+	ListStaleSongNodes(ctx context.Context, id pgtype.UUID) ([]Node, error)
 	ListStaleUploadReservations(ctx context.Context, touchedAt pgtype.Timestamptz) ([]UploadReservation, error)
 	// Returns accessible starred albums for a user, ordered by starred_at desc.
 	// An album is accessible iff it contains at least one song owned by or shared with

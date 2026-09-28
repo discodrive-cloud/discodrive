@@ -773,6 +773,56 @@ func (q *Queries) InsertBookTag(ctx context.Context, arg InsertBookTagParams) er
 	return err
 }
 
+const listStaleBookNodes = `-- name: ListStaleBookNodes :many
+WITH RECURSIVE subtree AS (
+    SELECT nodes.id FROM nodes WHERE nodes.id = $1
+    UNION ALL
+    SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id WHERE n.deleted_at IS NULL
+)
+SELECT n.id, n.user_id, n.parent_id, n.name, n.is_dir, n.size, n.content_hash, n.disk_path, n.mime, n.is_vault, n.version, n.modified_at, n.modified_by, n.deleted_at, n.created_at, n.is_conflict_loser, n.conflict_of FROM nodes n JOIN subtree s ON n.id = s.id
+LEFT JOIN books b ON b.node_id = n.id
+WHERE NOT n.is_dir AND n.deleted_at IS NULL
+  AND (b.id IS NULL OR (NOT b.metadata_edited AND b.updated_at < n.modified_at))
+`
+
+func (q *Queries) ListStaleBookNodes(ctx context.Context, id pgtype.UUID) ([]Node, error) {
+	rows, err := q.db.Query(ctx, listStaleBookNodes, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Node{}
+	for rows.Next() {
+		var i Node
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ParentID,
+			&i.Name,
+			&i.IsDir,
+			&i.Size,
+			&i.ContentHash,
+			&i.DiskPath,
+			&i.Mime,
+			&i.IsVault,
+			&i.Version,
+			&i.ModifiedAt,
+			&i.ModifiedBy,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.IsConflictLoser,
+			&i.ConflictOf,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const searchAccessibleBooks = `-- name: SearchAccessibleBooks :many
 WITH RECURSIVE shared_subtree AS (
     SELECT resource_id AS node_id FROM resource_shares
