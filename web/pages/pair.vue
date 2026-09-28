@@ -1,28 +1,51 @@
 <script setup lang="ts">
+import { normalizePairCode } from '~/lib/pairCode'
+
 const { t } = useI18n()
 const route = useRoute()
+const router = useRouter()
 const { request } = useApi()
-const code = (route.query.code as string) || ''
+const code = computed(() => (route.query.code as string) || '')
+const typed = ref('')
 const info = ref<{ proposed_name: string; kind: string } | null>(null)
 const name = ref('')
-const state = ref<'loading' | 'ready' | 'done' | 'error'>('loading')
+const state = ref<'enter' | 'loading' | 'ready' | 'done' | 'error'>('loading')
 const error = ref('')
 
-onMounted(async () => {
-  if (!code) { state.value = 'error'; error.value = t('pair.error_no_code'); return }
+// Opened from a device link, the code is in ?code=; opened from Settings, it is typed in.
+async function load() {
+  if (!code.value) { state.value = 'enter'; return }
+  state.value = 'loading'
   try {
-    info.value = await request(`/pair/${encodeURIComponent(code)}`)
+    info.value = await request(`/pair/${encodeURIComponent(code.value)}`)
     name.value = info.value!.proposed_name
     state.value = 'ready'
   } catch (e: any) {
     state.value = 'error'
     error.value = e?.response?.status === 404 ? t('pair.error_not_found') : t('pair.error_load')
   }
-})
+}
+
+onMounted(load)
+watch(code, load)
+
+function enterAnother() {
+  typed.value = ''
+  error.value = ''
+  const { code: _, ...rest } = route.query
+  router.replace({ query: rest })
+}
+
+function submitCode() {
+  const c = normalizePairCode(typed.value)
+  if (!c) { error.value = t('pair.error_code_format'); return }
+  error.value = ''
+  router.replace({ query: { ...route.query, code: c } })
+}
 
 async function approve() {
   try {
-    await request(`/pair/${encodeURIComponent(code)}/approve`, { method: 'POST', body: { name: name.value } })
+    await request(`/pair/${encodeURIComponent(code.value)}/approve`, { method: 'POST', body: { name: name.value } })
     state.value = 'done'
   } catch (e: any) {
     state.value = 'error'
@@ -37,7 +60,24 @@ async function approve() {
   <div>
     <h1 class="mb-4 text-xl font-semibold">{{ t('pair.title') }}</h1>
 
-    <p v-if="state === 'loading'" class="text-sm text-muted">{{ t('pair.loading') }}</p>
+    <form v-if="state === 'enter'" class="card max-w-sm p-5" @submit.prevent="submitCode">
+      <p class="mb-4 text-sm">{{ t('pair.enter_hint') }}</p>
+      <div class="mb-3">
+        <label class="mb-1 block text-xs text-muted">{{ t('pair.code') }}</label>
+        <input
+          v-model="typed" type="text" class="input font-mono uppercase tracking-wider" placeholder="ABCD-EFGH"
+          autocomplete="off" autocapitalize="characters" spellcheck="false" autofocus
+        />
+      </div>
+      <p v-if="error" class="mb-3 flex items-center gap-2 text-xs text-danger">
+        <Icon name="lucide:triangle-alert" size="14" /> {{ error }}
+      </p>
+      <button type="submit" class="btn-accent">
+        <Icon name="lucide:arrow-right" size="16" /> {{ t('pair.btn_next') }}
+      </button>
+    </form>
+
+    <p v-else-if="state === 'loading'" class="text-sm text-muted">{{ t('pair.loading') }}</p>
 
     <div v-else-if="state === 'ready'" class="card max-w-sm p-5">
       <p class="mb-4 text-sm">{{ t('pair.question') }}</p>
@@ -62,8 +102,11 @@ async function approve() {
       </p>
     </div>
 
-    <p v-else class="flex items-center gap-2 text-sm text-danger">
-      <Icon name="lucide:triangle-alert" size="16" /> {{ error }}
-    </p>
+    <div v-else>
+      <p class="mb-3 flex items-center gap-2 text-sm text-danger">
+        <Icon name="lucide:triangle-alert" size="16" /> {{ error }}
+      </p>
+      <button class="btn-ghost" @click="enterAnother">{{ t('pair.btn_other_code') }}</button>
+    </div>
   </div>
 </template>

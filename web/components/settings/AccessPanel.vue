@@ -114,6 +114,15 @@ const carddavUrl = computed(() => origin.value + '/carddav/')
       </div>
     </div>
 
+    <!-- Headless clients (sync daemon, CLI, browser extension) pair by a code they show -->
+    <div class="mb-6 card p-5">
+      <h2 class="mb-1 text-sm font-medium text-muted">{{ t('settings.pair_title') }}</h2>
+      <p class="mb-3 text-xs text-muted">{{ t('settings.pair_hint') }}</p>
+      <NuxtLink to="/pair">
+        <button class="btn-accent"><Icon name="lucide:link" size="16" /> {{ t('settings.pair_btn') }}</button>
+      </NuxtLink>
+    </div>
+
   <div class="card p-5">
     <h2 class="mb-3 text-sm font-medium text-muted">{{ t('settings.dav_section') }}</h2>
     <p class="mb-4 text-xs text-muted">{{ t('settings.dav_note') }}</p>

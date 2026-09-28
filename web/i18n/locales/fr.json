@@ -422,7 +422,10 @@
     "notif_totp_disabled": "Authentification à deux facteurs désactivée",
     "notif_device_paired": "Application ou appareil connecté",
     "music_tag_versioning": "Créer une version du fichier lors de la modification des tags",
-    "music_tag_versioning_hint": "Conserve une copie de sauvegarde du fichier original avant l'écriture de toute modification de tag."
+    "music_tag_versioning_hint": "Conserve une copie de sauvegarde du fichier original avant l'écriture de toute modification de tag.",
+    "pair_title": "Associer un appareil",
+    "pair_hint": "Pour le démon de synchronisation, dd-cli et l’extension de navigateur : ils affichent un code d’association — saisissez-le ici.",
+    "pair_btn": "Saisir le code d’association"
   },
   "pair": {
     "title": "Couplage d'appareil",
@@ -434,12 +437,16 @@
     "btn_pair": "Coupler",
     "btn_cancel": "Annuler",
     "done": "Terminé. Vous pouvez revenir à l'application sur l'appareil.",
-    "error_no_code": "Aucun code de couplage dans le lien.",
     "error_not_found": "Code de couplage introuvable ou expiré.",
     "error_load": "Impossible de charger le couplage.",
     "error_already": "Couplage déjà traité.",
     "error_expired": "Code de couplage expiré, veuillez réessayer sur l'appareil.",
-    "error_pair": "Impossible de coupler l'appareil."
+    "error_pair": "Impossible de coupler l'appareil.",
+    "enter_hint": "Saisissez le code affiché par l’appareil ou le programme que vous connectez.",
+    "code": "Code d’association",
+    "btn_next": "Continuer",
+    "error_code_format": "Le code ressemble à ABCD-EFGH : 8 lettres et chiffres.",
+    "btn_other_code": "Saisir un autre code"
   },
   "admin": {
     "rescan_user": "Réanalyser les fichiers",

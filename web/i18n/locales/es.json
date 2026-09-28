@@ -422,7 +422,10 @@
     "notif_totp_disabled": "Autenticación de dos factores desactivada",
     "notif_device_paired": "Aplicación o dispositivo conectado",
     "music_tag_versioning": "Crear una versión del archivo al editar etiquetas",
-    "music_tag_versioning_hint": "Guarda una copia de seguridad del archivo original antes de escribir cualquier cambio de etiqueta."
+    "music_tag_versioning_hint": "Guarda una copia de seguridad del archivo original antes de escribir cualquier cambio de etiqueta.",
+    "pair_title": "Vincular un dispositivo",
+    "pair_hint": "Para el demonio de sincronización, dd-cli y la extensión del navegador: muestran un código de vinculación; introdúcelo aquí.",
+    "pair_btn": "Introducir código de vinculación"
   },
   "pair": {
     "title": "Vinculación de dispositivo",
@@ -434,12 +437,16 @@
     "btn_pair": "Vincular",
     "btn_cancel": "Cancelar",
     "done": "Listo. Puede volver a la aplicación en el dispositivo.",
-    "error_no_code": "No hay código de vinculación en el enlace.",
     "error_not_found": "Código de vinculación no encontrado o expirado.",
     "error_load": "No se pudo cargar la vinculación.",
     "error_already": "La vinculación ya fue procesada.",
     "error_expired": "Código de vinculación expirado, inténtelo de nuevo en el dispositivo.",
-    "error_pair": "No se pudo vincular el dispositivo."
+    "error_pair": "No se pudo vincular el dispositivo.",
+    "enter_hint": "Introduce el código que muestra el dispositivo o programa que estás conectando.",
+    "code": "Código de vinculación",
+    "btn_next": "Continuar",
+    "error_code_format": "El código tiene este aspecto: ABCD-EFGH, 8 letras y cifras.",
+    "btn_other_code": "Introducir otro código"
   },
   "admin": {
     "rescan_user": "Volver a escanear archivos",

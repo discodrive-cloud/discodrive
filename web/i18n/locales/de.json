@@ -422,7 +422,10 @@
     "notif_totp_disabled": "Zwei-Faktor-Authentifizierung deaktiviert",
     "notif_device_paired": "App oder Gerät verbunden",
     "music_tag_versioning": "Beim Bearbeiten von Tags eine Dateiversion erstellen",
-    "music_tag_versioning_hint": "Bewahrt eine Sicherungskopie der Originaldatei auf, bevor Tag-Änderungen geschrieben werden."
+    "music_tag_versioning_hint": "Bewahrt eine Sicherungskopie der Originaldatei auf, bevor Tag-Änderungen geschrieben werden.",
+    "pair_title": "Gerät koppeln",
+    "pair_hint": "Für den Sync-Daemon, dd-cli und die Browsererweiterung: Sie zeigen einen Kopplungscode an – gib ihn hier ein.",
+    "pair_btn": "Kopplungscode eingeben"
   },
   "pair": {
     "title": "Gerätekopplung",
@@ -434,12 +437,16 @@
     "btn_pair": "Koppeln",
     "btn_cancel": "Abbrechen",
     "done": "Fertig. Sie können zur App auf dem Gerät zurückkehren.",
-    "error_no_code": "Kein Kopplungscode im Link.",
     "error_not_found": "Kopplungscode nicht gefunden oder abgelaufen.",
     "error_load": "Kopplung konnte nicht geladen werden.",
     "error_already": "Kopplung bereits verarbeitet.",
     "error_expired": "Kopplungscode abgelaufen, bitte am Gerät erneut versuchen.",
-    "error_pair": "Gerät konnte nicht gekoppelt werden."
+    "error_pair": "Gerät konnte nicht gekoppelt werden.",
+    "enter_hint": "Gib den Code ein, den das zu verbindende Gerät oder Programm anzeigt.",
+    "code": "Kopplungscode",
+    "btn_next": "Weiter",
+    "error_code_format": "Der Code sieht so aus: ABCD-EFGH – 8 Buchstaben und Ziffern.",
+    "btn_other_code": "Anderen Code eingeben"
   },
   "admin": {
     "rescan_user": "Dateien neu einlesen",
