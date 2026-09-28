@@ -53,6 +53,55 @@ const textClass = (l: string) => (l === 'crit' ? 'text-danger' : l === 'warn' ? 
 const barClass = (l: string) => (l === 'crit' ? 'bg-danger' : l === 'warn' ? 'bg-warn' : 'bg-accent')
 const cardClass = (l: string) =>
   l === 'crit' ? 'border-danger/60' : l === 'warn' ? 'border-warn/60' : ''
+
+interface RescanRun {
+  id: number
+  user_email: string | null
+  requested_by: string
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  imported: number
+  missing: number
+  changed: number
+  errors: number
+  error_text: string | null
+}
+const runs = ref<RescanRun[]>([])
+let poll: ReturnType<typeof setInterval> | undefined
+
+async function loadRuns() {
+  try {
+    runs.value = (await request<{ requests: RescanRun[] }>('/admin/rescan')).requests
+  } catch {
+    // the section keeps what it showed
+  }
+}
+async function rescanAll() {
+  try {
+    await request('/admin/rescan', { method: 'POST', body: {} })
+    await loadRuns()
+  } catch (e: any) {
+    error.value = e?.data?.error || t('admin.error_rescan')
+  }
+}
+function runState(r: RescanRun) {
+  if (r.finished_at) {
+    const res = t('admin.rescan_result', { imported: r.imported, missing: r.missing, changed: r.changed })
+    return r.errors > 0 ? `${res} · ${t('admin.rescan_errors', { n: r.errors })}` : res
+  }
+  return r.started_at ? t('admin.rescan_running') : t('admin.rescan_waiting')
+}
+function runBy(r: RescanRun) {
+  return r.requested_by.startsWith('admin:') ? 'admin' : r.requested_by
+}
+onMounted(() => {
+  loadRuns()
+  poll = setInterval(() => {
+    if (runs.value.some((r) => !r.finished_at)) loadRuns()
+  }, 2000)
+})
+onUnmounted(() => clearInterval(poll))
 </script>
 
 <template>
@@ -126,6 +175,37 @@ const cardClass = (l: string) =>
             </td>
             <td class="px-4 py-3 text-muted">{{ formatBytes(u.used) }}</td>
             <td class="px-4 py-3 text-muted">{{ u.quota == null ? t('admin.no_limit') : formatBytes(u.quota) }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="mt-6 card p-5">
+      <div class="mb-3 flex items-center justify-between gap-4">
+        <div>
+          <h2 class="text-sm font-medium">{{ t('admin.rescan_section') }}</h2>
+          <p class="mt-1 text-xs text-muted">{{ t('admin.rescan_hint') }}</p>
+        </div>
+        <button class="btn-ghost shrink-0" @click="rescanAll">
+          <Icon name="lucide:refresh-cw" size="16" /> {{ t('admin.rescan_all') }}
+        </button>
+      </div>
+      <table v-if="runs.length" class="w-full text-sm">
+        <thead class="border-b border-line text-left text-xs text-muted">
+          <tr>
+            <th class="py-2 font-medium">{{ t('admin.rescan_col_target') }}</th>
+            <th class="py-2 font-medium">{{ t('admin.rescan_col_by') }}</th>
+            <th class="py-2 font-medium">{{ t('admin.rescan_col_when') }}</th>
+            <th class="py-2 font-medium">{{ t('admin.rescan_col_result') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in runs" :key="r.id" class="border-b border-line/50 last:border-0">
+            <td class="py-2">{{ r.user_email ?? t('admin.rescan_everyone') }}</td>
+            <td class="py-2 text-muted">{{ runBy(r) }}</td>
+            <td class="py-2 text-muted">{{ new Date(r.created_at).toLocaleString() }}</td>
+            <td class="py-2" :class="r.errors > 0 ? 'text-danger' : 'text-muted'" :title="r.error_text ?? ''">
+              {{ runState(r) }}
+            </td>
           </tr>
         </tbody>
       </table>

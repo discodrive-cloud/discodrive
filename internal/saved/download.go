@@ -54,7 +54,7 @@ func humanBytes(n int64) string {
 }
 
 // processDownload streams the URL to <user>/downloads/<name> via a staging
-// file in the root-level .tmp/ (outside user trees, so fsnotify/rescan never
+// file in the root-level .tmp/ (outside user trees, so reconciliation never
 // see a partial file); the final rename makes the file appear atomically.
 func (s *Service) processDownload(ctx context.Context, item db.SavedItem) (result, error) {
 	if err := s.Validate(item.Url); err != nil {

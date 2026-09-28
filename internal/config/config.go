@@ -40,8 +40,9 @@ type Config struct {
 	VersionKeep int
 	// TrashDays is the number of days after which a tombstone is physically removed by the GC job.
 	TrashDays int
-	// RescanSeconds is the period of the background disk rescan (backstop for fsnotify).
-	RescanSeconds int
+	// RescanSecondsIgnored is set when the retired RESCAN_SECONDS is still configured:
+	// reconciliation now runs at startup, from the admin panel and via `server rescan`.
+	RescanSecondsIgnored bool
 	// XAccelEnabled: serve files via nginx X-Accel-Redirect (true) or stream directly
 	// (false, for deployments without nginx and for client tests). Range requests work out of the box.
 	XAccelEnabled bool
@@ -85,7 +86,7 @@ func Load() Config {
 		SetupTokenFile:        getenv("SETUP_TOKEN_FILE", filepath.Join(getenv("STORAGE_ROOT", "/data"), ".bootstrap", "setup-token")),
 		VersionKeep:           getenvInt("VERSION_KEEP", 10),
 		TrashDays:             getenvInt("TRASH_DAYS", 30),
-		RescanSeconds:         getenvInt("RESCAN_SECONDS", 30),
+		RescanSecondsIgnored:  os.Getenv("RESCAN_SECONDS") != "",
 		XAccelEnabled:         getenvBool("XACCEL_ENABLED", true),
 		SavedMaxDownloadMB:    getenvInt("SAVED_MAX_DOWNLOAD_MB", 32768),
 		StorageTotalGB:        getenvInt("STORAGE_TOTAL_GB", 0),

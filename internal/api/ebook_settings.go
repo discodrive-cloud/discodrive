@@ -218,11 +218,18 @@ func (s *Server) handleDeleteEbookPassword(w http.ResponseWriter, r *http.Reques
 
 // reindexEbookFolder is reindexMusicFolder for the e-book library.
 func (s *Server) reindexEbookFolder(ctx context.Context, uid, folder pgtype.UUID, changed bool) {
-	if seq, err := s.q.GetUserChangeSeq(ctx, uid); err == nil {
-		_ = s.q.SetEbookIndexedSeq(ctx, db.SetEbookIndexedSeqParams{UserID: uid, IndexedSeq: seq})
+	seq, err := s.q.GetUserChangeSeq(ctx, uid)
+	if err == nil {
+		err = s.q.SetEbookIndexedSeq(ctx, db.SetEbookIndexedSeqParams{UserID: uid, IndexedSeq: seq})
+	}
+	if err != nil {
+		log.Printf("discodrive: ebook cursor after a settings change: %v", err)
 	}
 	if changed {
-		covers, _ := s.q.PruneBooksOutsideFolder(ctx, db.PruneBooksOutsideFolderParams{UserID: uid, FolderID: folder})
+		covers, err := s.q.PruneBooksOutsideFolder(ctx, db.PruneBooksOutsideFolderParams{UserID: uid, FolderID: folder})
+		if err != nil {
+			log.Printf("discodrive: dropping books outside the new ebook folder: %v", err)
+		}
 		for _, c := range covers {
 			if c.Valid && c.String != "" {
 				_ = ebook.RemoveCover(s.storageRoot, c.String)

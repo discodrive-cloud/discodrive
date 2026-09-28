@@ -882,15 +882,19 @@ LEFT JOIN artists a ON a.id = s.artist_id
 LEFT JOIN albums al ON al.id = s.album_id
 WHERE s.node_id = ANY($1::uuid[]);
 
+-- The cursor only moves forward: a catch-up that started before a folder switch must
+-- not undo the cursor the switch set.
 -- name: SetMusicIndexedSeq :exec
-UPDATE music_settings SET indexed_seq = $2 WHERE user_id = $1;
+UPDATE music_settings SET indexed_seq = GREATEST(indexed_seq, $2) WHERE user_id = $1;
 
 -- Library rows of every node under a folder path (the folder was trashed or left the
 -- library folder; the change log records only the folder itself).
+-- Driven from the user's songs, not their nodes: it runs for every folder change outside
+-- the library, and a user has far fewer songs than files.
 -- name: DeleteSongsUnderPath :exec
-DELETE FROM songs WHERE songs.user_id = sqlc.arg(user_id) AND node_id IN (
-    SELECT id FROM nodes WHERE nodes.user_id = sqlc.arg(user_id)
-      AND disk_path LIKE sqlc.arg(prefix)::text || '/%');
+DELETE FROM songs s USING nodes n
+WHERE s.user_id = sqlc.arg(user_id) AND n.id = s.node_id
+  AND n.disk_path LIKE sqlc.arg(prefix)::text || '/%';
 
 -- Files of the folder's subtree whose song row is missing, older than the file, or
 -- predates duration probing — the whole scan in one query instead of one per file.

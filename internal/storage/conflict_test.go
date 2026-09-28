@@ -25,6 +25,14 @@ func setupFS(t *testing.T) (*storage.FileService, *db.Queries, string, string) {
 // setupFSWith is setupFS with the disk wrapped by wrap (nil = plain LocalDisk).
 func setupFSWith(t *testing.T, wrap func(storage.Storage) storage.Storage) (*storage.FileService, *db.Queries, string, string) {
 	t.Helper()
+	fs, q, _, userID, root := setupFSPool(t, wrap)
+	return fs, q, userID, root
+}
+
+// setupFSPool is setupFSWith that also returns the pool, for tests that need their own
+// transactions.
+func setupFSPool(t *testing.T, wrap func(storage.Storage) storage.Storage) (*storage.FileService, *db.Queries, *pgxpool.Pool, string, string) {
+	t.Helper()
 	ctx := context.Background()
 
 	pgC, err := tcpostgres.Run(ctx, "postgres:16-alpine",
@@ -68,7 +76,7 @@ func setupFSWith(t *testing.T, wrap func(storage.Storage) storage.Storage) (*sto
 		st = wrap(st)
 	}
 	fs := storage.NewFileService(pool, st)
-	return fs, q, db.UUIDString(user.ID), root
+	return fs, q, pool, db.UUIDString(user.ID), root
 }
 
 func readNode(t *testing.T, fs *storage.FileService, userID, nodeID string) string {

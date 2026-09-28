@@ -133,8 +133,8 @@ func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath strin
 	return nil
 }
 
-// scans keeps one ebook scan per user and folder in flight: the scan button, the
-// periodic tick and the fsnotify watcher used to index the same new files in parallel.
+// scans keeps one ebook scan per user and folder in flight: the scan button, a folder
+// switch and the change-log catch-up can all ask for one at once.
 var scans coalesce.Gate
 
 // ScanFolder indexes the folder, or — when a scan of it is already running — asks that
@@ -261,4 +261,33 @@ func (ix *Indexer) RemoveUnder(ctx context.Context, userID pgtype.UUID, dirPath 
 // likePrefix escapes LIKE wildcards: folder names may contain % and _.
 func likePrefix(p string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p)
+}
+
+// Heal is music.Indexer.Heal for the e-book library.
+func (ix *Indexer) Heal(ctx context.Context, userID pgtype.UUID) error {
+	es, err := ix.q.GetEbookSettings(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if !es.Enabled || !es.FolderNodeID.Valid {
+		return nil
+	}
+	if _, err := ix.q.GetNode(ctx, es.FolderNodeID); errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	covers, err := ix.q.PruneBooksOutsideFolder(ctx, db.PruneBooksOutsideFolderParams{UserID: userID, FolderID: es.FolderNodeID})
+	for _, c := range covers {
+		if c.Valid && c.String != "" {
+			_ = RemoveCover(ix.storageRoot, c.String)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	_, err = ix.ScanFolder(ctx, db.UUIDString(userID), db.UUIDString(es.FolderNodeID))
+	return err
 }

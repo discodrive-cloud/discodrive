@@ -608,10 +608,10 @@ func (q *Queries) DeleteBookByNode(ctx context.Context, nodeID pgtype.UUID) erro
 }
 
 const deleteBooksUnderPath = `-- name: DeleteBooksUnderPath :many
-DELETE FROM books WHERE books.user_id = $1 AND node_id IN (
-    SELECT id FROM nodes WHERE nodes.user_id = $1
-      AND disk_path LIKE $2::text || '/%')
-RETURNING cover_path
+DELETE FROM books b USING nodes n
+WHERE b.user_id = $1 AND n.id = b.node_id
+  AND n.disk_path LIKE $2::text || '/%'
+RETURNING b.cover_path
 `
 
 type DeleteBooksUnderPathParams struct {
@@ -984,7 +984,7 @@ func (q *Queries) SetEbookCredentials(ctx context.Context, arg SetEbookCredentia
 }
 
 const setEbookIndexedSeq = `-- name: SetEbookIndexedSeq :exec
-UPDATE ebook_settings SET indexed_seq = $2 WHERE user_id = $1
+UPDATE ebook_settings SET indexed_seq = GREATEST(indexed_seq, $2) WHERE user_id = $1
 `
 
 type SetEbookIndexedSeqParams struct {
@@ -992,6 +992,8 @@ type SetEbookIndexedSeqParams struct {
 	IndexedSeq int64       `json:"indexed_seq"`
 }
 
+// The cursor only moves forward: a catch-up that started before a folder switch must
+// not undo the cursor the switch set.
 func (q *Queries) SetEbookIndexedSeq(ctx context.Context, arg SetEbookIndexedSeqParams) error {
 	_, err := q.db.Exec(ctx, setEbookIndexedSeq, arg.UserID, arg.IndexedSeq)
 	return err

@@ -316,8 +316,8 @@ func (ix *Indexer) RemoveNode(ctx context.Context, nodeID string) error {
 	return ix.q.DeleteSongByNode(ctx, nid)
 }
 
-// scans keeps one music scan per user and folder in flight: the scan button, the
-// periodic tick and the fsnotify watcher used to index the same new files in parallel.
+// scans keeps one music scan per user and folder in flight: the scan button, a folder
+// switch and the change-log catch-up can all ask for one at once.
 var scans coalesce.Gate
 
 // ScanFolder indexes the folder, or — when a scan of it is already running — asks that
@@ -408,4 +408,30 @@ func (ix *Indexer) RemoveUnder(ctx context.Context, userID pgtype.UUID, dirPath 
 // likePrefix escapes LIKE wildcards: folder names may contain % and _.
 func likePrefix(p string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p)
+}
+
+// Heal brings the library back in line with its folder regardless of the cursor: rows
+// outside the folder are dropped and stale or missing files inside it indexed. Run at
+// startup, it retries rows whose indexing failed and covers files the change log never
+// offered (e.g. before the cursor was started at the present).
+func (ix *Indexer) Heal(ctx context.Context, userID pgtype.UUID) error {
+	ms, err := ix.q.GetMusicSettings(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if !ms.Enabled || !ms.FolderNodeID.Valid {
+		return nil
+	}
+	if _, err := ix.q.GetNode(ctx, ms.FolderNodeID); errors.Is(err, pgx.ErrNoRows) {
+		return nil // the folder is trashed: its catch-up already dropped the rows
+	} else if err != nil {
+		return err
+	}
+	if err := ix.q.PruneSongsOutsideFolder(ctx, db.PruneSongsOutsideFolderParams{UserID: userID, FolderID: ms.FolderNodeID}); err != nil {
+		return err
+	}
+	_, err = ix.ScanFolder(ctx, db.UUIDString(userID), db.UUIDString(ms.FolderNodeID))
+	return err
 }

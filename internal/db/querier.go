@@ -168,6 +168,8 @@ type Querier interface {
 	DeleteSongByNode(ctx context.Context, nodeID pgtype.UUID) error
 	// Library rows of every node under a folder path (the folder was trashed or left the
 	// library folder; the change log records only the folder itself).
+	// Driven from the user's songs, not their nodes: it runs for every folder change outside
+	// the library, and a user has far fewer songs than files.
 	DeleteSongsUnderPath(ctx context.Context, arg DeleteSongsUnderPathParams) error
 	DeleteUploadReservation(ctx context.Context, id string) error
 	DeleteUser(ctx context.Context, id pgtype.UUID) error
@@ -205,6 +207,9 @@ type Querier interface {
 	// A node whether live or trashed: a library whose folder was trashed must still learn
 	// that folder's path to drop everything under it.
 	GetNodeAnyState(ctx context.Context, id pgtype.UUID) (Node, error)
+	// The live node, locked for the rest of the transaction: a writer that re-checks and
+	// then updates must not interleave with another writer's commit.
+	GetNodeForUpdate(ctx context.Context, id pgtype.UUID) (Node, error)
 	GetNodeForUser(ctx context.Context, arg GetNodeForUserParams) (Node, error)
 	GetPairingByCodeHash(ctx context.Context, deviceCodeHash string) (DevicePairing, error)
 	GetPairingByUserCode(ctx context.Context, userCode string) (DevicePairing, error)
@@ -403,10 +408,14 @@ type Querier interface {
 	SetCalendarName(ctx context.Context, arg SetCalendarNameParams) error
 	SetDeviceTokenHash(ctx context.Context, arg SetDeviceTokenHashParams) error
 	SetEbookCredentials(ctx context.Context, arg SetEbookCredentialsParams) error
+	// The cursor only moves forward: a catch-up that started before a folder switch must
+	// not undo the cursor the switch set.
 	SetEbookIndexedSeq(ctx context.Context, arg SetEbookIndexedSeqParams) error
 	SetEpisodeDownloaded(ctx context.Context, arg SetEpisodeDownloadedParams) error
 	SetEpisodeStatus(ctx context.Context, arg SetEpisodeStatusParams) error
 	SetMusicCredentials(ctx context.Context, arg SetMusicCredentialsParams) error
+	// The cursor only moves forward: a catch-up that started before a folder switch must
+	// not undo the cursor the switch set.
 	SetMusicIndexedSeq(ctx context.Context, arg SetMusicIndexedSeqParams) error
 	SetPodcastChannelCoverPath(ctx context.Context, arg SetPodcastChannelCoverPathParams) error
 	SetPodcastChannelMeta(ctx context.Context, arg SetPodcastChannelMetaParams) error
