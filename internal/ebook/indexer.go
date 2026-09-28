@@ -133,8 +133,8 @@ func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath strin
 	return nil
 }
 
-// scans keeps one ebook scan per user and folder in flight: the scan button, the
-// periodic tick and the fsnotify watcher used to index the same new files in parallel.
+// scans keeps one ebook scan per user and folder in flight: the scan button, a folder
+// switch and the change-log catch-up can all ask for one at once.
 var scans coalesce.Gate
 
 // ScanFolder indexes the folder, or — when a scan of it is already running — asks that

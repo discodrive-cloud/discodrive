@@ -49,9 +49,8 @@ type FileService struct {
 	// then replaces the content and nothing is kept.
 	noVersions bool
 
-	// rescanMu serializes Rescan: the periodic ticker and the fsnotify watcher
-	// may fire together, and two concurrent walks would race to insert the same
-	// discovered nodes.
+	// rescanMu serializes reconciliation: two concurrent walks of one tree would race
+	// to insert the same discovered nodes.
 	rescanMu sync.Mutex
 	// busy holds paths an operation has changed on disk but not yet committed.
 	busy busyPaths

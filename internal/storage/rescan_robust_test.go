@@ -12,7 +12,7 @@ import (
 	"discodrive/internal/db"
 )
 
-// Concurrent Rescan calls (periodic ticker + fsnotify fire together) must not
+// Concurrent Rescan calls (startup, the admin panel and the rescan command) must not
 // step on each other: no call may fail with a name conflict, and every file
 // still gets exactly one live node.
 func TestRescan_ConcurrentCallsSafe(t *testing.T) {

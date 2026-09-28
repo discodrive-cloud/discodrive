@@ -180,6 +180,10 @@ func runServer(cfg config.Config) {
 		log.Fatal("discodrive: JWT_SECRET is too weak — set a random value of at least 32 bytes")
 	}
 
+	if cfg.RescanSecondsIgnored {
+		log.Println("discodrive: RESCAN_SECONDS is no longer used — files added outside DiscoDrive are picked up at startup, from the admin panel or with `server rescan`")
+	}
+
 	// Graceful shutdown on SIGINT/SIGTERM (docker stop).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -260,16 +264,16 @@ func runServer(cfg config.Config) {
 	// Browser bookmark sync: server-authoritative tree + favicon enrichment.
 	bookmarksSvc := bookmarks.NewService(pool, queries, store)
 
-	// Background jobs: GC for versions/trash, rescan + fsnotify + music/ebook indexing.
+	// Background jobs: GC for versions/trash, quotas, podcasts, saved items, bookmarks.
 	musicIdx := music.NewIndexer(queries, cfg.StorageRoot)
 	ebookIdx := ebook.NewIndexer(queries, cfg.StorageRoot)
 	tagEditor := music.NewTagEditor(queries, fileSvc, cfg.StorageRoot)
 	metaEditor := ebook.NewMetadataEditor(queries, cfg.StorageRoot)
-	workerCfg := worker.Default(cfg.VersionKeep, cfg.TrashDays, cfg.RescanSeconds)
+	workerCfg := worker.Default(cfg.VersionKeep, cfg.TrashDays)
 	// Lets the storage-alert job warn the admins about the cap running out, not just
 	// about the disk running out.
 	workerCfg.StorageTotal = cfg.StorageTotalBytes()
-	go worker.New(fileSvc, cfg.StorageRoot, queries, notifier, workerCfg, musicIdx, ebookIdx, savedSvc, bookmarksSvc).Run(ctx)
+	go worker.New(fileSvc, cfg.StorageRoot, queries, notifier, workerCfg, savedSvc, bookmarksSvc).Run(ctx)
 	// Disk↔database reconciliation runs on demand: this startup request, the admin panel
 	// and `server rescan`. The runner is the only executor of the queue; a request left
 	// unfinished by a crash, or queued while the server was down, runs now as well.
