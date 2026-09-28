@@ -43,6 +43,7 @@ func Handler(authSvc *auth.Service, settings SettingsReader, backend *Backend, d
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(raw))
+		r = asPrincipal(r, uid)
 		ctx := WithUserID(r.Context(), uid)
 		// PROPPATCH is not implemented by go-webdav (returns 501), which breaks Apple clients.
 		// We handle it ourselves with a no-op 207 response (see proppatch.go).
@@ -86,4 +87,15 @@ func WellKnown() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, prefix+"/", http.StatusMovedPermanently)
 	})
+}
+
+// asPrincipal serves "/" (Apple's re-discovery, forwarded by internal/api/dav_root.go) as the
+// user's principal: Apple reads addressbook-home-set straight from the answer to "/".
+func asPrincipal(r *http.Request, uid string) *http.Request {
+	if r.URL.Path != "/" {
+		return r
+	}
+	r2 := r.Clone(r.Context())
+	r2.URL.Path, r2.URL.RawPath, r2.RequestURI = principalPath(uid), "", principalPath(uid)
+	return r2
 }
