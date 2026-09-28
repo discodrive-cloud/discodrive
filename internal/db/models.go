@@ -356,6 +356,20 @@ type ReadingProgress struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type RescanRequest struct {
+	ID          int64              `json:"id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	RequestedBy string             `json:"requested_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	StartedAt   pgtype.Timestamptz `json:"started_at"`
+	FinishedAt  pgtype.Timestamptz `json:"finished_at"`
+	Imported    int32              `json:"imported"`
+	Missing     int32              `json:"missing"`
+	Changed     int32              `json:"changed"`
+	Errors      int32              `json:"errors"`
+	ErrorText   pgtype.Text        `json:"error_text"`
+}
+
 type ResourceShare struct {
 	ID                pgtype.UUID        `json:"id"`
 	ResourceType      string             `json:"resource_type"`
