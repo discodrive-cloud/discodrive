@@ -433,3 +433,37 @@ func TestCursorNeverMovesBack(t *testing.T) {
 		t.Fatalf("cursor %d after setting 10 then 4, want 10", ms.IndexedSeq)
 	}
 }
+
+// Trashing a folder inside the library drops its tracks from the real music library.
+func TestTrashedFolderLeavesMusicLibrary(t *testing.T) {
+	musictest.RequireFFmpeg(t)
+	e := newEnv(t)
+	ctx := context.Background()
+	folder, _ := e.fs.CreateFolder(ctx, e.userID, nil, "Music")
+	fid := id(folder)
+	album, _ := e.fs.CreateFolder(ctx, e.userID, &fid, "Album_%")
+	aid := id(album)
+	pushAudio(t, e, &aid, "t1.mp3")
+	keep := pushAudio(t, e, &fid, "keep.mp3")
+	ix := music.NewIndexer(e.q, e.root)
+	if _, err := e.q.UpsertMusicSettings(ctx, db.UpsertMusicSettingsParams{UserID: e.uid, Enabled: true,
+		FolderNodeID: folder.ID, TagEditVersioning: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := library.CatchUp(ctx, e.q, ix, e.uid); err != nil {
+		t.Fatal(err)
+	}
+	if songs, _ := e.q.AccessibleSongs(ctx, e.uid); len(songs) != 2 {
+		t.Fatalf("%d songs, want 2", len(songs))
+	}
+	if err := e.fs.Delete(ctx, e.userID, aid); err != nil {
+		t.Fatal(err)
+	}
+	if err := library.CatchUp(ctx, e.q, ix, e.uid); err != nil {
+		t.Fatal(err)
+	}
+	songs, _ := e.q.AccessibleSongs(ctx, e.uid)
+	if len(songs) != 1 || songs[0].NodeID != keep.ID {
+		t.Fatalf("songs %+v: want only the track outside the trashed album", songs)
+	}
+}

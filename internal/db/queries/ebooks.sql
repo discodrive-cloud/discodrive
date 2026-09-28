@@ -261,10 +261,10 @@ WHERE id = $1;
 UPDATE ebook_settings SET indexed_seq = GREATEST(indexed_seq, $2) WHERE user_id = $1;
 
 -- name: DeleteBooksUnderPath :many
-DELETE FROM books WHERE books.user_id = sqlc.arg(user_id) AND node_id IN (
-    SELECT id FROM nodes WHERE nodes.user_id = sqlc.arg(user_id)
-      AND disk_path LIKE sqlc.arg(prefix)::text || '/%')
-RETURNING cover_path;
+DELETE FROM books b USING nodes n
+WHERE b.user_id = sqlc.arg(user_id) AND n.id = b.node_id
+  AND n.disk_path LIKE sqlc.arg(prefix)::text || '/%'
+RETURNING b.cover_path;
 
 -- name: ListStaleBookNodes :many
 WITH RECURSIVE subtree AS (

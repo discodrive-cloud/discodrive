@@ -608,10 +608,10 @@ func (q *Queries) DeleteBookByNode(ctx context.Context, nodeID pgtype.UUID) erro
 }
 
 const deleteBooksUnderPath = `-- name: DeleteBooksUnderPath :many
-DELETE FROM books WHERE books.user_id = $1 AND node_id IN (
-    SELECT id FROM nodes WHERE nodes.user_id = $1
-      AND disk_path LIKE $2::text || '/%')
-RETURNING cover_path
+DELETE FROM books b USING nodes n
+WHERE b.user_id = $1 AND n.id = b.node_id
+  AND n.disk_path LIKE $2::text || '/%'
+RETURNING b.cover_path
 `
 
 type DeleteBooksUnderPathParams struct {

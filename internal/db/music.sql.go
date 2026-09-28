@@ -1523,9 +1523,9 @@ func (q *Queries) DeleteSongByNode(ctx context.Context, nodeID pgtype.UUID) erro
 }
 
 const deleteSongsUnderPath = `-- name: DeleteSongsUnderPath :exec
-DELETE FROM songs WHERE songs.user_id = $1 AND node_id IN (
-    SELECT id FROM nodes WHERE nodes.user_id = $1
-      AND disk_path LIKE $2::text || '/%')
+DELETE FROM songs s USING nodes n
+WHERE s.user_id = $1 AND n.id = s.node_id
+  AND n.disk_path LIKE $2::text || '/%'
 `
 
 type DeleteSongsUnderPathParams struct {
@@ -1535,6 +1535,8 @@ type DeleteSongsUnderPathParams struct {
 
 // Library rows of every node under a folder path (the folder was trashed or left the
 // library folder; the change log records only the folder itself).
+// Driven from the user's songs, not their nodes: it runs for every folder change outside
+// the library, and a user has far fewer songs than files.
 func (q *Queries) DeleteSongsUnderPath(ctx context.Context, arg DeleteSongsUnderPathParams) error {
 	_, err := q.db.Exec(ctx, deleteSongsUnderPath, arg.UserID, arg.Prefix)
 	return err

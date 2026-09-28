@@ -168,6 +168,8 @@ type Querier interface {
 	DeleteSongByNode(ctx context.Context, nodeID pgtype.UUID) error
 	// Library rows of every node under a folder path (the folder was trashed or left the
 	// library folder; the change log records only the folder itself).
+	// Driven from the user's songs, not their nodes: it runs for every folder change outside
+	// the library, and a user has far fewer songs than files.
 	DeleteSongsUnderPath(ctx context.Context, arg DeleteSongsUnderPathParams) error
 	DeleteUploadReservation(ctx context.Context, id string) error
 	DeleteUser(ctx context.Context, id pgtype.UUID) error
