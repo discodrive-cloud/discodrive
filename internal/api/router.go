@@ -292,6 +292,8 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("PUT /admin/settings", admin(s.handleAdminPutSetting))
 	mux.Handle("GET /admin/smtp", admin(s.handleAdminGetSmtp))
 	mux.Handle("POST /admin/smtp/test", admin(s.handleAdminSmtpTest))
+	mux.Handle("POST /admin/rescan", admin(s.handleAdminRescan))
+	mux.Handle("GET /admin/rescan", admin(s.handleAdminRescanList))
 
 	// WebDAV (enabled by flag; auth is handled inside davHandler)
 	if davHandler != nil {
