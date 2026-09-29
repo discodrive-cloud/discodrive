@@ -48,7 +48,7 @@ func TestNewClientBlocksLoopbackDial(t *testing.T) {
 	}
 }
 
-// Special-purpose ranges beyond RFC1918/loopback: CGNAT (the production tailnet),
+// Special-purpose ranges beyond RFC1918/loopback: CGNAT (Tailscale tailnets),
 // benchmarking, reserved, NAT64 and documentation space must all be refused, and
 // IPv4-mapped IPv6 must not smuggle a blocked IPv4 past the check.
 func TestIsBlockedIPSpecialRanges(t *testing.T) {

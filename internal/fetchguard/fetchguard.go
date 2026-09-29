@@ -48,7 +48,7 @@ func ValidateURL(raw string) error {
 
 // blockedPrefixes are the special-purpose ranges an outbound fetch must never reach
 // on top of what the net.IP predicates below cover. 100.64.0.0/10 matters most:
-// production runs inside a Tailscale tailnet, whose peers all live in CGNAT space.
+// self-hosted servers often sit in a Tailscale tailnet, whose peers all live in CGNAT space.
 var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),       // "this network"
 	netip.MustParsePrefix("100.64.0.0/10"),   // CGNAT, Tailscale
