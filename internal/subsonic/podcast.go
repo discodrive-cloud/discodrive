@@ -13,6 +13,7 @@ import (
 	"discodrive/internal/db"
 	"discodrive/internal/podcast"
 	"discodrive/internal/quota"
+	"discodrive/internal/safecontent"
 	"discodrive/internal/storage"
 )
 
@@ -464,6 +465,9 @@ func downloadPodcastEpisode(h *Handler, c *reqCtx) {
 			return
 		}
 
+		if norm, ok := safecontent.MediaFor(ct, relPath); ok {
+			ct = norm
+		}
 		if setErr := h.q.SetEpisodeDownloaded(bg, db.SetEpisodeDownloadedParams{
 			ID:          epID,
 			DiskPath:    pgtype.Text{String: relPath, Valid: true},
