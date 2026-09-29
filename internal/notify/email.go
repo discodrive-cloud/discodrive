@@ -73,17 +73,22 @@ func (e *EmailChannel) Send(ctx context.Context, m Message) error {
 	}
 
 	opts := []mail.Option{mail.WithPort(port), mail.WithTimeout(15 * time.Second)}
+	auth := mail.SMTPAuthPlain
 	switch e.get(ctx, "smtp.security") {
 	case "tls":
 		// Implicit TLS (port 465 style) — WithSSL() sets useSSL=true.
 		opts = append(opts, mail.WithSSL())
 	case "none":
 		opts = append(opts, mail.WithTLSPolicy(mail.NoTLS))
+		// Plain PLAIN refuses to send credentials without TLS (except to localhost),
+		// so a login on an unencrypted relay never worked. The admin chose "none"
+		// explicitly: send them in the clear, as asked.
+		auth = mail.SMTPAuthPlainNoEnc
 	default: // "starttls" or unset
 		opts = append(opts, mail.WithTLSPolicy(mail.TLSMandatory))
 	}
 	if username != "" {
-		opts = append(opts, mail.WithSMTPAuth(mail.SMTPAuthPlain), mail.WithUsername(username), mail.WithPassword(password))
+		opts = append(opts, mail.WithSMTPAuth(auth), mail.WithUsername(username), mail.WithPassword(password))
 	}
 	client, err := mail.NewClient(host, opts...)
 	if err != nil {
