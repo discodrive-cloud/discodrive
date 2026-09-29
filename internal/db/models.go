@@ -493,12 +493,13 @@ type User struct {
 }
 
 type UserTotp struct {
-	UserID      pgtype.UUID        `json:"user_id"`
-	Secret      string             `json:"secret"`
-	Enabled     bool               `json:"enabled"`
-	ConfirmedAt pgtype.Timestamptz `json:"confirmed_at"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	ApprovalID  string             `json:"approval_id"`
+	UserID       pgtype.UUID        `json:"user_id"`
+	Secret       string             `json:"secret"`
+	Enabled      bool               `json:"enabled"`
+	ConfirmedAt  pgtype.Timestamptz `json:"confirmed_at"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ApprovalID   string             `json:"approval_id"`
+	LastUsedStep pgtype.Int8        `json:"last_used_step"`
 }
 
 type WebauthnCredential struct {

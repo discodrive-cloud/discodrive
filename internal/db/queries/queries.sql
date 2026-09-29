@@ -677,6 +677,13 @@ SELECT * FROM user_totp WHERE user_id = $1;
 -- name: DeleteUserTOTP :exec
 DELETE FROM user_totp WHERE user_id = $1;
 
+-- ClaimTOTPStep makes a TOTP code single-use: it succeeds (1 row) only for a step
+-- after the last accepted one. The row lock serializes concurrent uses of one code.
+-- name: ClaimTOTPStep :execrows
+UPDATE user_totp SET last_used_step = sqlc.arg(step)::bigint
+WHERE user_id = sqlc.arg(user_id)
+  AND (last_used_step IS NULL OR last_used_step < sqlc.arg(step)::bigint);
+
 -- Backup codes (A.3). One-time, argon2id-hashed.
 
 -- name: InsertBackupCode :exec
@@ -725,7 +732,8 @@ SELECT * FROM users WHERE id = $1 FOR UPDATE;
 INSERT INTO user_totp (user_id, secret, enabled, confirmed_at, approval_id)
 VALUES ($1, $2, false, NULL, $3)
 ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret,
-    enabled = false, confirmed_at = NULL, created_at = now(), approval_id = EXCLUDED.approval_id
+    enabled = false, confirmed_at = NULL, created_at = now(), approval_id = EXCLUDED.approval_id,
+    last_used_step = NULL
 WHERE NOT user_totp.enabled;
 
 -- name: ConfirmApprovedTOTP :execrows

@@ -156,6 +156,27 @@ func (q *Queries) CalendarShareForUser(ctx context.Context, arg CalendarShareFor
 	return id, err
 }
 
+const claimTOTPStep = `-- name: ClaimTOTPStep :execrows
+UPDATE user_totp SET last_used_step = $1::bigint
+WHERE user_id = $2
+  AND (last_used_step IS NULL OR last_used_step < $1::bigint)
+`
+
+type ClaimTOTPStepParams struct {
+	Step   int64       `json:"step"`
+	UserID pgtype.UUID `json:"user_id"`
+}
+
+// ClaimTOTPStep makes a TOTP code single-use: it succeeds (1 row) only for a step
+// after the last accepted one. The row lock serializes concurrent uses of one code.
+func (q *Queries) ClaimTOTPStep(ctx context.Context, arg ClaimTOTPStepParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimTOTPStep, arg.Step, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const clearQuotaNotified = `-- name: ClearQuotaNotified :exec
 UPDATE users SET quota_notified_at = NULL
 WHERE storage_quota IS NOT NULL
@@ -1469,7 +1490,7 @@ func (q *Queries) GetUserSessionTTL(ctx context.Context, id pgtype.UUID) (int32,
 
 const getUserTOTP = `-- name: GetUserTOTP :one
 
-SELECT user_id, secret, enabled, confirmed_at, created_at, approval_id FROM user_totp WHERE user_id = $1
+SELECT user_id, secret, enabled, confirmed_at, created_at, approval_id, last_used_step FROM user_totp WHERE user_id = $1
 `
 
 // TOTP 2FA (A.3). Secret is AES-GCM ciphertext.
@@ -1483,6 +1504,7 @@ func (q *Queries) GetUserTOTP(ctx context.Context, userID pgtype.UUID) (UserTotp
 		&i.ConfirmedAt,
 		&i.CreatedAt,
 		&i.ApprovalID,
+		&i.LastUsedStep,
 	)
 	return i, err
 }
@@ -3256,7 +3278,8 @@ const startApprovedTOTP = `-- name: StartApprovedTOTP :execrows
 INSERT INTO user_totp (user_id, secret, enabled, confirmed_at, approval_id)
 VALUES ($1, $2, false, NULL, $3)
 ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret,
-    enabled = false, confirmed_at = NULL, created_at = now(), approval_id = EXCLUDED.approval_id
+    enabled = false, confirmed_at = NULL, created_at = now(), approval_id = EXCLUDED.approval_id,
+    last_used_step = NULL
 WHERE NOT user_totp.enabled
 `
 

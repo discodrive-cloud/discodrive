@@ -42,6 +42,15 @@ func TestTOTPLifecycle(t *testing.T) {
 	}
 	issuer := NewTokenIssuer("secret", time.Hour)
 	svc := NewService(pool, issuer, cipher)
+	// Each code is single-use per 30 s step: move the clock one step before each use.
+	now := time.Now()
+	totpNow = func() time.Time { return now }
+	t.Cleanup(func() { totpNow = time.Now })
+	nextCode := func(secret string) string {
+		now = now.Add(30 * time.Second)
+		c, _ := totp.GenerateCode(secret, now)
+		return c
+	}
 
 	// A user with a known password.
 	q := db.New(pool)
@@ -77,7 +86,7 @@ func TestTOTPLifecycle(t *testing.T) {
 	}
 
 	// --- confirm with a generated code ---
-	code, _ := totp.GenerateCode(tsecret, time.Now())
+	code := nextCode(tsecret)
 	backup, err := svc.ConfirmTOTP(ctx, userID, code, enrollmentApproval)
 	if err != nil {
 		t.Fatalf("ConfirmTOTP: %v", err)
@@ -96,7 +105,7 @@ func TestTOTPLifecycle(t *testing.T) {
 	}
 
 	// --- complete with a TOTP code ---
-	code2, _ := totp.GenerateCode(tsecret, time.Now())
+	code2 := nextCode(tsecret)
 	done, err := svc.CompleteMFATOTP(ctx, res.MFAToken, code2)
 	if err != nil {
 		t.Fatalf("CompleteMFATOTP (totp): %v", err)
@@ -120,7 +129,7 @@ func TestTOTPLifecycle(t *testing.T) {
 	}
 
 	// --- regenerate backup codes: old (unused) ones stop working, new ones work ---
-	regenCode, _ := totp.GenerateCode(tsecret, time.Now())
+	regenCode := nextCode(tsecret)
 	newCodes, err := svc.RegenerateBackupCodes(ctx, userID, regenCode)
 	if err != nil || len(newCodes) != backupCodeCount {
 		t.Fatalf("RegenerateBackupCodes: codes=%d err=%v", len(newCodes), err)
@@ -138,7 +147,7 @@ func TestTOTPLifecycle(t *testing.T) {
 	}
 
 	// --- disable requires password AND a current code ---
-	code3, _ := totp.GenerateCode(tsecret, time.Now())
+	code3 := nextCode(tsecret)
 	if err := svc.DisableTOTP(ctx, userID, "wrong", code3); err != ErrInvalidCreds {
 		t.Fatalf("disable with wrong password: err=%v, want ErrInvalidCreds", err)
 	}

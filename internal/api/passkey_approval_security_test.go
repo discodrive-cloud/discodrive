@@ -54,7 +54,9 @@ func TestPasskeyApprovalRequiresExistingFactors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, err := totp.GenerateCode(key, time.Now())
+	// Codes are single-use per 30 s step, and this test needs three: enroll with the
+	// previous step, approve with the current one, delete with the next (all within skew).
+	code, err := totp.GenerateCode(key, time.Now().Add(-30*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +66,8 @@ func TestPasskeyApprovalRequiresExistingFactors(t *testing.T) {
 	if _, err := svc.ApprovePasskeyWithPassword(ctx, uid, "password12", "", "register"); !errors.Is(err, auth.ErrApproval) {
 		t.Fatalf("MFA omitted: %v", err)
 	}
-	approval, err := svc.ApprovePasskeyWithPassword(ctx, uid, "password12", code, "register")
+	current, _ := totp.GenerateCode(key, time.Now())
+	approval, err := svc.ApprovePasskeyWithPassword(ctx, uid, "password12", current, "register")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +96,8 @@ func TestPasskeyApprovalRequiresExistingFactors(t *testing.T) {
 	if err := svc.DeletePasskey(ctx, uid, id, approval); !errors.Is(err, auth.ErrApproval) {
 		t.Fatalf("wrong action: %v", err)
 	}
-	deletion, err := svc.ApprovePasskeyWithPassword(ctx, uid, "password12", code, "delete:"+id)
+	next, _ := totp.GenerateCode(key, time.Now().Add(30*time.Second))
+	deletion, err := svc.ApprovePasskeyWithPassword(ctx, uid, "password12", next, "delete:"+id)
 	if err != nil {
 		t.Fatal(err)
 	}

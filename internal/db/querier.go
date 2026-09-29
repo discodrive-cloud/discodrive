@@ -92,6 +92,9 @@ type Querier interface {
 	ClaimEpisodeForDownload(ctx context.Context, arg ClaimEpisodeForDownloadParams) (int64, error)
 	// bytes_done restarts at 0: 'processing' rows count toward the owner's used space.
 	ClaimSavedItem(ctx context.Context, id pgtype.UUID) (int64, error)
+	// ClaimTOTPStep makes a TOTP code single-use: it succeeds (1 row) only for a step
+	// after the last accepted one. The row lock serializes concurrent uses of one code.
+	ClaimTOTPStep(ctx context.Context, arg ClaimTOTPStepParams) (int64, error)
 	ClearBookAuthors(ctx context.Context, bookID pgtype.UUID) error
 	ClearBookTags(ctx context.Context, bookID pgtype.UUID) error
 	ClearEbookCredentials(ctx context.Context, userID pgtype.UUID) error
