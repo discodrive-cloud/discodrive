@@ -201,6 +201,17 @@ func TestProppatchByShareeIsForbidden(t *testing.T) {
 	if cal.Name != "Личный" || cal.Color != "" {
 		t.Fatalf("sharee changed the calendar: name %q color %q", cal.Name, cal.Color)
 	}
+	// Apple reorders the sidebar by sending calendar-order (and color) for every calendar,
+	// shared ones included: that must not come back as an error, and must not be stored.
+	reorder := `<?xml version="1.0" encoding="UTF-8"?><D:propertyupdate xmlns:D="DAV:" xmlns:A="http://apple.com/ns/ical/"><D:set><D:prop><A:calendar-order>3</A:calendar-order><A:calendar-color>#00FF00FF</A:calendar-color></D:prop></D:set></D:propertyupdate>`
+	rec = e.req(t, e.sharee, "PROPPATCH", e.calDir, reorder, nil)
+	if rec.Code != http.StatusMultiStatus || !strings.Contains(rec.Body.String(), "200 OK") {
+		t.Fatalf("sharee reorder: %d %s, want 207 with 200", rec.Code, rec.Body.String())
+	}
+	cal, _ = e.svc.GetCalendar(ctx, e.calID)
+	if cal.Color != "" {
+		t.Fatalf("sharee's color was stored on the owner's calendar: %q", cal.Color)
+	}
 	if rec := e.req(t, e.ownerID, "PROPPATCH", e.calDir, body, nil); !strings.Contains(rec.Body.String(), "200 OK") {
 		t.Fatalf("owner PROPPATCH: %s", rec.Body.String())
 	}
