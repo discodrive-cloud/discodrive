@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isHttpUrl } from '~/lib/safeUrl'
 // One level of the bookmark tree; recurses into expanded folders (Vue SFCs can
 // reference themselves by file name). All state lives in BookmarksPane.
 export interface BookmarkNode {
@@ -27,10 +28,7 @@ const emit = defineEmits<{
 }>()
 
 // javascript:/about:/data: bookmarks are synced as data but never rendered as
-// clickable links.
-function isHttp(url: string): boolean {
-  return url.startsWith('https://') || url.startsWith('http://')
-}
+// clickable links (isHttpUrl, shared with the search results and Pocket).
 </script>
 
 <template>
@@ -58,7 +56,7 @@ function isHttp(url: string): boolean {
             @click="emit('toggle', node.id)"
           >{{ node.title || '…' }}</button>
           <a
-            v-else-if="isHttp(node.url)"
+            v-else-if="isHttpUrl(node.url)"
             :href="node.url"
             target="_blank"
             rel="noopener"

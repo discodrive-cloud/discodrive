@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { useVault } from './useVault'
+import { lockVault, useVault } from './useVault'
 
 vi.mock('../lib/cryptomator/index.js', () => ({
   openVault: vi.fn(async () => ({})),
@@ -9,6 +9,60 @@ vi.mock('../lib/cryptomator/index.js', () => ({
   decryptContent: vi.fn(),
 }))
 afterEach(() => vi.unstubAllGlobals())
+
+// A tiny vault per folder id: <id> → masterkey, vault jwt, d/AA/BB/<id>-secret.c9r
+function stubVaultFs() {
+  const states = new Map<string, { value: any }>()
+  vi.stubGlobal('useState', (key: string, init: () => any) => {
+    if (!states.has(key)) states.set(key, { value: init() })
+    return states.get(key)
+  })
+  const node = (id: string, name = id, is_dir = true) => ({ id, name, is_dir, size: 0, version: 1 })
+  vi.stubGlobal('useApi', () => ({ request: async (url: string) => {
+    const m = url.match(/^\/files\?parent_id=(.+)$/)
+    if (m && m[1].startsWith('vault')) return [node('mk', 'masterkey.cryptomator', false), node('jwt', 'vault.cryptomator', false), node(`d-${m[1]}`, 'd')]
+    if (m && m[1].startsWith('d-')) return [node(`AA-${m[1].slice(2)}`, 'AA')]
+    if (m && m[1].startsWith('AA-')) return [node(`BB-${m[1].slice(3)}`, 'BB')]
+    if (m && m[1].startsWith('BB-')) return [node('f', `${m[1].slice(3)}-secret.c9r`, false)]
+    if (url.endsWith('/content')) return new Blob(['metadata'])
+    throw new Error(url)
+  }}))
+  return { states, node }
+}
+
+it('lockVault forgets keys and the decrypted listing', async () => {
+  const { states, node } = stubVaultFs()
+  await useVault().unlock(node('vault1'), 'pw')
+  expect(states.get('vault_entries')!.value.map((e: any) => e.name)).toEqual(['vault1-secret'])
+  lockVault()
+  expect(states.get('vault_keys')!.value).toBeNull()
+  expect(states.get('vault_entries')!.value).toEqual([])
+  expect(states.get('vault_dir_stack')!.value).toEqual([])
+})
+
+it('an unlock that finishes after lock does not repopulate the vault', async () => {
+  const { states, node } = stubVaultFs()
+  const { openVault } = await import('../lib/cryptomator/index.js')
+  let release!: () => void
+  vi.mocked(openVault).mockImplementationOnce(() => new Promise(r => { release = () => r({} as any) }))
+  const pending = useVault().unlock(node('vault1'), 'pw')
+  await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+  lockVault() // dialog closed / logout while scrypt runs
+  release()
+  await pending
+  expect(states.get('vault_keys')!.value).toBeNull()
+  expect(states.get('vault_entries')!.value).toEqual([])
+})
+
+it('opening another vault drops the previous listing first', async () => {
+  const { states, node } = stubVaultFs()
+  await useVault().unlock(node('vault1'), 'pw')
+  const { openVault } = await import('../lib/cryptomator/index.js')
+  vi.mocked(openVault).mockRejectedValueOnce(new Error('bad vault'))
+  await expect(useVault().unlock(node('vault2'), 'pw')).rejects.toThrow('bad vault')
+  expect(states.get('vault_keys')!.value).toBeNull()
+  expect(states.get('vault_entries')!.value).toEqual([])
+})
 
 it('opens with bounded parallel metadata reads and reuses the root listing', async () => {
   let active = 0, peak = 0, rootReads = 0

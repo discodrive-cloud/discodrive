@@ -11,4 +11,14 @@ export default defineNuxtPlugin(() => {
       localStorage.removeItem('kf_session')
     }
   }
+
+  // Tabs share kf_session: a sign-in, account switch or logout in one tab must reach
+  // the others, so no tab keeps acting as an account the browser no longer holds.
+  window.addEventListener('storage', (e) => {
+    if (e.storageArea !== localStorage) return
+    if (e.key !== null && e.key !== 'kf_session') return // key null = storage cleared
+    const action = followStoredSession(localStorage.getItem('kf_session'))
+    if (action === 'cleared') void navigateTo('/login')
+    else if (action === 'switched') window.location.reload()
+  })
 })

@@ -1,6 +1,8 @@
 // Chunked upload manager on top of /upload/* (init→chunk→complete + abort).
 // The reactive task list lives in useState (for the panel); File objects and
 // pause/cancel flags are in a module-level Map (outside reactivity).
+import { backoffDelay, sleep } from '../lib/backoff'
+
 export interface UploadTask {
   id: string
   name: string
@@ -94,8 +96,10 @@ export function useUploads() {
             // how much room is left — surface it instead of hammering the chunk.
             throw err
           } else if (retries < MAX_RETRIES) {
-            // transient network error: check status and retry the same chunk
+            // transient network error: back off, check status and retry the same chunk
             retries++
+            await sleep(backoffDelay(retries))
+            if (ctl.canceled) return
             try {
               const st = await request<{ next_chunk: number }>(`/upload/${t.uploadId}`)
               n = st.next_chunk

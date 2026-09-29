@@ -26,6 +26,7 @@ async function submit() {
   busy.value = true
   try {
     await request('/me/password', {
+      keepSessionOn401: true, // 401 = wrong current password, not a dead session
       method: 'PUT',
       body: { current_password: current.value, new_password: next.value },
     })
