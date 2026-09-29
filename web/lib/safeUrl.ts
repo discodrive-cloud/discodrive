@@ -4,3 +4,12 @@
 export function isHttpUrl(url: string | null | undefined): boolean {
   return /^https?:\/\//i.test((url || '').trim())
 }
+
+// withScheme — what a typed-in bookmark address means: "example.com/page" is
+// https://example.com/page. An explicit scheme is left alone (the server accepts only
+// http(s) and answers anything else with a clear error).
+export function withScheme(url: string): string {
+  const u = url.trim()
+  if (!u || /^[a-z][a-z0-9+.-]*:/i.test(u)) return u
+  return 'https://' + u.replace(/^\/+/, '')
+}

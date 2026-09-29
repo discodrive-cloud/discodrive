@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { isHttpUrl } from '~/lib/safeUrl'
+import { isHttpUrl, withScheme } from '~/lib/safeUrl'
 // Browser bookmark tree: the server copy that extensions two-way sync with.
 // Edits here (rename/delete/add) propagate to every synced browser.
 import BookmarkTree, { type BookmarkNode } from '~/components/saved/BookmarkTree.vue'
@@ -100,7 +100,7 @@ async function submitAdd() {
       body: {
         is_folder: addMode.value === 'folder',
         title: addTitle.value.trim(),
-        url: addMode.value === 'bookmark' ? addURL.value.trim() : '',
+        url: addMode.value === 'bookmark' ? withScheme(addURL.value) : '',
         ...(addParent.value ? { parent_id: addParent.value } : {}),
       },
     })
