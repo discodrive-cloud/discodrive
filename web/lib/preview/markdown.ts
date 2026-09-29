@@ -3,8 +3,11 @@
 // text, so the rendered output can go through v-html without a sanitizer.
 // Obsidian-style [[wikilinks]] render as inert styled text. Images: notes
 // render placeholders (the modal can't resolve attachments in v1), while the
-// articles reader opts into real <img> tags via {allowImages: true} — article
-// images are external links by design. ![[embeds]] stay placeholders always.
+// articles reader opts into <img> tags via {allowImages: true}. Article images
+// are external, and the CSP (img-src 'self' data: blob:) rightly blocks them, so
+// the tag carries the address in data-ext-src and no src: the browser requests
+// nothing until hydrateExternalImages loads it through the server as a blob.
+// ![[embeds]] stay placeholders always.
 import type MarkdownIt from 'markdown-it'
 
 export interface MarkdownOptions {
@@ -38,7 +41,7 @@ export function configureMarkdown(md: MarkdownIt, opts: MarkdownOptions = {}): M
     if (opts.allowImages) {
       const src = t.attrGet('src') || ''
       const alt = t.content || ''
-      return `<img src="${md.utils.escapeHtml(src)}" alt="${md.utils.escapeHtml(alt)}" loading="lazy" referrerpolicy="no-referrer">`
+      return `<img data-ext-src="${md.utils.escapeHtml(src)}" alt="${md.utils.escapeHtml(alt)}" class="md-ext-img">`
     }
     return imgPlaceholder(md, t.content || t.attrGet('src') || '')
   }
@@ -52,6 +55,77 @@ export function configureMarkdown(md: MarkdownIt, opts: MarkdownOptions = {}): M
     return defaultLink(tokens, idx, options, env, self)
   }
   return md
+}
+
+// Loads the external images of rendered article HTML (img[data-ext-src]) once they
+// scroll near the viewport. `load` fetches an absolute http(s) address through the
+// server and returns an object URL; relative addresses resolve against `base` (the
+// article's own URL). data:image/… sources are set as they are (the CSP allows them);
+// anything else stays unloaded, its alt text showing. The returned function stops
+// pending loads and revokes the object URLs it created.
+export function hydrateExternalImages(
+  root: ParentNode,
+  base: string,
+  load: (url: string) => Promise<string>,
+): () => void {
+  const created: string[] = []
+  let disposed = false
+  const fetchInto = async (img: HTMLImageElement, url: string) => {
+    try {
+      const obj = await load(url)
+      if (disposed) {
+        URL.revokeObjectURL(obj)
+        return
+      }
+      created.push(obj)
+      img.src = obj
+    } catch {
+      img.classList.add('md-ext-img-failed')
+    }
+  }
+  const pending = new Map<Element, string>()
+  const observer =
+    typeof IntersectionObserver === 'undefined'
+      ? null
+      : new IntersectionObserver(
+          (entries) => {
+            for (const e of entries) {
+              const url = pending.get(e.target)
+              if (!e.isIntersecting || url === undefined) continue
+              pending.delete(e.target)
+              observer?.unobserve(e.target)
+              void fetchInto(e.target as HTMLImageElement, url)
+            }
+          },
+          { rootMargin: '400px' },
+        )
+  for (const img of Array.from(root.querySelectorAll<HTMLImageElement>('img[data-ext-src]'))) {
+    const raw = img.getAttribute('data-ext-src') || ''
+    img.removeAttribute('data-ext-src')
+    if (/^data:image\//i.test(raw)) {
+      img.src = raw
+      continue
+    }
+    let url: URL
+    try {
+      url = new URL(raw, base)
+    } catch {
+      continue
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') continue
+    if (observer) {
+      pending.set(img, url.href)
+      observer.observe(img)
+    } else {
+      void fetchInto(img, url.href)
+    }
+  }
+  return () => {
+    disposed = true
+    observer?.disconnect()
+    for (const u of created) URL.revokeObjectURL(u)
+    created.length = 0
+  }
 }
 
 function imgPlaceholder(md: MarkdownIt, name: string): string {

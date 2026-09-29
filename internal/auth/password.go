@@ -45,6 +45,24 @@ func HashPassword(password string) (string, error) {
 // verifyPassword is VerifyPassword behind a seam, so tests can count Argon2 checks.
 var verifyPassword = VerifyPassword
 
+// dummyHash is checked when there is no real hash to check against (unknown email,
+// no app passwords), so a miss costs the same Argon2 run as a wrong password and
+// response time does not tell whether an account exists. It uses the current
+// parameters and random bytes: no password matches it, and building it runs no Argon2.
+var dummyHash = func() string {
+	p := defaultArgon
+	salt, key := make([]byte, p.saltLen), make([]byte, p.keyLen)
+	_, _ = rand.Read(salt)
+	_, _ = rand.Read(key)
+	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2.Version, p.memory, p.time, p.threads,
+		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key))
+}()
+
+// burnPasswordCheck spends one Argon2 verification (same path: GC first, then the
+// hash) and discards the result.
+func burnPasswordCheck(password string) { _, _ = verifyPassword(password, dummyHash) }
+
 // VerifyPassword checks a password against a stored hash (constant-time comparison).
 func VerifyPassword(password, encoded string) (bool, error) {
 	parts := strings.Split(encoded, "$")

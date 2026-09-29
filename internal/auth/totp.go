@@ -3,12 +3,15 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base32"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 
 	"discodrive/internal/db"
@@ -137,7 +140,9 @@ func (s *Service) ConfirmTOTP(ctx context.Context, userID, code string, approval
 	if err != nil {
 		return nil, err
 	}
-	if !totp.Validate(code, secret) {
+	if ok, err := claimTOTPCode(ctx, q, uid, code, secret); err != nil {
+		return nil, err
+	} else if !ok {
 		return nil, ErrInvalidTOTPCode
 	}
 	consumed, err := consumeChallenge(ctx, q, c.Pur+":"+c.ID, c.ExpiresAt.Time)
@@ -252,7 +257,9 @@ func (s *Service) DisableTOTP(ctx context.Context, userID, password, code string
 	if err != nil {
 		return err
 	}
-	if !totp.Validate(code, secret) {
+	if ok, err := claimTOTPCode(ctx, qtx, uid, code, secret); err != nil {
+		return err
+	} else if !ok {
 		return ErrInvalidTOTPCode
 	}
 
@@ -328,7 +335,46 @@ func (s *Service) verifyTOTPWithQueries(ctx context.Context, q *db.Queries, uid 
 	if err != nil {
 		return false
 	}
-	return totp.Validate(code, secret)
+	ok, err := claimTOTPCode(ctx, q, uid, code, secret)
+	return err == nil && ok
+}
+
+// totpNow is the clock TOTP codes are checked against; tests move it forward.
+var totpNow = time.Now
+
+// totpOpts are totp.Validate's defaults: 30 s steps, ±1 step of skew, 6 SHA-1 digits.
+var totpOpts = totp.ValidateOpts{Period: 30, Skew: 1, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1}
+
+// totpStep returns the time step code is valid for (within the skew), or false.
+func totpStep(code, secret string, now time.Time) (int64, bool) {
+	if len(code) != int(totpOpts.Digits) {
+		return 0, false
+	}
+	step := now.Unix() / int64(totpOpts.Period)
+	for _, d := range []int64{0, -1, 1} {
+		at := time.Unix((step+d)*int64(totpOpts.Period), 0)
+		want, err := totp.GenerateCodeCustom(secret, at, totpOpts)
+		if err == nil && subtle.ConstantTimeCompare([]byte(want), []byte(code)) == 1 {
+			return step + d, true
+		}
+	}
+	return 0, false
+}
+
+// claimTOTPCode accepts code only if it is valid now and its time step comes after the
+// last accepted one, recording the step through q (the caller's transaction, if any).
+// A valid code thus works once: an observed or phished code cannot be replayed for the
+// ~90 s it stays valid, not even by a concurrent request.
+func claimTOTPCode(ctx context.Context, q *db.Queries, uid pgtype.UUID, code, secret string) (bool, error) {
+	step, ok := totpStep(code, secret, totpNow())
+	if !ok {
+		return false, nil
+	}
+	n, err := q.ClaimTOTPStep(ctx, db.ClaimTOTPStepParams{UserID: uid, Step: step})
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // consumeBackupCode matches code against the user's unused backup codes and, on a hit,

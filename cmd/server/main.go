@@ -168,6 +168,9 @@ func runServer(cfg config.Config) {
 	if err != nil {
 		log.Fatalf("discodrive: transport configuration: %v", err)
 	}
+	if wide := transport.WideTrustedRanges(); len(wide) > 0 {
+		log.Printf("discodrive: WARNING: TRUSTED_PROXY_CIDRS trusts wide ranges %v: any host there can assert HTTPS and spoof client IPs (rate limits); list only your reverse proxy's address", wide)
+	}
 	if cfg.DatabaseURL == "" {
 		log.Fatal("discodrive: DATABASE_URL is not set")
 	}

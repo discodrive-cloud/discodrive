@@ -193,6 +193,9 @@ func (s *Server) handleBookmarkCreate(w http.ResponseWriter, r *http.Request) {
 	} else if req.URL == "" {
 		writeError(w, http.StatusBadRequest, "url is required for a bookmark")
 		return
+	} else if !isWebURL(req.URL) {
+		writeError(w, http.StatusBadRequest, "url must be an http or https link")
+		return
 	}
 	var id pgtype.UUID
 	if req.ID != "" {
@@ -260,12 +263,30 @@ func (s *Server) handleBookmarksBulk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	count, cursor, err := s.bookmarks.BulkImport(r.Context(), uid, req.Items)
+	// Bookmarks that are not web links (javascript: bookmarklets, data:, place:,
+	// about:…) are left out rather than failing the import: a browser tree nearly
+	// always has a few, and one refusal would stop the whole initial sync.
+	items := req.Items[:0:0]
+	for _, it := range req.Items {
+		if it.IsFolder || isWebURL(it.URL) {
+			items = append(items, it)
+		}
+	}
+	skipped := len(req.Items) - len(items)
+	count, cursor := 0, int64(0)
+	var err error
+	if len(items) > 0 {
+		count, cursor, err = s.bookmarks.BulkImport(r.Context(), uid, items)
+	} else {
+		var st db.GetBookmarkSyncStateRow
+		st, err = s.q.GetBookmarkSyncState(r.Context(), uid)
+		cursor = st.BookmarkSeq
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "import failed: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"count": count, "cursor": cursor})
+	writeJSON(w, http.StatusOK, map[string]any{"count": count, "cursor": cursor, "skipped": skipped})
 }
 
 // PATCH /me/bookmarks/{id} — edit title/url/position and/or move to another
@@ -305,6 +326,10 @@ func (s *Server) handleBookmarkUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if current.IsFolder && req.URL != nil && *req.URL != "" {
 		writeError(w, http.StatusBadRequest, "folders have no url")
+		return
+	}
+	if !current.IsFolder && req.URL != nil && !isWebURL(*req.URL) {
+		writeError(w, http.StatusBadRequest, "url must be an http or https link")
 		return
 	}
 

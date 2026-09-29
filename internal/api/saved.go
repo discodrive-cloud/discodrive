@@ -1,12 +1,16 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -62,6 +66,18 @@ func toSavedItemDTO(it db.SavedItem) savedItemDTO {
 	return d
 }
 
+// isWebURL reports whether raw is an absolute http(s) URL with a host. Bookmarks and
+// saved items are rendered as clickable links, so javascript:, data: and friends are
+// refused when they are created; rows stored earlier stay readable.
+func isWebURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	return scheme == "http" || scheme == "https"
+}
+
 func validSavedKind(k string) bool {
 	return k == saved.KindArticle || k == saved.KindDownload
 }
@@ -113,12 +129,20 @@ func (s *Server) handleSavedCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "cookie is too large")
 		return
 	}
+	// The URL is shown as a link in the Pocket list and the reader: only web links.
+	if !isWebURL(req.URL) {
+		writeError(w, http.StatusBadRequest, "url must be an http or https link")
+		return
+	}
 	// With client-supplied content the server never fetches the URL, so the
 	// SSRF guard has nothing to protect: addresses behind a paywall or a login
 	// are only ever resolved on the client.
 	if req.ContentHTML == "" {
 		if err := s.saved.Validate(req.URL); err != nil {
-			writeError(w, http.StatusBadRequest, "url is not allowed: "+err.Error())
+			// The guard's error names the addresses the host resolved to (internal DNS
+			// included): log it, answer generically.
+			log.Printf("discodrive: saved: url refused by the SSRF guard: %v", err)
+			writeError(w, http.StatusBadRequest, "url is not allowed")
 			return
 		}
 	}
@@ -269,6 +293,63 @@ func (s *Server) handleSavedContent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.Copy(w, f)
+}
+
+// GET /me/saved/{id}/image?url=… — an image of a saved article, fetched by the server.
+// The reader cannot load article images itself: the CSP allows only same-origin, data:
+// and blob: images, and loosening it would let any stored article make the browser
+// contact third parties. The reader fetches through here (Bearer auth) and shows the
+// result as a blob. Only a raster image of at most saved.MaxImageBytes gets through,
+// its type sniffed server-side and pinned with nosniff; the upstream never sees the
+// user's cookies or a Referer.
+func (s *Server) handleSavedImage(w http.ResponseWriter, r *http.Request) {
+	uid, err := db.ParseUUID(auth.UserID(r.Context()))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid token subject")
+		return
+	}
+	id, err := db.ParseUUID(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	item, err := s.q.GetSavedItemForUser(r.Context(), db.GetSavedItemForUserParams{ID: id, UserID: uid})
+	if err != nil || item.Kind != saved.KindArticle {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	raw := r.URL.Query().Get("url")
+	if len(raw) > maxBookmarkURLLen || !isWebURL(raw) {
+		writeError(w, http.StatusBadRequest, "url must be an http or https link")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	img, err := s.saved.OpenImage(ctx, raw)
+	switch {
+	case errors.Is(err, saved.ErrNotImage):
+		writeError(w, http.StatusUnsupportedMediaType, "not a supported image")
+		return
+	case errors.Is(err, saved.ErrImageTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "image too large")
+		return
+	case err != nil:
+		// Blocked by the SSRF guard, unreachable or an upstream error: the details
+		// (resolved addresses included) stay in the log.
+		log.Printf("discodrive: saved image %s: %v", db.UUIDString(item.ID), err)
+		writeError(w, http.StatusBadGateway, "image unavailable")
+		return
+	}
+	defer img.Body.Close()
+	h := w.Header()
+	h.Set("Content-Type", img.ContentType)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	h.Set("Cache-Control", "private, max-age=86400")
+	if img.Size >= 0 {
+		h.Set("Content-Length", strconv.FormatInt(img.Size, 10))
+	}
+	_, _ = io.Copy(w, img.Body)
 }
 
 // DELETE /me/saved/{id} — remove the record. Files produced in the user's tree

@@ -56,12 +56,14 @@ RETURNING *;
 
 -- MoveBookmark re-parents a node. The NOT EXISTS guard rejects a move that
 -- would create a cycle (the target parent must not be inside the moved subtree).
+-- UNION (not UNION ALL) in the walks below is the cycle guard: a node already
+-- visited adds no new row, so even a corrupted, cyclic tree ends the recursion.
 -- name: MoveBrowserBookmark :one
 WITH RECURSIVE s AS (
     UPDATE users SET bookmark_seq = bookmark_seq + 1 WHERE id = $1 RETURNING bookmark_seq
 ), sub AS (
     SELECT b.id FROM browser_bookmarks b WHERE b.id = $2 AND b.user_id = $1
-    UNION ALL
+    UNION
     SELECT c.id FROM browser_bookmarks c JOIN sub ON c.parent_id = sub.id WHERE c.user_id = $1
 )
 UPDATE browser_bookmarks SET
@@ -78,7 +80,7 @@ RETURNING *;
 -- name: TombstoneBrowserBookmarkTree :execrows
 WITH RECURSIVE sub AS (
     SELECT b.id FROM browser_bookmarks b WHERE b.id = $2 AND b.user_id = $1
-    UNION ALL
+    UNION
     SELECT c.id FROM browser_bookmarks c JOIN sub ON c.parent_id = sub.id WHERE c.user_id = $1
 )
 UPDATE browser_bookmarks SET deleted = true, seq = $3, updated_at = now()
@@ -86,7 +88,8 @@ WHERE id IN (SELECT id FROM sub) AND NOT deleted;
 
 -- UpsertBookmarkAt is the bulk-import step (tx, seq passed in). LWW: an
 -- existing row (including a tombstone) is overwritten and revived.
--- name: UpsertBrowserBookmarkAt :exec
+-- Returns 0 rows when the id belongs to another user (the conflict WHERE fails).
+-- name: UpsertBrowserBookmarkAt :execrows
 INSERT INTO browser_bookmarks (id, user_id, parent_id, is_folder, title, url, position, seq)
 VALUES ($1, $2, sqlc.narg(parent_id), $3, $4, $5, $6, $7)
 ON CONFLICT (id) DO UPDATE SET
@@ -99,6 +102,20 @@ ON CONFLICT (id) DO UPDATE SET
     seq = EXCLUDED.seq,
     updated_at = now()
 WHERE browser_bookmarks.user_id = EXCLUDED.user_id;
+
+-- BrowserBookmarkAncestors returns the given nodes of the user and all their
+-- ancestors (tombstones included: they still carry the structure), for the bulk
+-- import's parent and cycle checks. UNION ends the walk on an existing cycle.
+-- name: BrowserBookmarkAncestors :many
+WITH RECURSIVE up AS (
+    SELECT b.id, b.parent_id, b.is_folder FROM browser_bookmarks b
+    WHERE b.user_id = sqlc.arg(user_id) AND b.id = ANY(sqlc.arg(ids)::uuid[])
+    UNION
+    SELECT p.id, p.parent_id, p.is_folder FROM browser_bookmarks p
+    JOIN up ON p.id = up.parent_id
+    WHERE p.user_id = sqlc.arg(user_id)
+)
+SELECT id, parent_id, is_folder FROM up;
 
 -- name: ListBrowserBookmarksNeedingFavicon :many
 SELECT * FROM browser_bookmarks

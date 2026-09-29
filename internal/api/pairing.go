@@ -158,14 +158,7 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "authorization required")
 		return
 	}
-	dev, err := s.q.CreateDesktopDevice(r.Context(), db.CreateDesktopDeviceParams{UserID: uid, Name: name, TokenVersion: version})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if _, err := s.q.ApprovePairing(r.Context(), db.ApprovePairingParams{
-		ID: p.ID, UserID: uid, DeviceID: dev.ID,
-	}); errors.Is(err, pgx.ErrNoRows) {
+	if _, err := s.auth.ApprovePairing(r.Context(), p.ID, uid, name, version); errors.Is(err, auth.ErrPairingProcessed) {
 		writeError(w, http.StatusConflict, "pairing already processed")
 		return
 	} else if err != nil {

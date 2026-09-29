@@ -83,6 +83,10 @@ type Querier interface {
 	AvailableMFAFactors(ctx context.Context, userID pgtype.UUID) (AvailableMFAFactorsRow, error)
 	BookAuthors(ctx context.Context, bookID pgtype.UUID) ([]BookAuthorsRow, error)
 	BookTags(ctx context.Context, bookID pgtype.UUID) ([]string, error)
+	// BrowserBookmarkAncestors returns the given nodes of the user and all their
+	// ancestors (tombstones included: they still carry the structure), for the bulk
+	// import's parent and cycle checks. UNION ends the walk on an existing cycle.
+	BrowserBookmarkAncestors(ctx context.Context, arg BrowserBookmarkAncestorsParams) ([]BrowserBookmarkAncestorsRow, error)
 	BrowserSessionActive(ctx context.Context, arg BrowserSessionActiveParams) (bool, error)
 	BumpAddressbookCtag(ctx context.Context, id pgtype.UUID) error
 	BumpBookmarkGCSeq(ctx context.Context, arg BumpBookmarkGCSeqParams) error
@@ -94,6 +98,9 @@ type Querier interface {
 	ClaimEpisodeForDownload(ctx context.Context, arg ClaimEpisodeForDownloadParams) (int64, error)
 	// bytes_done restarts at 0: 'processing' rows count toward the owner's used space.
 	ClaimSavedItem(ctx context.Context, id pgtype.UUID) (int64, error)
+	// ClaimTOTPStep makes a TOTP code single-use: it succeeds (1 row) only for a step
+	// after the last accepted one. The row lock serializes concurrent uses of one code.
+	ClaimTOTPStep(ctx context.Context, arg ClaimTOTPStepParams) (int64, error)
 	ClearBookAuthors(ctx context.Context, bookID pgtype.UUID) error
 	ClearBookTags(ctx context.Context, bookID pgtype.UUID) error
 	ClearEbookCredentials(ctx context.Context, userID pgtype.UUID) error
@@ -367,6 +374,9 @@ type Querier interface {
 	ListUsersWithUsage(ctx context.Context) ([]ListUsersWithUsageRow, error)
 	ListWebAuthnCredentials(ctx context.Context, userID pgtype.UUID) ([]WebauthnCredential, error)
 	ListWebdavDevicesByEmail(ctx context.Context, email string) ([]Device, error)
+	// LockAdmins serializes changes that could leave the server without an admin
+	// (demotion, deletion): callers count the locked rows inside their transaction.
+	LockAdmins(ctx context.Context) ([]pgtype.UUID, error)
 	LockBootstrap(ctx context.Context) (ServerBootstrap, error)
 	// Serializes writers of one tree path until the transaction ends: two pushes to the
 	// same file must not both read the old row and then overwrite each other's bytes.
@@ -379,6 +389,8 @@ type Querier interface {
 	MaxPlaylistPosition(ctx context.Context, playlistID pgtype.UUID) (interface{}, error)
 	// MoveBookmark re-parents a node. The NOT EXISTS guard rejects a move that
 	// would create a cycle (the target parent must not be inside the moved subtree).
+	// UNION (not UNION ALL) in the walks below is the cycle guard: a node already
+	// visited adds no new row, so even a corrupted, cyclic tree ends the recursion.
 	MoveBrowserBookmark(ctx context.Context, arg MoveBrowserBookmarkParams) (BrowserBookmark, error)
 	NextBookmarkSeq(ctx context.Context, id pgtype.UUID) (int64, error)
 	NextChangeSeq(ctx context.Context, id pgtype.UUID) (int64, error)
@@ -458,6 +470,8 @@ type Querier interface {
 	SetSavedItemError(ctx context.Context, arg SetSavedItemErrorParams) error
 	SetSharePasswordHash(ctx context.Context, arg SetSharePasswordHashParams) error
 	SetUserLanguage(ctx context.Context, arg SetUserLanguageParams) error
+	SetUserQuota(ctx context.Context, arg SetUserQuotaParams) (User, error)
+	SetUserRole(ctx context.Context, arg SetUserRoleParams) (User, error)
 	SetUserSessionTTL(ctx context.Context, arg SetUserSessionTTLParams) error
 	SharedAccessForUser(ctx context.Context, arg SharedAccessForUserParams) (SharedAccessForUserRow, error)
 	// Returns accessible songs of a given genre excluding a specific artist, in random order.
@@ -530,7 +544,8 @@ type Querier interface {
 	UpsertBook(ctx context.Context, arg UpsertBookParams) (Book, error)
 	// UpsertBookmarkAt is the bulk-import step (tx, seq passed in). LWW: an
 	// existing row (including a tombstone) is overwritten and revived.
-	UpsertBrowserBookmarkAt(ctx context.Context, arg UpsertBrowserBookmarkAtParams) error
+	// Returns 0 rows when the id belongs to another user (the conflict WHERE fails).
+	UpsertBrowserBookmarkAt(ctx context.Context, arg UpsertBrowserBookmarkAtParams) (int64, error)
 	// == calendar_objects ==
 	UpsertCalendarObject(ctx context.Context, arg UpsertCalendarObjectParams) (CalendarObject, error)
 	UpsertEbookSettings(ctx context.Context, arg UpsertEbookSettingsParams) (EbookSetting, error)

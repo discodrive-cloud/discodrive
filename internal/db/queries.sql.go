@@ -184,6 +184,27 @@ func (q *Queries) CalendarShareForUser(ctx context.Context, arg CalendarShareFor
 	return id, err
 }
 
+const claimTOTPStep = `-- name: ClaimTOTPStep :execrows
+UPDATE user_totp SET last_used_step = $1::bigint
+WHERE user_id = $2
+  AND (last_used_step IS NULL OR last_used_step < $1::bigint)
+`
+
+type ClaimTOTPStepParams struct {
+	Step   int64       `json:"step"`
+	UserID pgtype.UUID `json:"user_id"`
+}
+
+// ClaimTOTPStep makes a TOTP code single-use: it succeeds (1 row) only for a step
+// after the last accepted one. The row lock serializes concurrent uses of one code.
+func (q *Queries) ClaimTOTPStep(ctx context.Context, arg ClaimTOTPStepParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimTOTPStep, arg.Step, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const clearQuotaNotified = `-- name: ClearQuotaNotified :exec
 UPDATE users SET quota_notified_at = NULL
 WHERE storage_quota IS NOT NULL
@@ -1505,7 +1526,7 @@ func (q *Queries) GetUserSessionTTL(ctx context.Context, id pgtype.UUID) (int32,
 
 const getUserTOTP = `-- name: GetUserTOTP :one
 
-SELECT user_id, secret, enabled, confirmed_at, created_at, approval_id FROM user_totp WHERE user_id = $1
+SELECT user_id, secret, enabled, confirmed_at, created_at, approval_id, last_used_step FROM user_totp WHERE user_id = $1
 `
 
 // TOTP 2FA (A.3). Secret is AES-GCM ciphertext.
@@ -1519,6 +1540,7 @@ func (q *Queries) GetUserTOTP(ctx context.Context, userID pgtype.UUID) (UserTotp
 		&i.ConfirmedAt,
 		&i.CreatedAt,
 		&i.ApprovalID,
+		&i.LastUsedStep,
 	)
 	return i, err
 }
@@ -2956,6 +2978,32 @@ func (q *Queries) ListWebdavDevicesByEmail(ctx context.Context, email string) ([
 	return items, nil
 }
 
+const lockAdmins = `-- name: LockAdmins :many
+SELECT id FROM users WHERE role = 'admin' ORDER BY id FOR UPDATE
+`
+
+// LockAdmins serializes changes that could leave the server without an admin
+// (demotion, deletion): callers count the locked rows inside their transaction.
+func (q *Queries) LockAdmins(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockAdmins)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockTreePath = `-- name: LockTreePath :exec
 SELECT pg_advisory_xact_lock(1146110292, hashtext($1::text))
 `
@@ -3257,6 +3305,72 @@ func (q *Queries) SetUserLanguage(ctx context.Context, arg SetUserLanguageParams
 	return err
 }
 
+const setUserQuota = `-- name: SetUserQuota :one
+UPDATE users SET storage_quota = $2 WHERE id = $1 RETURNING id, tenant_id, email, password_hash, storage_quota, storage_used, created_at, role, change_seq, quota_notified_at, token_version, language, must_change_password, bookmark_seq, bookmark_gc_seq, session_ttl_minutes
+`
+
+type SetUserQuotaParams struct {
+	ID           pgtype.UUID `json:"id"`
+	StorageQuota pgtype.Int8 `json:"storage_quota"`
+}
+
+func (q *Queries) SetUserQuota(ctx context.Context, arg SetUserQuotaParams) (User, error) {
+	row := q.db.QueryRow(ctx, setUserQuota, arg.ID, arg.StorageQuota)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.StorageQuota,
+		&i.StorageUsed,
+		&i.CreatedAt,
+		&i.Role,
+		&i.ChangeSeq,
+		&i.QuotaNotifiedAt,
+		&i.TokenVersion,
+		&i.Language,
+		&i.MustChangePassword,
+		&i.BookmarkSeq,
+		&i.BookmarkGcSeq,
+		&i.SessionTtlMinutes,
+	)
+	return i, err
+}
+
+const setUserRole = `-- name: SetUserRole :one
+UPDATE users SET role = $2 WHERE id = $1 RETURNING id, tenant_id, email, password_hash, storage_quota, storage_used, created_at, role, change_seq, quota_notified_at, token_version, language, must_change_password, bookmark_seq, bookmark_gc_seq, session_ttl_minutes
+`
+
+type SetUserRoleParams struct {
+	ID   pgtype.UUID `json:"id"`
+	Role string      `json:"role"`
+}
+
+func (q *Queries) SetUserRole(ctx context.Context, arg SetUserRoleParams) (User, error) {
+	row := q.db.QueryRow(ctx, setUserRole, arg.ID, arg.Role)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.StorageQuota,
+		&i.StorageUsed,
+		&i.CreatedAt,
+		&i.Role,
+		&i.ChangeSeq,
+		&i.QuotaNotifiedAt,
+		&i.TokenVersion,
+		&i.Language,
+		&i.MustChangePassword,
+		&i.BookmarkSeq,
+		&i.BookmarkGcSeq,
+		&i.SessionTtlMinutes,
+	)
+	return i, err
+}
+
 const setUserSessionTTL = `-- name: SetUserSessionTTL :exec
 UPDATE users SET session_ttl_minutes = $2 WHERE id = $1
 `
@@ -3343,7 +3457,8 @@ const startApprovedTOTP = `-- name: StartApprovedTOTP :execrows
 INSERT INTO user_totp (user_id, secret, enabled, confirmed_at, approval_id)
 VALUES ($1, $2, false, NULL, $3)
 ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret,
-    enabled = false, confirmed_at = NULL, created_at = now(), approval_id = EXCLUDED.approval_id
+    enabled = false, confirmed_at = NULL, created_at = now(), approval_id = EXCLUDED.approval_id,
+    last_used_step = NULL
 WHERE NOT user_totp.enabled
 `
 

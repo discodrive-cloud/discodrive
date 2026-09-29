@@ -12,8 +12,10 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -288,6 +290,15 @@ func (s *Service) process(item db.SavedItem) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
+	// The parsers (readability, html-to-markdown) get up to 2 MiB of user HTML. A panic
+	// here used to kill the whole server, and RecoverStale re-queued the item on the
+	// next start: a crash loop. Mark the item failed instead.
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("discodrive: saved %s %s: panic: %v\n%s", item.Kind, db.UUIDString(item.ID), p, debug.Stack())
+			s.setError(item, "internal error while processing this link")
+		}
+	}()
 
 	var res result
 	var err error
@@ -305,12 +316,7 @@ func (s *Service) process(item db.SavedItem) {
 	}
 	if err != nil {
 		log.Printf("discodrive: saved %s %s: %v", item.Kind, db.UUIDString(item.ID), err)
-		if setErr := s.q.SetSavedItemError(context.Background(), db.SetSavedItemErrorParams{
-			ID:       item.ID,
-			ErrorMsg: truncate(err.Error(), 500),
-		}); setErr != nil {
-			log.Printf("discodrive: saved set-error %s: %v", db.UUIDString(item.ID), setErr)
-		}
+		s.setError(item, err.Error())
 		return
 	}
 
@@ -352,9 +358,25 @@ type result struct {
 	meta        []byte // nil = keep existing
 }
 
+// setError records a failed item. The message is shown to the user.
+func (s *Service) setError(item db.SavedItem, msg string) {
+	if err := s.q.SetSavedItemError(context.Background(), db.SetSavedItemErrorParams{
+		ID:       item.ID,
+		ErrorMsg: truncate(msg, 500),
+	}); err != nil {
+		log.Printf("discodrive: saved set-error %s: %v", db.UUIDString(item.ID), err)
+	}
+}
+
+// truncate cuts s to at most n bytes without splitting a UTF-8 sequence: Postgres
+// rejects invalid UTF-8, and a failed SetSavedItemError left the item in processing.
 func truncate(s string, n int) string {
+	s = strings.ToValidUTF8(s, "�")
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }

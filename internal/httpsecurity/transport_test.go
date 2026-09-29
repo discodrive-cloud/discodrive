@@ -110,6 +110,26 @@ func TestLocalHTTPException(t *testing.T) {
 	}
 }
 
+// The Compose default trusts all of RFC1918; the server must flag ranges that wide at
+// startup (the production override narrows them), while exact proxies stay quiet.
+func TestWideTrustedRangesAreReported(t *testing.T) {
+	p, err := New("172.16.0.0/12,192.168.0.0/16,10.0.0.0/8,172.20.0.0/24,127.0.0.1/32,::1/128,fd00::/48,fd00:1::/64", "127.0.0.1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, w := range p.WideTrustedRanges() {
+		got = append(got, w.String())
+	}
+	if want := "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8,fd00::/48"; strings.Join(got, ",") != want {
+		t.Fatalf("wide ranges %v, want %s", got, want)
+	}
+	narrow, _ := New(DefaultTrustedProxies, "127.0.0.1", false)
+	if w := narrow.WideTrustedRanges(); len(w) != 0 {
+		t.Fatalf("default loopback proxies reported as wide: %v", w)
+	}
+}
+
 func TestProxyConfigurationRejectsInvalidOrGlobalTrust(t *testing.T) {
 	for _, cidrs := range []string{"invalid", "0.0.0.0/0", "::/0"} {
 		if _, err := New(cidrs, "127.0.0.1", false); err == nil {
