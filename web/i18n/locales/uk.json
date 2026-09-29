@@ -97,6 +97,7 @@
     "share_by_link": "Посиланням",
     "share_email_placeholder": "email користувача",
     "share_expires_placeholder": "термін, днів (необов.)",
+    "share_expires": "діє до {date}",
     "share_download_link": "Посилання для завантаження:",
     "share_create_link": "Створити посилання",
     "share_grant_access": "Надати доступ",

@@ -421,7 +421,7 @@ useModalEscape(computed(() => vaultOpen.value), () => { vaultOpen.value = false 
               <Icon :name="sh.kind === 'link' ? 'lucide:link' : 'lucide:user'" size="13" class="mr-1 inline" />
               {{ sh.kind === 'link' ? t('files.share_link_label') : sh.email }}
               · {{ sh.access === 'read_write' ? t('files.share_access_read_write') : t('files.share_access_read') }}
-              <span v-if="sh.expires_at"> · {{ t('common.loading') }} {{ new Date(sh.expires_at).toLocaleDateString() }}</span>
+              <span v-if="sh.expires_at"> · {{ t('files.share_expires', { date: new Date(sh.expires_at).toLocaleDateString() }) }}</span>
             </span>
             <button class="btn-ghost px-1.5 py-0.5" :title="t('common.revoke')" @click="revokeShare(sh.share_id)">
               <Icon name="lucide:x" size="14" />

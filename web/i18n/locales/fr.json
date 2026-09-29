@@ -97,6 +97,7 @@
     "share_by_link": "Par lien",
     "share_email_placeholder": "e-mail de l'utilisateur",
     "share_expires_placeholder": "expiration, jours (opt.)",
+    "share_expires": "expire le {date}",
     "share_download_link": "Lien de téléchargement :",
     "share_create_link": "Créer le lien",
     "share_grant_access": "Accorder l'accès",

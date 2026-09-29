@@ -97,6 +97,7 @@
     "share_by_link": "Por enlace",
     "share_email_placeholder": "email del usuario",
     "share_expires_placeholder": "expiración, días (opc.)",
+    "share_expires": "caduca el {date}",
     "share_download_link": "Enlace de descarga:",
     "share_create_link": "Crear enlace",
     "share_grant_access": "Conceder acceso",
