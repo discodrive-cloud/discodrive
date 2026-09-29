@@ -782,6 +782,21 @@ func (s *FileService) finishPush(ctx context.Context, tx pgx.Tx, qtx *db.Queries
 // snapshotting a new version. It updates size/hash/mime and records a sync
 // "update" change. Used by the tag editor's no-version mode.
 func (s *FileService) ReplaceContentInPlace(ctx context.Context, userID, nodeID string, r io.Reader) (db.Node, error) {
+	return s.replaceContentInPlace(ctx, userID, nodeID, nil, r)
+}
+
+// ErrStaleVersion: the node changed after the caller read it (a sync push, another
+// edit), so an in-place replacement based on that read would overwrite it.
+var ErrStaleVersion = errors.New("file changed since it was read")
+
+// ReplaceContentInPlaceAt is ReplaceContentInPlace for content derived from version
+// baseVersion of the node: under the same per-path lock a push takes, it refuses with
+// ErrStaleVersion if the node has moved on, instead of overwriting the newer content.
+func (s *FileService) ReplaceContentInPlaceAt(ctx context.Context, userID, nodeID string, baseVersion int64, r io.Reader) (db.Node, error) {
+	return s.replaceContentInPlace(ctx, userID, nodeID, &baseVersion, r)
+}
+
+func (s *FileService) replaceContentInPlace(ctx context.Context, userID, nodeID string, baseVersion *int64, r io.Reader) (db.Node, error) {
 	node, err := s.ownerNode(ctx, userID, nodeID)
 	if err != nil {
 		return db.Node{}, err
@@ -821,6 +836,9 @@ func (s *FileService) ReplaceContentInPlace(ctx context.Context, userID, nodeID 
 	}
 	if cur.DiskPath != node.DiskPath {
 		return db.Node{}, ErrNotFound
+	}
+	if baseVersion != nil && cur.Version != *baseVersion {
+		return db.Node{}, ErrStaleVersion
 	}
 	updated, err := qtx.UpdateNodeContent(ctx, db.UpdateNodeContentParams{
 		ID: node.ID, Size: int8val(size), ContentHash: text(sha), Mime: text(detectMime(node.Name)),

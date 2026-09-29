@@ -260,7 +260,7 @@ func (e *TagEditor) WriteFolder(ctx context.Context, userID, folderNodeID string
 // and re-indexes the song in the music library.
 //
 // For the versioned mode (TagEditVersioning=true) a new sync version is created
-// via PushByPath. For the in-place mode ReplaceContentInPlace is used instead.
+// via PushByPath. For the in-place mode ReplaceContentInPlaceAt is used instead.
 // The temp file is always cleaned up regardless of outcome.
 func (e *TagEditor) Write(ctx context.Context, userID, nodeID string, t tagwrite.Tags, cc tagwrite.CoverChange, cover *tagwrite.Cover) error {
 	node, abs, err := e.resolve(ctx, userID, nodeID)
@@ -331,18 +331,14 @@ func (e *TagEditor) Write(ctx context.Context, userID, nodeID string, t tagwrite
 			return ErrTagConflict
 		}
 	} else {
-		// In-place mode has no version to conflict on: re-check just before the
-		// swap. (ReplaceContentInPlace takes no base version, so a write landing
-		// between this check and the swap can still be lost; the window is now
-		// the swap itself instead of the whole tag edit.)
-		cur, err := e.q.GetNodeForUser(ctx, db.GetNodeForUserParams{ID: node.ID, UserID: uid})
-		if err != nil {
-			return err
-		}
-		if cur.Version != node.Version || cur.ContentHash != node.ContentHash {
+		// In-place mode keeps no history, so a concurrent change must not be replaced:
+		// the swap is conditional on the version the tags were edited from, checked
+		// under the same per-path lock a sync push takes.
+		_, err := e.files.ReplaceContentInPlaceAt(ctx, userID, nodeID, node.Version, bytes.NewReader(newBytes))
+		if errors.Is(err, storage.ErrStaleVersion) {
 			return ErrTagConflict
 		}
-		if _, err := e.files.ReplaceContentInPlace(ctx, userID, nodeID, bytes.NewReader(newBytes)); err != nil {
+		if err != nil {
 			return err
 		}
 	}

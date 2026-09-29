@@ -190,3 +190,36 @@ func TestAdoptCreatesNodeForStagedFile(t *testing.T) {
 		t.Fatal("adopt outside the user's tree succeeded")
 	}
 }
+
+// An in-place replacement computed from an old version must not overwrite a newer one.
+func TestReplaceContentInPlaceAtRefusesStaleVersion(t *testing.T) {
+	ctx := context.Background()
+	fs, _, userID, _ := setupFS(t)
+
+	first, err := fs.Push(ctx, userID, nil, "song.mp3", nil, "i", strings.NewReader("v1"))
+	if err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	id := db.UUIDString(first.Node.ID)
+	base := first.Node.Version
+	// A sync push lands while the tags are being edited.
+	if _, err := fs.Push(ctx, userID, nil, "song.mp3", nil, "i", strings.NewReader("v2 from sync")); err != nil {
+		t.Fatalf("second push: %v", err)
+	}
+	if _, err := fs.ReplaceContentInPlaceAt(ctx, userID, id, base, strings.NewReader("v1 with tags")); !errors.Is(err, storage.ErrStaleVersion) {
+		t.Fatalf("stale replace: err = %v, want ErrStaleVersion", err)
+	}
+	if got := readNode(t, fs, userID, id); got != "v2 from sync" {
+		t.Fatalf("content after refused replace = %q", got)
+	}
+	cur, err := fs.NodeByPath(ctx, userID, "/song.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.ReplaceContentInPlaceAt(ctx, userID, id, cur.Version, strings.NewReader("v2 with tags")); err != nil {
+		t.Fatalf("current-version replace: %v", err)
+	}
+	if got := readNode(t, fs, userID, id); got != "v2 with tags" {
+		t.Fatalf("content = %q", got)
+	}
+}
