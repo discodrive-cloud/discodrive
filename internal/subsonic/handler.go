@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"discodrive/internal/authlimit"
 	"discodrive/internal/db"
 	"discodrive/internal/secret"
 	"discodrive/internal/storage"
@@ -20,6 +21,8 @@ type Handler struct {
 
 	scanMu    sync.Mutex
 	scanState map[string]*scanInfo // keyed by userID
+
+	authLimit *authlimit.Limiter // failed credential checks per client; nil = off
 }
 
 // scanInfo is the in-memory state of a user's library scan (single process).
@@ -30,7 +33,7 @@ type scanInfo struct {
 
 // New creates a Handler. files and storageRoot may be nil/"" until streaming tasks are added.
 func New(q *db.Queries, cipher *secret.Cipher, files *storage.FileService, storageRoot string, xaccel bool) *Handler {
-	return &Handler{q: q, cipher: cipher, files: files, storageRoot: storageRoot, xaccel: xaccel, scanState: map[string]*scanInfo{}}
+	return &Handler{q: q, cipher: cipher, files: files, storageRoot: storageRoot, xaccel: xaccel, scanState: map[string]*scanInfo{}, authLimit: authlimit.NewDefault()}
 }
 
 // reqCtx carries everything an endpoint needs for a single Subsonic request.
@@ -84,9 +87,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path = strings.TrimSuffix(path, ".view")
 	method := strings.Trim(path, "/")
 
-	// Authenticate before dispatching.
+	// Authenticate before dispatching. Only failed checks spend the per-client
+	// budget; a blocked client gets no database lookup at all.
+	if h.authLimit.Blocked(r) {
+		writeFail(w, format, ErrGeneric, "Too many failed login attempts, try again later")
+		return
+	}
 	userID, ok := h.authenticate(r)
 	if !ok {
+		if hasCredentials(r) {
+			h.authLimit.Fail(r)
+		}
 		writeFail(w, format, ErrWrongAuth, "Wrong username or password")
 		return
 	}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"discodrive/internal/authlimit"
 	"discodrive/internal/db"
 	"discodrive/internal/secret"
 )
@@ -16,11 +17,13 @@ type Handler struct {
 	q      *db.Queries
 	cipher *secret.Cipher
 	mux    *http.ServeMux
+
+	authLimit *authlimit.Limiter // failed credential checks per client; nil = off
 }
 
 // New creates a Handler and registers all kosync routes.
 func New(q *db.Queries, cipher *secret.Cipher) *Handler {
-	h := &Handler{q: q, cipher: cipher, mux: http.NewServeMux()}
+	h := &Handler{q: q, cipher: cipher, mux: http.NewServeMux(), authLimit: authlimit.NewDefault()}
 	h.registerRoutes()
 	return h
 }
@@ -35,6 +38,11 @@ func (h *Handler) registerRoutes() {
 
 // ServeHTTP dispatches to the internal mux. Auth is handled per-endpoint.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.authLimit.Blocked(r) {
+		w.Header().Set("Retry-After", "60")
+		writeJSON(w, http.StatusTooManyRequests, struct{}{})
+		return
+	}
 	h.mux.ServeHTTP(w, r)
 }
 
