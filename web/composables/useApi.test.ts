@@ -77,6 +77,28 @@ it('keepSessionOn401 leaves the session for a wrong credential', async () => {
   expect(api.useSession().value.token).toBe(token('first'))
   expect(fetchMock.raw.mock.calls[0][1]).not.toHaveProperty('keepSessionOn401')
 })
+it('follows a logout in another tab', () => {
+  expect(api.followStoredSession(JSON.stringify({ token: '', role: '', email: '' }))).toBe('cleared')
+  expect(api.useSession().value.token).toBe('')
+  expect(api.followStoredSession(null)).toBe('none')
+})
+it('adopts a renewal of the same account quietly and never steps back', () => {
+  expect(api.followStoredSession(JSON.stringify(session('first', 5)))).toBe('renewed')
+  expect(api.useSession().value.token).toBe(token('first', 5))
+  expect(api.followStoredSession(JSON.stringify(session('first', 3)))).toBe('none')
+  expect(api.useSession().value.token).toBe(token('first', 5))
+})
+it('switches to another account signed in elsewhere', () => {
+  const other = { token: `e30.${Buffer.from(JSON.stringify({ sid: 'x', sub: 'user-b', iat: 1 })).toString('base64url')}.s`, role: 'admin', email: 'b@example.test' }
+  const lock = (globalThis as any).lockVault as ReturnType<typeof vi.fn>
+  lock.mockClear()
+  expect(api.followStoredSession(JSON.stringify(other))).toBe('switched')
+  expect(api.useSession().value).toEqual(other)
+  expect(lock).toHaveBeenCalled()
+})
+it('treats a corrupt stored session as signed out', () => {
+  expect(api.followStoredSession('{not json')).toBe('cleared')
+})
 it('logout and an account switch lock the vault', () => {
   const lock = (globalThis as any).lockVault as ReturnType<typeof vi.fn>
   lock.mockClear()

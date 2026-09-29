@@ -37,7 +37,8 @@ function tokenIssuedAt(t: string): number {
   }
 }
 
-export function setSession(s: Session) {
+// persist=false applies a session another tab already wrote to localStorage.
+export function setSession(s: Session, persist = true) {
   const sess = useSession()
   // Switching accounts without an explicit logout (login page over a live session)
   // must not carry the previous account's player queue over.
@@ -47,13 +48,58 @@ export function setSession(s: Session) {
     lockVault()
   }
   sess.value = s
-  if (import.meta.client) localStorage.setItem('kf_session', JSON.stringify(s))
+  if (persist && import.meta.client) localStorage.setItem('kf_session', JSON.stringify(s))
 }
 
-export function clearSession() {
+export function clearSession(persist = true) {
   resetPlayerSession() // stop playback everywhere and drop the persisted queue
   lockVault() // vault keys and decrypted names must not survive a logout
-  setSession({ token: '', role: '', email: '' })
+  setSession({ token: '', role: '', email: '' }, persist)
+}
+
+function parseStoredSession(raw: string | null): Session {
+  try {
+    const s = raw ? JSON.parse(raw) : null
+    if (s && typeof s.token === 'string' && s.token) return s as Session
+  } catch { /* corrupt → treat as signed out */ }
+  return { token: '', role: '', email: '' }
+}
+
+// followStoredSession — another tab changed kf_session (the storage event). All tabs
+// share one localStorage, so the last sign-in wins everywhere; this tab follows it
+// instead of silently sending requests with its old in-memory token for an account
+// the stored session no longer names.
+//   'none'     — nothing relevant changed
+//   'renewed'  — same account (token renewal, flag change): adopted quietly
+//   'cleared'  — signed out elsewhere: local state cleared, caller goes to /login
+//   'switched' — a different account (or a sign-in while this tab had none): adopted,
+//                caller reloads so no page keeps the previous account's data
+export function followStoredSession(raw: string | null): 'none' | 'renewed' | 'cleared' | 'switched' {
+  const sess = useSession()
+  const cur = sess.value
+  const next = parseStoredSession(raw)
+  if (!next.token) {
+    if (!cur.token) return 'none'
+    clearSession(false)
+    return 'cleared'
+  }
+  if (next.token === cur.token && next.mustChangePassword === cur.mustChangePassword) return 'none'
+  if (cur.token && next.email === cur.email && sameSubject(cur.token, next.token)) {
+    // Never step back to an older token of the same account (a slower tab's renewal).
+    if (tokenIssuedAt(next.token) < tokenIssuedAt(cur.token) && next.mustChangePassword === cur.mustChangePassword) return 'none'
+    setSession(next, false)
+    return 'renewed'
+  }
+  if (cur.token) clearSession(false) // drop player queue, vault, per-account state first
+  setSession(next, false)
+  return 'switched'
+}
+
+function sameSubject(a: string, b: string): boolean {
+  try {
+    const sub = (t: string) => JSON.parse(atob(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).sub
+    return sub(a) === sub(b)
+  } catch { return false }
 }
 
 // Only compare identities locally; server-side JWT validation remains authoritative.
