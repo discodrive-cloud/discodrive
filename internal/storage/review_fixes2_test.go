@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -154,6 +155,33 @@ func conflictNames(t *testing.T, fs *storage.FileService, userID, dirID string) 
 		names = append(names, k.Name)
 	}
 	return strings.Join(names, "\n")
+}
+
+// Rolling back to an old version writes a new snapshot of the current content, so it
+// needs room like any other write.
+func TestRestoreRespectsQuota(t *testing.T) {
+	ctx := context.Background()
+	fs, q, userID, _ := setupFS(t)
+	fs.SetQuota(quota.New(q, 0))
+	setQuota(t, q, userID, 1000)
+
+	if err := push(fs, userID, "a.bin", 400); err != nil {
+		t.Fatal(err)
+	}
+	res, err := fs.Push(ctx, userID, nil, "a.bin", nil, "", strings.NewReader(strings.Repeat("y", 400)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 800 used: the live file and the snapshot of version 1. Restoring version 1 would
+	// add a 400-byte snapshot of version 2.
+	_, err = fs.Restore(ctx, userID, db.UUIDString(res.Node.ID), 1)
+	if !errors.Is(err, quota.ErrExceeded) {
+		t.Fatalf("restore over quota: want ErrExceeded, got %v", err)
+	}
+	setQuota(t, q, userID, 1200)
+	if _, err := fs.Restore(ctx, userID, db.UUIDString(res.Node.ID), 1); err != nil {
+		t.Fatalf("restore within quota: %v", err)
+	}
 }
 
 // A resumable upload publishes through a FileService bound to its reserved connection.

@@ -367,6 +367,17 @@ func (s *FileService) Restore(ctx context.Context, userID, nodeID string, versio
 	if err != nil {
 		return db.Node{}, err
 	}
+	// The rollback writes new bytes: the old version becomes the live file again and the
+	// content it replaces becomes a snapshot (without versions, it is simply replaced).
+	grow := fv.Size.Int64
+	if s.noVersions {
+		grow -= node.Size.Int64
+	}
+	if grow > 0 {
+		if err := s.CheckQuota(ctx, db.UUIDString(owner), grow); err != nil {
+			return db.Node{}, err
+		}
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
