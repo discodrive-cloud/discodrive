@@ -794,7 +794,7 @@ WHERE id = $1 AND user_id = $2;
 -- name: CreatePodcastChannel :one
 INSERT INTO podcast_channels (user_id, feed_url, title, description, cover_url)
 VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (user_id, feed_url) DO UPDATE SET feed_url = EXCLUDED.feed_url
+ON CONFLICT (user_id, feed_url) DO NOTHING
 RETURNING *;
 
 -- name: GetPodcastChannelForUser :one

@@ -1382,7 +1382,7 @@ func (q *Queries) CreatePlaylist(ctx context.Context, arg CreatePlaylistParams) 
 const createPodcastChannel = `-- name: CreatePodcastChannel :one
 INSERT INTO podcast_channels (user_id, feed_url, title, description, cover_url)
 VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (user_id, feed_url) DO UPDATE SET feed_url = EXCLUDED.feed_url
+ON CONFLICT (user_id, feed_url) DO NOTHING
 RETURNING id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at
 `
 
