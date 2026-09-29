@@ -699,7 +699,7 @@ func (q *Queries) CreateWebdavDevice(ctx context.Context, arg CreateWebdavDevice
 	return i, err
 }
 
-const deleteAddressbook = `-- name: DeleteAddressbook :exec
+const deleteAddressbook = `-- name: DeleteAddressbook :execrows
 DELETE FROM addressbooks WHERE id = $1 AND user_id = $2
 `
 
@@ -708,9 +708,12 @@ type DeleteAddressbookParams struct {
 	UserID pgtype.UUID `json:"user_id"`
 }
 
-func (q *Queries) DeleteAddressbook(ctx context.Context, arg DeleteAddressbookParams) error {
-	_, err := q.db.Exec(ctx, deleteAddressbook, arg.ID, arg.UserID)
-	return err
+func (q *Queries) DeleteAddressbook(ctx context.Context, arg DeleteAddressbookParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAddressbook, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteAddressbookObject = `-- name: DeleteAddressbookObject :execrows
@@ -739,7 +742,7 @@ func (q *Queries) DeleteBackupCodes(ctx context.Context, userID pgtype.UUID) err
 	return err
 }
 
-const deleteCalendar = `-- name: DeleteCalendar :exec
+const deleteCalendar = `-- name: DeleteCalendar :execrows
 DELETE FROM calendars WHERE id = $1 AND user_id = $2
 `
 
@@ -748,9 +751,12 @@ type DeleteCalendarParams struct {
 	UserID pgtype.UUID `json:"user_id"`
 }
 
-func (q *Queries) DeleteCalendar(ctx context.Context, arg DeleteCalendarParams) error {
-	_, err := q.db.Exec(ctx, deleteCalendar, arg.ID, arg.UserID)
-	return err
+func (q *Queries) DeleteCalendar(ctx context.Context, arg DeleteCalendarParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCalendar, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteCalendarObject = `-- name: DeleteCalendarObject :execrows

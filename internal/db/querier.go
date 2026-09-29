@@ -86,6 +86,9 @@ type Querier interface {
 	BumpBookmarkGCSeq(ctx context.Context, arg BumpBookmarkGCSeqParams) error
 	BumpCalendarCtag(ctx context.Context, id pgtype.UUID) error
 	BumpNodeVersion(ctx context.Context, id pgtype.UUID) (int64, error)
+	// Another object of the collection that carries the iCalendar UID (RFC 4791 no-uid-conflict).
+	// Index: calendar_objects_ical_uid (migration 000019).
+	CalendarObjectWithUID(ctx context.Context, arg CalendarObjectWithUIDParams) (string, error)
 	// A user's access level to a file_node, accounting for inheritance: we check
 	// the node itself AND all its ancestors (recursive CTE), taking active shares for the user.
 	CalendarShareForUser(ctx context.Context, arg CalendarShareForUserParams) (pgtype.UUID, error)
@@ -128,6 +131,8 @@ type Querier interface {
 	CreateDesktopDevice(ctx context.Context, arg CreateDesktopDeviceParams) (Device, error)
 	CreateDevice(ctx context.Context, arg CreateDeviceParams) (Device, error)
 	CreateInternetRadioStation(ctx context.Context, arg CreateInternetRadioStationParams) (InternetRadioStation, error)
+	// A public link (feed) share, its password hash written in the same statement.
+	CreateLinkShare(ctx context.Context, arg CreateLinkShareParams) (ResourceShare, error)
 	// modified_at is the content's own modification time when the client supplies one, so a
 	// photo from 2019 uploaded today reads as 2019. NULL falls back to now(), which is what
 	// every client that sends nothing keeps getting.
@@ -143,14 +148,14 @@ type Querier interface {
 	CreateUploadReservation(ctx context.Context, arg CreateUploadReservationParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	CreateWebdavDevice(ctx context.Context, arg CreateWebdavDeviceParams) (Device, error)
-	DeleteAddressbook(ctx context.Context, arg DeleteAddressbookParams) error
+	DeleteAddressbook(ctx context.Context, arg DeleteAddressbookParams) (int64, error)
 	DeleteAddressbookObject(ctx context.Context, arg DeleteAddressbookObjectParams) (int64, error)
 	DeleteBackupCodes(ctx context.Context, userID pgtype.UUID) error
 	DeleteBookByNode(ctx context.Context, nodeID pgtype.UUID) error
 	DeleteBookmark(ctx context.Context, arg DeleteBookmarkParams) error
 	DeleteBooksUnderPath(ctx context.Context, arg DeleteBooksUnderPathParams) ([]pgtype.Text, error)
 	DeleteBrowserSession(ctx context.Context, arg DeleteBrowserSessionParams) error
-	DeleteCalendar(ctx context.Context, arg DeleteCalendarParams) error
+	DeleteCalendar(ctx context.Context, arg DeleteCalendarParams) (int64, error)
 	DeleteCalendarObject(ctx context.Context, arg DeleteCalendarObjectParams) (int64, error)
 	DeleteDevice(ctx context.Context, arg DeleteDeviceParams) error
 	DeleteEmptyUploadReservation(ctx context.Context, id string) error
@@ -166,6 +171,7 @@ type Querier interface {
 	DeleteSavedItemForUser(ctx context.Context, arg DeleteSavedItemForUserParams) (DeleteSavedItemForUserRow, error)
 	DeleteSetting(ctx context.Context, key string) error
 	DeleteShare(ctx context.Context, id pgtype.UUID) error
+	DeleteSharesForResource(ctx context.Context, arg DeleteSharesForResourceParams) error
 	DeleteSongByNode(ctx context.Context, nodeID pgtype.UUID) error
 	// Library rows of every node under a folder path (the folder was trashed or left the
 	// library folder; the change log records only the folder itself).
@@ -496,6 +502,10 @@ type Querier interface {
 	UpsertBrowserBookmarkAt(ctx context.Context, arg UpsertBrowserBookmarkAtParams) error
 	// == calendar_objects ==
 	UpsertCalendarObject(ctx context.Context, arg UpsertCalendarObjectParams) (CalendarObject, error)
+	// CalDAV/CardDAV collections: sharing and integrity checks.
+	// Share a calendar or address book with a user; sharing it again with the same user
+	// updates the existing share (see migration 000019).
+	UpsertCollectionShare(ctx context.Context, arg UpsertCollectionShareParams) (ResourceShare, error)
 	UpsertEbookSettings(ctx context.Context, arg UpsertEbookSettingsParams) (EbookSetting, error)
 	UpsertKnownLogin(ctx context.Context, arg UpsertKnownLoginParams) (bool, error)
 	UpsertMusicSettings(ctx context.Context, arg UpsertMusicSettingsParams) (MusicSetting, error)

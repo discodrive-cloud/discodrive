@@ -2,6 +2,7 @@ package dav_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -124,7 +125,7 @@ func TestShareAddressbookErrors(t *testing.T) {
 	if _, err := svc.ShareAddressbook(ctx, granteeID, abID, "owner@x"); err != dav.ErrNotOwner {
 		t.Fatalf("expected ErrNotOwner, got %v", err)
 	}
-	if _, err := svc.ShareAddressbook(ctx, ownerID, abID, "nobody@x"); err != dav.ErrNotFound {
+	if _, err := svc.ShareAddressbook(ctx, ownerID, abID, "nobody@x"); !errors.Is(err, dav.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -139,7 +140,7 @@ func TestShareCalendarErrors(t *testing.T) {
 		t.Fatalf("expected ErrNotOwner, got %v", err)
 	}
 	// unknown email
-	if _, err := svc.ShareCalendar(ctx, ownerID, calID, "nobody@x", nil); err != dav.ErrNotFound {
+	if _, err := svc.ShareCalendar(ctx, ownerID, calID, "nobody@x", nil); !errors.Is(err, dav.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
