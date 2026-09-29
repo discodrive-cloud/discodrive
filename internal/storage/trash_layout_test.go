@@ -335,7 +335,9 @@ func TestLegacyTombstones(t *testing.T) {
 	fs, q, pool, userID, root := setupFSPool(t, nil)
 	legacyDelete := func(n db.Node) {
 		t.Helper()
-		if _, err := pool.Exec(ctx, `UPDATE nodes SET deleted_at = now() WHERE id = $1`, n.ID); err != nil {
+		// Backdated: TrashGC's cutoff comes from the host clock, deleted_at from the
+		// container's, and the two can drift apart by a second under load.
+		if _, err := pool.Exec(ctx, `UPDATE nodes SET deleted_at = now() - interval '1 hour' WHERE id = $1`, n.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
