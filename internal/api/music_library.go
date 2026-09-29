@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
-	"mime"
 	"net/http"
-	"path/filepath"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"discodrive/internal/auth"
@@ -178,44 +176,22 @@ func (s *Server) handleCreatePodcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing, err := s.q.GetPodcastChannelByFeed(r.Context(), db.GetPodcastChannelByFeedParams{UserID: uid, FeedUrl: body.URL})
-	if err == nil {
-		// Already subscribed: refresh best-effort. A temporarily-down feed must
-		// not destroy the existing subscription, so RefreshChannel errors are
-		// ignored and the channel is never deleted.
-		_ = podcast.RefreshChannel(r.Context(), s.q, s.storageRoot, existing)
-		fresh, ferr := s.q.GetPodcastChannelForUser(r.Context(), db.GetPodcastChannelForUserParams{ID: existing.ID, UserID: uid})
-		if ferr != nil {
-			fresh = existing
-		}
-		writeJSON(w, http.StatusOK, podcastDTO{ID: db.UUIDString(fresh.ID), Title: fresh.Title, FeedURL: fresh.FeedUrl, CoverURL: fresh.CoverUrl, HasCover: fresh.CoverPath.Valid && fresh.CoverPath.String != ""})
-		return
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-
-	// New subscription.
-	ch, err := s.q.CreatePodcastChannel(r.Context(), db.CreatePodcastChannelParams{
-		UserID: uid, FeedUrl: body.URL,
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if err := podcast.RefreshChannel(r.Context(), s.q, s.storageRoot, ch); err != nil {
-		// Bad/unreachable/blocked feed: roll back the just-created channel and report.
-		_, _ = s.q.DeletePodcastChannelForUser(r.Context(), db.DeletePodcastChannelForUserParams{ID: ch.ID, UserID: uid})
+	// Already subscribed: refreshed best-effort, never deleted. New: rolled back
+	// when the first fetch fails (bad/unreachable/blocked feed).
+	fresh, created, err := podcast.Subscribe(r.Context(), s.q, s.storageRoot, uid, body.URL)
+	if errors.Is(err, podcast.ErrFeedUnavailable) {
 		writeError(w, http.StatusBadRequest, "could not fetch feed")
 		return
 	}
-	// Re-read to return populated title/cover.
-	fresh, err := s.q.GetPodcastChannelForUser(r.Context(), db.GetPodcastChannelForUserParams{ID: ch.ID, UserID: uid})
 	if err != nil {
-		fresh = ch
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
-	writeJSON(w, http.StatusCreated, podcastDTO{ID: db.UUIDString(fresh.ID), Title: fresh.Title, FeedURL: fresh.FeedUrl, CoverURL: fresh.CoverUrl, HasCover: fresh.CoverPath.Valid && fresh.CoverPath.String != ""})
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, podcastDTO{ID: db.UUIDString(fresh.ID), Title: fresh.Title, FeedURL: fresh.FeedUrl, CoverURL: fresh.CoverUrl, HasCover: fresh.CoverPath.Valid && fresh.CoverPath.String != ""})
 }
 
 func (s *Server) handleDeletePodcast(w http.ResponseWriter, r *http.Request) {
@@ -266,7 +242,6 @@ func (s *Server) handleGetPodcastCover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	path := filepath.Join(s.storageRoot, ch.CoverPath.String)
 	f, err := storage.NewLocalDisk(s.storageRoot).Open(ch.CoverPath.String)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not found")
@@ -278,10 +253,18 @@ func (s *Server) handleGetPodcastCover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	ct := mime.TypeByExtension(filepath.Ext(path))
-	if ct == "" {
-		ct = "image/jpeg"
+	// The type comes from the bytes, never from the feed-controlled file name,
+	// and the browser must not second-guess it.
+	ct, ok := podcast.SniffRaster(f)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not found")
+		return
 	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Type", ct)
 	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
 }

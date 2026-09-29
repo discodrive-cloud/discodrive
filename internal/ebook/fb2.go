@@ -2,6 +2,7 @@ package ebook
 
 import (
 	"archive/zip"
+	"bytes"
 	"encoding/base64"
 	"encoding/xml"
 	"errors"
@@ -11,18 +12,27 @@ import (
 	"strings"
 )
 
+// maxFB2Bytes caps how much of an FB2 document is read. The whole book, images
+// included, is one XML file; the description comes first, so a bigger book still
+// gets its metadata and only loses a cover stored past the cap. A var so tests
+// can lower it.
+var maxFB2Bytes int64 = 32 << 20
+
 // parseFB2 reads metadata from a FictionBook 2 (.fb2) file.
 // The FB2 format is a single XML document; all metadata lives under
 // <description><title-info>.
 func parseFB2(path string) (Meta, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return Meta{}, err
 	}
-	return parseFB2Bytes(data)
+	defer f.Close()
+	return parseFB2Reader(io.LimitReader(f, maxFB2Bytes))
 }
 
 // parseFB2Zip reads the first *.fb2 entry from a zip archive and parses it.
+// The entry is streamed, never buffered whole, so a zip bomb costs at most
+// maxFB2Bytes of decompression work.
 func parseFB2Zip(path string) (Meta, error) {
 	zr, err := zip.OpenReader(path)
 	if err != nil {
@@ -36,24 +46,14 @@ func parseFB2Zip(path string) (Meta, error) {
 			if err != nil {
 				return Meta{}, err
 			}
-			data, err := io.ReadAll(rc)
-			rc.Close()
-			if err != nil {
-				return Meta{}, err
-			}
-			return parseFB2Bytes(data)
+			defer rc.Close()
+			return parseFB2Reader(io.LimitReader(rc, maxFB2Bytes))
 		}
 	}
 	return Meta{}, errors.New("fb2: no .fb2 entry found in zip")
 }
 
 // --- FB2 XML structures ---
-
-// fb2Book is the root <FictionBook> element.
-type fb2Book struct {
-	Description fb2Description `xml:"description"`
-	Binaries    []fb2Binary    `xml:"binary"`
-}
 
 // fb2Description wraps <description>.
 type fb2Description struct {
@@ -107,21 +107,121 @@ type fb2Image struct {
 	Href string `xml:"http://www.w3.org/1999/xlink href,attr"`
 }
 
-// fb2Binary maps a root-level <binary> element (embedded images, etc.).
-type fb2Binary struct {
-	ID          string `xml:"id,attr"`
-	ContentType string `xml:"content-type,attr"`
-	Data        string `xml:",chardata"` // base64-encoded content
-}
-
 // parseFB2Bytes parses FB2 metadata from raw XML bytes.
 func parseFB2Bytes(data []byte) (Meta, error) {
-	var book fb2Book
-	if err := xml.Unmarshal(data, &book); err != nil {
-		return Meta{}, err
-	}
+	return parseFB2Reader(bytes.NewReader(data))
+}
 
-	ti := &book.Description.TitleInfo
+// parseFB2Reader streams an FB2 document and keeps only the description and the
+// cover binary; the text body and every other image are skipped, and reading
+// stops once both are in hand. A document cut short after the description (by
+// the read cap) still yields its metadata.
+func parseFB2Reader(r io.Reader) (Meta, error) {
+	dec := xml.NewDecoder(r)
+	var (
+		m       Meta
+		coverID string
+		gotDesc bool
+		inRoot  bool
+	)
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			if gotDesc {
+				return m, nil
+			}
+			return Meta{}, err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if !inRoot {
+				inRoot = true // <FictionBook>
+				continue
+			}
+			switch {
+			case t.Name.Local == "description" && !gotDesc:
+				var d fb2Description
+				if err := dec.DecodeElement(&d, &t); err != nil {
+					return Meta{}, err
+				}
+				m = fb2MetaFromTitleInfo(&d.TitleInfo)
+				coverID = strings.TrimPrefix(d.TitleInfo.Coverpage.Image.Href, "#")
+				gotDesc = true
+				if coverID == "" {
+					return m, nil
+				}
+			case t.Name.Local == "binary" && gotDesc && fb2Attr(t, "id") == coverID:
+				if data, ok := fb2ReadCover(dec); ok && len(data) > 0 {
+					m.CoverData = data
+					m.CoverType = fb2Attr(t, "content-type")
+				}
+				return m, nil
+			default:
+				if err := dec.Skip(); err != nil {
+					if gotDesc {
+						return m, nil
+					}
+					return Meta{}, err
+				}
+			}
+		case xml.EndElement: // </FictionBook>
+			if gotDesc {
+				return m, nil
+			}
+			return Meta{}, errors.New("fb2: no description")
+		}
+	}
+}
+
+func fb2Attr(se xml.StartElement, name string) string {
+	for _, a := range se.Attr {
+		if a.Name.Local == name {
+			return a.Value
+		}
+	}
+	return ""
+}
+
+// fb2ReadCover decodes the base64 body of the cover <binary> straight from the
+// decoder's buffer, without another copy of the encoded text. ok is false for a
+// broken image or one that would decode to more than maxEbookCoverBytes.
+func fb2ReadCover(dec *xml.Decoder) (data []byte, ok bool) {
+	ok = true
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, false
+		}
+		switch t := tok.(type) {
+		case xml.CharData:
+			if !ok {
+				continue
+			}
+			raw := bytes.TrimSpace(t)
+			n := base64.StdEncoding.DecodedLen(len(raw))
+			if int64(len(data)+n) > maxEbookCoverBytes {
+				data, ok = nil, false
+				continue
+			}
+			buf := make([]byte, n)
+			w, err := base64.StdEncoding.Decode(buf, raw)
+			if err != nil {
+				data, ok = nil, false
+				continue
+			}
+			data = append(data, buf[:w]...)
+		case xml.StartElement:
+			if err := dec.Skip(); err != nil {
+				return nil, false
+			}
+		case xml.EndElement:
+			return data, ok
+		}
+	}
+}
+
+// fb2MetaFromTitleInfo maps <title-info> to Meta (the cover is handled by the caller).
+func fb2MetaFromTitleInfo(ti *fb2TitleInfo) Meta {
 	var m Meta
 
 	// Title.
@@ -163,24 +263,7 @@ func parseFB2Bytes(data []byte) (Meta, error) {
 	// Date.
 	m.Date = strings.TrimSpace(ti.Date)
 
-	// Cover: resolve href="#ID" → strip "#" → find matching <binary>.
-	coverID := strings.TrimPrefix(ti.Coverpage.Image.Href, "#")
-	if coverID != "" {
-		for _, bin := range book.Binaries {
-			if bin.ID == coverID {
-				decoded, err := base64.StdEncoding.DecodeString(
-					strings.TrimSpace(bin.Data),
-				)
-				if err == nil && len(decoded) > 0 {
-					m.CoverData = decoded
-					m.CoverType = bin.ContentType
-				}
-				break
-			}
-		}
-	}
-
-	return m, nil
+	return m
 }
 
 // fb2AuthorNames builds the display name and sort name for an FB2 author.

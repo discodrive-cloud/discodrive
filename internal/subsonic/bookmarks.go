@@ -59,6 +59,19 @@ func createBookmark(h *Handler, c *reqCtx) {
 		return
 	}
 
+	// Only items the user can play may be bookmarked: an arbitrary id would
+	// otherwise leave rows pointing at other users' songs and episodes.
+	switch itemType {
+	case "song":
+		_, err = h.q.AccessibleSong(ctx, db.AccessibleSongParams{UserID: userUUID, ID: itemUUID})
+	case "episode":
+		_, err = h.q.GetEpisodeForUser(ctx, db.GetEpisodeForUserParams{ID: itemUUID, UserID: userUUID})
+	}
+	if err != nil {
+		c.fail(ErrNotFound, "item not found")
+		return
+	}
+
 	position, _ := strconv.ParseInt(c.param("position"), 10, 64)
 
 	if err := h.q.CreateBookmark(ctx, db.CreateBookmarkParams{

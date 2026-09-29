@@ -172,9 +172,18 @@ func getCoverArt(h *Handler, c *reqCtx) {
 	}
 
 	node, err := h.q.GetNode(ctx, coverNodeUUID)
-	if err != nil || !node.DiskPath.Valid {
+	if err != nil || !node.DiskPath.Valid || node.DeletedAt.Valid {
 		http.Error(c.w, "no cover", http.StatusNotFound)
 		return
+	}
+	// Access to the album does not imply access to its cover: the cover file can
+	// sit in a folder the owner did not share (an album spread over folders).
+	if node.UserID != userUUID {
+		acc, err := h.q.SharedAccessForUser(ctx, db.SharedAccessForUserParams{StartID: node.ID, UserID: userUUID})
+		if err != nil || !acc.CanRead {
+			http.Error(c.w, "no cover", http.StatusNotFound)
+			return
+		}
 	}
 
 	if isImageNode(node) {

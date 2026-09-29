@@ -2,14 +2,18 @@ package podcast
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"discodrive/internal/db"
+	"discodrive/internal/safecontent"
 )
 
 // FetchFeedFunc and CoverDownloadFunc are indirection points so tests can bypass
@@ -60,9 +64,18 @@ func cacheCover(ctx context.Context, q *db.Queries, storageRoot string, ch db.Po
 	}
 	userID := db.UUIDString(ch.UserID)
 	chID := db.UUIDString(ch.ID)
-	rel := filepath.Join("podcasts", userID, "covers", chID+extWithDot(imageURL))
+	// The extension comes from a URL chosen by the feed's author: keep only
+	// raster extensions, and only keep a download whose bytes are a raster image.
+	rel := filepath.Join("podcasts", userID, "covers", chID+rasterExt(imageURL))
 	if _, _, _, err := StoreDownload(storageRoot, rel, func(dest string) (int64, string, string, error) {
-		return CoverDownloadFunc(ctx, imageURL, dest)
+		n, ct, suf, err := CoverDownloadFunc(ctx, imageURL, dest)
+		if err != nil {
+			return n, ct, suf, err
+		}
+		if _, ok := SniffRasterFile(dest); !ok {
+			return 0, "", "", errors.New("podcast: cover is not a raster image")
+		}
+		return n, ct, suf, nil
 	}); err != nil {
 		log.Printf("discodrive: podcast cover channel=%s: %v", chID, err)
 		return
@@ -72,6 +85,37 @@ func cacheCover(ctx context.Context, q *db.Queries, storageRoot string, ch db.Po
 	}); err != nil {
 		log.Printf("discodrive: podcast cover-path channel=%s: %v", chID, err)
 	}
+}
+
+// rasterExt returns the URL's extension when it names a raster image format,
+// ".jpg" otherwise.
+func rasterExt(raw string) string {
+	switch e := strings.ToLower(extWithDot(raw)); e {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp":
+		return e
+	}
+	return ".jpg"
+}
+
+// SniffRasterFile identifies an image file by its first bytes (never by its
+// name): the allowlisted raster type, or ok=false.
+func SniffRasterFile(path string) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	return SniffRaster(f)
+}
+
+// SniffRaster reads up to 512 bytes from r and identifies a raster image.
+func SniffRaster(r io.Reader) (string, bool) {
+	head := make([]byte, 512)
+	n, err := io.ReadFull(r, head)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", false
+	}
+	return safecontent.Raster(head[:n])
 }
 
 // extNoDot returns the URL path extension without the dot (default "mp3").

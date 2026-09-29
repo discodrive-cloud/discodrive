@@ -2,6 +2,7 @@ package subsonic
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/url"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"discodrive/internal/db"
 	"discodrive/internal/podcast"
 	"discodrive/internal/quota"
+	"discodrive/internal/safecontent"
 	"discodrive/internal/storage"
 )
 
@@ -171,7 +173,7 @@ func getNewestPodcasts(h *Handler, c *reqCtx) {
 		return
 	}
 
-	count := parseSearchIntParam(c, "count", 20)
+	count := parseCountParam(c, "count", 20)
 
 	eps, err := h.q.ListNewestEpisodesForUser(ctx, db.ListNewestEpisodesForUserParams{
 		UserID: userUUID,
@@ -209,25 +211,14 @@ func createPodcastChannel(h *Handler, c *reqCtx) {
 		return
 	}
 
-	ch, err := h.q.CreatePodcastChannel(ctx, db.CreatePodcastChannelParams{
-		UserID:      userUUID,
-		FeedUrl:     feedURL,
-		Title:       "",
-		Description: "",
-		CoverUrl:    "",
-	})
-	if err != nil {
-		c.fail(ErrGeneric, "database error")
-		return
-	}
-
-	if err := h.refreshOneChannel(ctx, userUUID, ch); err != nil {
-		// Fetch failed: clean up the empty channel record.
-		_, _ = h.q.DeletePodcastChannelForUser(ctx, db.DeletePodcastChannelForUserParams{
-			ID:     ch.ID,
-			UserID: userUUID,
-		})
-		c.fail(ErrGeneric, "could not fetch feed")
+	// An existing subscription survives a failed refresh; only a channel created
+	// by this call is rolled back.
+	if _, _, err := podcast.Subscribe(ctx, h.q, h.storageRoot, userUUID, feedURL); err != nil {
+		if errors.Is(err, podcast.ErrFeedUnavailable) {
+			c.fail(ErrGeneric, "could not fetch feed")
+		} else {
+			c.fail(ErrGeneric, "database error")
+		}
 		return
 	}
 
@@ -295,18 +286,8 @@ func deletePodcastChannel(h *Handler, c *reqCtx) {
 		return
 	}
 
-	// Best-effort: remove episode files on disk.
-	eps, _ := h.q.ListEpisodesByChannel(ctx, chUUID)
-	for _, ep := range eps {
-		if ep.DiskPath.Valid && ep.DiskPath.String != "" {
-			_ = storage.NewLocalDisk(h.storageRoot).Remove(ep.DiskPath.String)
-		}
-	}
-
-	// Best-effort: remove channel cover file.
-	if ch.CoverPath.Valid && ch.CoverPath.String != "" {
-		_ = storage.NewLocalDisk(h.storageRoot).Remove(ch.CoverPath.String)
-	}
+	// Best-effort: remove episode files and the cover on disk.
+	podcast.RemoveChannelFiles(ctx, h.q, h.storageRoot, ch)
 
 	n, err := h.q.DeletePodcastChannelForUser(ctx, db.DeletePodcastChannelForUserParams{
 		ID:     chUUID,
@@ -484,6 +465,9 @@ func downloadPodcastEpisode(h *Handler, c *reqCtx) {
 			return
 		}
 
+		if norm, ok := safecontent.MediaFor(ct, relPath); ok {
+			ct = norm
+		}
 		if setErr := h.q.SetEpisodeDownloaded(bg, db.SetEpisodeDownloadedParams{
 			ID:          epID,
 			DiskPath:    pgtype.Text{String: relPath, Valid: true},

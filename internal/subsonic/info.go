@@ -178,7 +178,7 @@ func getSimilarSongs(h *Handler, c *reqCtx) {
 		return
 	}
 
-	count := parseSearchIntParam(c, "count", 50)
+	count := parseCountParam(c, "count", 50)
 
 	artistID, genre, ok := h.resolveSeed(ctx, userUUID, c.param("id"))
 	if !ok {
@@ -253,7 +253,7 @@ func getTopSongs(h *Handler, c *reqCtx) {
 		return
 	}
 
-	count := parseSearchIntParam(c, "count", 50)
+	count := parseCountParam(c, "count", 50)
 
 	rows, err := h.q.TopSongsByArtistName(ctx, db.TopSongsByArtistNameParams{
 		UserID:     userUUID,

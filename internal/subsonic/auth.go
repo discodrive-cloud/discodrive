@@ -3,6 +3,7 @@ package subsonic
 import (
 	"context"
 	"crypto/md5"
+	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
 	"strings"
@@ -55,10 +56,10 @@ func (h *Handler) authenticate(r *http.Request) (userID string, ok bool) {
 
 	switch {
 	case t != "" && s != "":
-		// Token auth: md5(plain + salt)
+		// Token auth: md5(plain + salt), compared in constant time.
 		sum := md5.Sum([]byte(plain + s))
 		expected := hex.EncodeToString(sum[:])
-		if strings.EqualFold(expected, t) {
+		if subtle.ConstantTimeCompare([]byte(expected), []byte(strings.ToLower(t))) == 1 {
 			return db.UUIDString(user.ID), true
 		}
 		return "", false
@@ -73,11 +74,18 @@ func (h *Handler) authenticate(r *http.Request) (userID string, ok bool) {
 			}
 			candidate = string(decoded)
 		}
-		if candidate == plain {
+		if subtle.ConstantTimeCompare([]byte(candidate), []byte(plain)) == 1 {
 			return db.UUIDString(user.ID), true
 		}
 		return "", false
 	}
 
 	return "", false
+}
+
+// hasCredentials reports whether the request presented any credential, so that
+// a client probing without one (or a bare health check) does not spend the
+// failure budget.
+func hasCredentials(r *http.Request) bool {
+	return r.FormValue("apiKey") != "" || r.FormValue("u") != ""
 }

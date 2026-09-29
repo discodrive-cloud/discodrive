@@ -1,6 +1,7 @@
 package opds
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -183,17 +184,24 @@ func bookPublication2(b db.Book, authors []string) publication2 {
 	return pub
 }
 
-// parseOffset reads the ?start= query parameter, defaulting to 0 on absence or error.
+// maxOffset keeps ?start= (and start+pageSize) inside the int32 query argument.
+const maxOffset = 1 << 30
+
+// parseOffset reads the ?start= query parameter, defaulting to 0 on absence or
+// error and clamped to maxOffset.
 func parseOffset(r *http.Request) int {
 	v := r.URL.Query().Get("start")
 	if v == "" {
 		return 0
 	}
-	n, err := strconv.Atoi(v)
+	n, err := strconv.ParseInt(v, 10, 64)
+	if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(v, "-") {
+		return maxOffset
+	}
 	if err != nil || n < 0 {
 		return 0
 	}
-	return n
+	return int(min(n, maxOffset))
 }
 
 // acqNew handles GET /opds/new — recently added accessible books (not paginated

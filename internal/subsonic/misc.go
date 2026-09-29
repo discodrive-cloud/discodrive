@@ -2,7 +2,6 @@ package subsonic
 
 import (
 	"context"
-	"strconv"
 	"time"
 
 	"discodrive/internal/db"
@@ -26,7 +25,7 @@ func getRandomSongs(h *Handler, c *reqCtx) {
 		return
 	}
 
-	size := parseSearchIntParam(c, "size", 10)
+	size := parseCountParam(c, "size", 10)
 	if size > 500 {
 		size = 500
 	}
@@ -42,11 +41,11 @@ func getRandomSongs(h *Handler, c *reqCtx) {
 
 	// Optional year filters.
 	var fromYear, toYear pgtype.Int4
-	if v, err2 := strconv.Atoi(c.param("fromYear")); err2 == nil {
-		fromYear = pgtype.Int4{Int32: int32(v), Valid: true}
+	if v, ok := parseInt32Param(c, "fromYear"); ok {
+		fromYear = pgtype.Int4{Int32: v, Valid: true}
 	}
-	if v, err2 := strconv.Atoi(c.param("toYear")); err2 == nil {
-		toYear = pgtype.Int4{Int32: int32(v), Valid: true}
+	if v, ok := parseInt32Param(c, "toYear"); ok {
+		toYear = pgtype.Int4{Int32: v, Valid: true}
 	}
 
 	rows, err := h.q.RandomAccessibleSongs(ctx, db.RandomAccessibleSongsParams{
@@ -88,7 +87,7 @@ func getSongsByGenre(h *Handler, c *reqCtx) {
 		return
 	}
 
-	count := parseSearchIntParam(c, "count", 10)
+	count := parseCountParam(c, "count", 10)
 	offset := parseSearchIntParam(c, "offset", 0)
 
 	rows, err := h.q.SongsByGenre(ctx, db.SongsByGenreParams{

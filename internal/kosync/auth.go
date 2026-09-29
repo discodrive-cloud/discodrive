@@ -22,6 +22,12 @@ func (h *Handler) authUser(r *http.Request) (userID string, email string, ok boo
 	if email == "" || key == "" {
 		return "", "", false
 	}
+	// Credentials were presented: any failure below spends the client's budget.
+	defer func() {
+		if !ok {
+			h.authLimit.Fail(r)
+		}
+	}()
 
 	user, err := h.q.GetUserByEmail(ctx, email)
 	if err != nil {

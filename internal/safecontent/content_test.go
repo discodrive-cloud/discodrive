@@ -34,3 +34,38 @@ func TestInlineMIMEPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestMediaSynonymsAndExtensionFallback(t *testing.T) {
+	for raw, want := range map[string]string{
+		"audio/mp3": "audio/mpeg", "audio/x-mpeg": "audio/mpeg", "AUDIO/MPEG3": "audio/mpeg",
+		"audio/x-m4b": "audio/mp4", "audio/x-aac": "audio/aac", "audio/wave": "audio/wav",
+	} {
+		if got, ok := Media(raw); !ok || got != want {
+			t.Errorf("Media(%q) = %q, %v; want %q", raw, got, ok, want)
+		}
+	}
+	for _, tc := range []struct{ raw, name, want string }{
+		{"application/octet-stream", "podcasts/u/e.mp3", "audio/mpeg"},
+		{"audio/mp3", "podcasts/u/e.bin", "audio/mpeg"},
+		{"", "e.M4B", "audio/mp4"},
+		{"text/html", "e.mp3", "audio/mpeg"}, // served as audio with nosniff: inert
+		{"application/octet-stream", "e.html", ""},
+		{"text/html", "e.svg", ""},
+	} {
+		got, ok := MediaFor(tc.raw, tc.name)
+		if tc.want == "" {
+			if ok {
+				t.Errorf("MediaFor(%q, %q) = %q, want refused", tc.raw, tc.name, got)
+			}
+			continue
+		}
+		if !ok || got != tc.want {
+			t.Errorf("MediaFor(%q, %q) = %q, %v; want %q", tc.raw, tc.name, got, ok, tc.want)
+		}
+	}
+	for raw, want := range map[string]bool{"": true, "application/octet-stream": true, "binary/octet-stream; x=1": true, "text/html": false, "audio/mpeg": false} {
+		if IsGeneric(raw) != want {
+			t.Errorf("IsGeneric(%q) != %v", raw, want)
+		}
+	}
+}
