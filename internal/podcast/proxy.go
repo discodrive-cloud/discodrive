@@ -18,7 +18,7 @@ import (
 var streamClient = &http.Client{
 	CheckRedirect: func(req *http.Request, via []*http.Request) error { return ValidateURL(req.URL.String()) },
 	Transport: &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 nil, // an env proxy would bypass safeDialer's IP check
 		DialContext:           safeDialer.DialContext,
 		ResponseHeaderTimeout: 30 * time.Second,
 	},
