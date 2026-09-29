@@ -3,6 +3,7 @@ package dav
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,6 +15,13 @@ import (
 // ErrNotOwner — operation is only available to the resource owner.
 var ErrNotOwner = errors.New("dav: only the owner can manage access")
 
+// ErrSelfShare — the owner named themselves as the recipient: the collection would show
+// up twice in their own home set.
+var ErrSelfShare = errors.New("dav: cannot share with yourself")
+
+// ErrRecipientNotFound — no account has the email a collection was to be shared with.
+var ErrRecipientNotFound = fmt.Errorf("%w: no such recipient", ErrNotFound)
+
 type ShareInfo struct {
 	ID        string
 	Email     string
@@ -23,6 +31,7 @@ type ShareInfo struct {
 type SharedCalendar struct {
 	Calendar   db.Calendar
 	OwnerEmail string
+	ShareID    string // the recipient's share: DeleteCalendarShare with it leaves the calendar
 }
 
 // ShareCalendar grants a user (by email) full read_write access to a calendar.
@@ -43,16 +52,21 @@ func (s *Service) ShareCalendar(ctx context.Context, ownerID, calID, withEmail s
 	}
 	target, err := s.q.GetUserByEmail(ctx, withEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return db.ResourceShare{}, ErrNotFound
+		return db.ResourceShare{}, ErrRecipientNotFound
 	}
 	if err != nil {
 		return db.ResourceShare{}, err
+	}
+	if target.ID == cal.UserID {
+		return db.ResourceShare{}, ErrSelfShare
 	}
 	var exp pgtype.Timestamptz
 	if expiresAt != nil {
 		exp = pgtype.Timestamptz{Time: *expiresAt, Valid: true}
 	}
-	return s.q.CreateShare(ctx, db.CreateShareParams{
+	// Sharing again with the same user updates the share (expiry) instead of adding a
+	// second copy of the calendar to their home set.
+	return s.q.UpsertCollectionShare(ctx, db.UpsertCollectionShareParams{
 		ResourceType:   "calendar",
 		ResourceID:     cid,
 		OwnerID:        cal.UserID,
@@ -100,20 +114,27 @@ func (s *Service) ListCalendarShares(ctx context.Context, ownerID, calID string)
 	return out, nil
 }
 
-// DeleteCalendarShare revokes a share (owner only).
-func (s *Service) DeleteCalendarShare(ctx context.Context, ownerID, shareID string) error {
+// DeleteCalendarShare revokes a calendar share or feed link: the owner can revoke any of
+// them, the recipient can leave their own share.
+func (s *Service) DeleteCalendarShare(ctx context.Context, callerID, shareID string) error {
+	return s.deleteCollectionShare(ctx, "calendar", callerID, shareID)
+}
+
+func (s *Service) deleteCollectionShare(ctx context.Context, kind, callerID, shareID string) error {
 	sid, err := db.ParseUUID(shareID)
 	if err != nil {
 		return ErrNotFound
 	}
 	sh, err := s.q.GetShare(ctx, sid)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && sh.ResourceType != kind) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
 	}
-	if db.UUIDString(sh.OwnerID) != ownerID {
+	owner := db.UUIDString(sh.OwnerID) == callerID
+	recipient := sh.SharedWithUser.Valid && db.UUIDString(sh.SharedWithUser) == callerID
+	if !owner && !recipient {
 		return ErrNotOwner
 	}
 	return s.q.DeleteShare(ctx, sid)
@@ -130,19 +151,23 @@ func (s *Service) SharedCalendarsForUser(ctx context.Context, userID string) ([]
 		return nil, err
 	}
 	out := make([]SharedCalendar, 0)
+	seen := map[pgtype.UUID]bool{}
 	for _, sh := range shares {
-		if sh.ResourceType != "calendar" {
+		// one entry per calendar, and never the user's own one: a duplicate or self-share
+		// (possible before migration 000019) would list the collection twice
+		if sh.ResourceType != "calendar" || seen[sh.ResourceID] {
 			continue
 		}
 		cal, err := s.q.GetCalendar(ctx, sh.ResourceID)
-		if err != nil {
+		if err != nil || cal.UserID == uid {
 			continue
 		}
+		seen[sh.ResourceID] = true
 		email := ""
 		if ownerU, e := s.q.GetUserByID(ctx, cal.UserID); e == nil {
 			email = ownerU.Email
 		}
-		out = append(out, SharedCalendar{Calendar: cal, OwnerEmail: email})
+		out = append(out, SharedCalendar{Calendar: cal, OwnerEmail: email, ShareID: db.UUIDString(sh.ID)})
 	}
 	return out, nil
 }
@@ -172,22 +197,17 @@ func (s *Service) CreateCalendarFeedLink(ctx context.Context, ownerID, calID, pa
 		return "", ErrNotOwner
 	}
 	token := newFeedToken()
-	share, err := s.q.CreateShare(ctx, db.CreateShareParams{
-		ResourceType:   "calendar",
-		ResourceID:     cid,
-		OwnerID:        cal.UserID,
-		ShareLinkToken: pgtype.Text{String: token, Valid: true},
-		Access:         "read",
-	})
-	if err != nil {
+	// One INSERT with the hash: created first and protected afterwards, a failure in
+	// between left an open link to a calendar that was meant to be password-protected.
+	if _, err := s.q.CreateLinkShare(ctx, db.CreateLinkShareParams{
+		ResourceType: "calendar",
+		ResourceID:   cid,
+		OwnerID:      cal.UserID,
+		Token:        token,
+		Access:       "read",
+		PasswordHash: pgtype.Text{String: passwordHash, Valid: passwordHash != ""},
+	}); err != nil {
 		return "", err
-	}
-	if passwordHash != "" {
-		if err := s.q.SetSharePasswordHash(ctx, db.SetSharePasswordHashParams{
-			ID: share.ID, SharePasswordHash: pgtype.Text{String: passwordHash, Valid: true},
-		}); err != nil {
-			return "", err
-		}
 	}
 	return token, nil
 }
@@ -246,6 +266,7 @@ func (s *Service) CalendarByFeedToken(ctx context.Context, token string) (string
 type SharedAddressbook struct {
 	Addressbook db.Addressbook
 	OwnerEmail  string
+	ShareID     string // the recipient's share: DeleteAddressbookShare with it leaves the book
 }
 
 // GetAddressbook wraps the lookup-by-id query (for ownership/access checks).
@@ -279,12 +300,15 @@ func (s *Service) ShareAddressbook(ctx context.Context, ownerID, abID, withEmail
 	}
 	target, err := s.q.GetUserByEmail(ctx, withEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return db.ResourceShare{}, ErrNotFound
+		return db.ResourceShare{}, ErrRecipientNotFound
 	}
 	if err != nil {
 		return db.ResourceShare{}, err
 	}
-	return s.q.CreateShare(ctx, db.CreateShareParams{
+	if target.ID == ab.UserID {
+		return db.ResourceShare{}, ErrSelfShare
+	}
+	return s.q.UpsertCollectionShare(ctx, db.UpsertCollectionShareParams{
 		ResourceType:   "addressbook",
 		ResourceID:     aid,
 		OwnerID:        ab.UserID,
@@ -331,23 +355,10 @@ func (s *Service) ListAddressbookShares(ctx context.Context, ownerID, abID strin
 	return out, nil
 }
 
-// DeleteAddressbookShare revokes an address book share (owner only).
-func (s *Service) DeleteAddressbookShare(ctx context.Context, ownerID, shareID string) error {
-	sid, err := db.ParseUUID(shareID)
-	if err != nil {
-		return ErrNotFound
-	}
-	sh, err := s.q.GetShare(ctx, sid)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return err
-	}
-	if db.UUIDString(sh.OwnerID) != ownerID {
-		return ErrNotOwner
-	}
-	return s.q.DeleteShare(ctx, sid)
+// DeleteAddressbookShare revokes an address book share: the owner can revoke it, the
+// recipient can leave it.
+func (s *Service) DeleteAddressbookShare(ctx context.Context, callerID, shareID string) error {
+	return s.deleteCollectionShare(ctx, "addressbook", callerID, shareID)
 }
 
 // SharedAddressbooksForUser returns address books shared with the user (active shares only).
@@ -361,19 +372,21 @@ func (s *Service) SharedAddressbooksForUser(ctx context.Context, userID string) 
 		return nil, err
 	}
 	out := make([]SharedAddressbook, 0)
+	seen := map[pgtype.UUID]bool{}
 	for _, sh := range shares {
-		if sh.ResourceType != "addressbook" {
+		if sh.ResourceType != "addressbook" || seen[sh.ResourceID] {
 			continue
 		}
 		ab, err := s.q.GetAddressbook(ctx, sh.ResourceID)
-		if err != nil {
+		if err != nil || ab.UserID == uid {
 			continue
 		}
+		seen[sh.ResourceID] = true
 		email := ""
 		if ownerU, e := s.q.GetUserByID(ctx, ab.UserID); e == nil {
 			email = ownerU.Email
 		}
-		out = append(out, SharedAddressbook{Addressbook: ab, OwnerEmail: email})
+		out = append(out, SharedAddressbook{Addressbook: ab, OwnerEmail: email, ShareID: db.UUIDString(sh.ID)})
 	}
 	return out, nil
 }

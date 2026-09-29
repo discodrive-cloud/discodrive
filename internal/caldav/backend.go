@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/emersion/go-ical"
@@ -192,20 +193,6 @@ func (b *Backend) PutCalendarObject(ctx context.Context, path string, calData *i
 	}
 	calID := db.UUIDString(cal.ID)
 
-	_, curEtag, getErr := b.svc.GetCalendarObject(ctx, calID, obj)
-	exists := getErr == nil
-	if opts != nil {
-		if opts.IfNoneMatch.IsWildcard() && exists {
-			return nil, webdav.NewHTTPError(412, errors.New("already exists"))
-		}
-		if opts.IfMatch.IsSet() {
-			ok, _ := opts.IfMatch.MatchETag(curEtag)
-			if !exists || !ok {
-				return nil, webdav.NewHTTPError(412, errors.New("If-Match did not match"))
-			}
-		}
-	}
-
 	raw := rawBody(ctx)
 	if len(raw) == 0 {
 		var buf bytes.Buffer
@@ -214,11 +201,37 @@ func (b *Backend) PutCalendarObject(ctx context.Context, path string, calData *i
 		}
 		raw = buf.Bytes()
 	}
-	etag, err := b.svc.PutCalendarObject(ctx, calID, obj, string(raw))
-	if err != nil {
+	// If-Match / If-None-Match are checked by the service inside the write's transaction:
+	// checked here, before it, a second writer could land in between and be overwritten.
+	etag, err := b.svc.PutCalendarObjectIf(ctx, calID, obj, string(raw), putCheck(opts))
+	switch {
+	case errors.Is(err, dav.ErrPrecondition):
+		return nil, webdav.NewHTTPError(http.StatusPreconditionFailed, err)
+	case errors.Is(err, dav.ErrUIDConflict):
+		// RFC 4791 §5.3.2.1: CALDAV:no-uid-conflict, 403
+		return nil, webdav.NewHTTPError(http.StatusForbidden,
+			errors.Unwrap(caldav.NewPreconditionError(caldav.PreconditionNoUIDConflict)))
+	case err != nil:
 		return nil, err
 	}
 	return &caldav.CalendarObject{Path: objectPath(uid, uri, obj), ETag: etag}, nil
+}
+
+// putCheck turns the conditional headers of a PUT into a dav.PutCheck (nil: none set).
+func putCheck(opts *caldav.PutCalendarObjectOptions) dav.PutCheck {
+	if opts == nil || (!opts.IfNoneMatch.IsSet() && !opts.IfMatch.IsSet()) {
+		return nil
+	}
+	return func(exists bool, etag string) bool {
+		if opts.IfNoneMatch.IsWildcard() && exists {
+			return false
+		}
+		if opts.IfMatch.IsSet() {
+			ok, _ := opts.IfMatch.MatchETag(etag)
+			return exists && ok
+		}
+		return true
+	}
 }
 
 func (b *Backend) DeleteCalendarObject(ctx context.Context, path string) error {

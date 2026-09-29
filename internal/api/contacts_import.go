@@ -17,6 +17,9 @@ const maxImportBytes = 32 << 20 // 32 MB
 // splitVCards splits a vCard stream into raw BEGIN:VCARD…END:VCARD blocks (normalizing
 // line endings to CRLF). Preserves original lines within each block (e.g., photo folding).
 func splitVCards(raw string) []string {
+	// A UTF-8 byte order mark (Windows exports, Outlook) would hide the first BEGIN:VCARD
+	// and drop that card without a trace.
+	raw = strings.TrimPrefix(raw, "\uFEFF")
 	var out []string
 	var cur []string
 	in := false

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -28,16 +29,7 @@ func (s *Server) handleShareCalendar(w http.ResponseWriter, r *http.Request) {
 		exp = &t
 	}
 	share, err := s.dav.ShareCalendar(r.Context(), owner, calID, body.Email, exp)
-	switch err {
-	case nil:
-	case dav.ErrNotOwner:
-		writeError(w, http.StatusForbidden, "only the owner can share")
-		return
-	case dav.ErrNotFound:
-		writeError(w, http.StatusNotFound, "calendar or user not found")
-		return
-	default:
-		writeError(w, http.StatusInternalServerError, "failed to share")
+	if !writeShareResult(w, err, "calendar not found") {
 		return
 	}
 	// notify the recipient (best-effort, same as for file shares)
@@ -51,7 +43,33 @@ func (s *Server) handleShareCalendar(w http.ResponseWriter, r *http.Request) {
 	}
 	s.notify.Emit(r.Context(), db.UUIDString(share.SharedWithUser), "share.received",
 		map[string]any{"NodeName": calName, "SharerEmail": sharerEmail, "ResourceLabel": "calendar"})
-	writeJSON(w, http.StatusCreated, map[string]any{"share_id": db.UUIDString(share.ID)})
+	writeShareOK(w)
+}
+
+// writeShareResult answers a failed share of a collection and reports whether the caller
+// should go on (a share was made). An unknown recipient is answered exactly like a success
+// (see writeShareOK) so that the endpoint cannot be used to probe which emails have an
+// account. notFound is the message for a missing collection.
+func writeShareResult(w http.ResponseWriter, err error, notFound string) bool {
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, dav.ErrNotOwner):
+		writeError(w, http.StatusForbidden, "only the owner can share")
+	case errors.Is(err, dav.ErrSelfShare):
+		writeError(w, http.StatusBadRequest, "cannot share with yourself")
+	case errors.Is(err, dav.ErrRecipientNotFound):
+		writeShareOK(w)
+	case errors.Is(err, dav.ErrNotFound):
+		writeError(w, http.StatusNotFound, notFound)
+	default:
+		writeError(w, http.StatusInternalServerError, "failed to share")
+	}
+	return false
+}
+
+func writeShareOK(w http.ResponseWriter) {
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 // GET /me/calendars/{id}/shares
@@ -81,7 +99,8 @@ func (s *Server) handleListCalendarShares(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, out)
 }
 
-// DELETE /me/calendars/{id}/shares/{shareId}
+// DELETE /me/calendars/{id}/shares/{shareId} — the owner revokes a share, or the recipient
+// leaves the calendar (shareId: share_id of GET /me/calendars).
 func (s *Server) handleDeleteCalendarShare(w http.ResponseWriter, r *http.Request) {
 	err := s.dav.DeleteCalendarShare(r.Context(), auth.UserID(r.Context()), r.PathValue("shareId"))
 	switch err {

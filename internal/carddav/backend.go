@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/emersion/go-vcard"
@@ -209,20 +210,6 @@ func (b *Backend) PutAddressObject(ctx context.Context, path string, card vcard.
 	}
 	abID := db.UUIDString(ab.ID)
 
-	_, curEtag, getErr := b.svc.GetAddressbookObject(ctx, abID, obj)
-	exists := getErr == nil
-	if opts != nil {
-		if opts.IfNoneMatch.IsWildcard() && exists {
-			return nil, webdav.NewHTTPError(412, errors.New("already exists"))
-		}
-		if opts.IfMatch.IsSet() {
-			ok, _ := opts.IfMatch.MatchETag(curEtag)
-			if !exists || !ok {
-				return nil, webdav.NewHTTPError(412, errors.New("If-Match did not match"))
-			}
-		}
-	}
-
 	raw := rawBody(ctx)
 	if len(raw) == 0 {
 		var buf bytes.Buffer
@@ -231,11 +218,32 @@ func (b *Backend) PutAddressObject(ctx context.Context, path string, card vcard.
 		}
 		raw = buf.Bytes()
 	}
-	etag, err := b.svc.PutAddressbookObject(ctx, abID, obj, string(raw))
+	// If-Match / If-None-Match are checked by the service inside the write's transaction.
+	etag, err := b.svc.PutAddressbookObjectIf(ctx, abID, obj, string(raw), putCheck(opts))
+	if errors.Is(err, dav.ErrPrecondition) {
+		return nil, webdav.NewHTTPError(http.StatusPreconditionFailed, err)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return &carddav.AddressObject{Path: objectPath(uid, uri, obj), ETag: etag}, nil
+}
+
+// putCheck turns the conditional headers of a PUT into a dav.PutCheck (nil: none set).
+func putCheck(opts *carddav.PutAddressObjectOptions) dav.PutCheck {
+	if opts == nil || (!opts.IfNoneMatch.IsSet() && !opts.IfMatch.IsSet()) {
+		return nil
+	}
+	return func(exists bool, etag string) bool {
+		if opts.IfNoneMatch.IsWildcard() && exists {
+			return false
+		}
+		if opts.IfMatch.IsSet() {
+			ok, _ := opts.IfMatch.MatchETag(etag)
+			return exists && ok
+		}
+		return true
+	}
 }
 
 func (b *Backend) DeleteAddressObject(ctx context.Context, path string) error {

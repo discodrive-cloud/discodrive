@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -41,7 +42,7 @@ func TestDAVRootRoutesToCalDAVOrCardDAV(t *testing.T) {
 			card := &fakeDAV{name: "card", dav: "1, 3, addressbook"}
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(tc.method, "/", strings.NewReader(tc.body))
-			davRoot(cal, card).ServeHTTP(rec, req)
+			davRoot(cal, card, allOn).ServeHTTP(rec, req)
 
 			got, other := cal, card
 			if tc.wantTarget == "card" {
@@ -63,16 +64,53 @@ func TestDAVRootRoutesToCalDAVOrCardDAV(t *testing.T) {
 func TestDAVRootOptionsAdvertisesBothWhenEnabled(t *testing.T) {
 	cal := &fakeDAV{dav: "1, 3, calendar-access"}
 	rec := httptest.NewRecorder()
-	davRoot(cal, &fakeDAV{}).ServeHTTP(rec, httptest.NewRequest(http.MethodOptions, "/", nil))
+	davRoot(cal, &fakeDAV{}, allOn).ServeHTTP(rec, httptest.NewRequest(http.MethodOptions, "/", nil))
 	if dav := rec.Header().Get("DAV"); !strings.Contains(dav, "calendar-access") || !strings.Contains(dav, "addressbook") {
 		t.Fatalf("DAV header %q must advertise calendar-access and addressbook", dav)
+	}
+}
+
+func allOn(context.Context, string) bool { return true }
+
+// A server with CalDAV switched off in the admin panel and CardDAV on: the root used to go to
+// the CalDAV handler, which answers 403 "disabled", so Contacts could not re-discover.
+func TestDAVRootRoutesByEnabledFlags(t *testing.T) {
+	cardOnly := func(_ context.Context, key string) bool { return key == "carddav.enabled" }
+	calOnly := func(_ context.Context, key string) bool { return key == "caldav.enabled" }
+	const calBody = `<A:propfind xmlns:A="DAV:"><A:prop><A:current-user-principal/></A:prop></A:propfind>`
+	const cardBody = `<A:propfind xmlns:A="DAV:"><A:prop><B:addressbook-home-set xmlns:B="urn:ietf:params:xml:ns:carddav"/></A:prop></A:propfind>`
+	for _, tc := range []struct {
+		name, method, body string
+		flags              func(context.Context, string) bool
+		want               string
+	}{
+		{"caldav off, propfind", "PROPFIND", calBody, cardOnly, "card"},
+		{"caldav off, options", http.MethodOptions, "", cardOnly, "card"},
+		{"carddav off, carddav body", "PROPFIND", cardBody, calOnly, "cal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cal := &fakeDAV{dav: "1, 3, calendar-access"}
+			card := &fakeDAV{dav: "1, 3, addressbook"}
+			rec := httptest.NewRecorder()
+			davRoot(cal, card, tc.flags).ServeHTTP(rec, httptest.NewRequest(tc.method, "/", strings.NewReader(tc.body)))
+			got := "cal"
+			if card.path != "" {
+				got = "card"
+			}
+			if got != tc.want {
+				t.Fatalf("routed to %s, want %s", got, tc.want)
+			}
+			if tc.method == http.MethodOptions && strings.Contains(rec.Header().Get("DAV"), "calendar-access") {
+				t.Fatalf("OPTIONS advertises calendar-access with CalDAV off: %q", rec.Header().Get("DAV"))
+			}
+		})
 	}
 }
 
 func TestDAVRootWithOnlyCardDAV(t *testing.T) {
 	card := &fakeDAV{dav: "1, 3, addressbook"}
 	rec := httptest.NewRecorder()
-	davRoot(nil, card).ServeHTTP(rec, httptest.NewRequest("PROPFIND", "/", strings.NewReader("<propfind xmlns=\"DAV:\"/>")))
+	davRoot(nil, card, allOn).ServeHTTP(rec, httptest.NewRequest("PROPFIND", "/", strings.NewReader("<propfind xmlns=\"DAV:\"/>")))
 	if card.path != "/" {
 		t.Fatalf("with CalDAV off, root must go to CardDAV, got %q", card.path)
 	}

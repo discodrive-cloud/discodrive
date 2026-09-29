@@ -649,7 +649,7 @@ UPDATE calendars SET sort_order = $2 WHERE id = $1 AND user_id = $3;
 -- name: BumpCalendarCtag :exec
 UPDATE calendars SET ctag = ctag + 1 WHERE id = $1;
 
--- name: DeleteCalendar :exec
+-- name: DeleteCalendar :execrows
 DELETE FROM calendars WHERE id = $1 AND user_id = $2;
 
 -- == calendar_objects ==
@@ -691,7 +691,7 @@ UPDATE addressbooks SET name = $2 WHERE id = $1 AND user_id = $3;
 -- name: BumpAddressbookCtag :exec
 UPDATE addressbooks SET ctag = ctag + 1 WHERE id = $1;
 
--- name: DeleteAddressbook :exec
+-- name: DeleteAddressbook :execrows
 DELETE FROM addressbooks WHERE id = $1 AND user_id = $2;
 
 -- == addressbook_objects ==
