@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -292,6 +293,63 @@ func (s *Server) handleSavedContent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.Copy(w, f)
+}
+
+// GET /me/saved/{id}/image?url=… — an image of a saved article, fetched by the server.
+// The reader cannot load article images itself: the CSP allows only same-origin, data:
+// and blob: images, and loosening it would let any stored article make the browser
+// contact third parties. The reader fetches through here (Bearer auth) and shows the
+// result as a blob. Only a raster image of at most saved.MaxImageBytes gets through,
+// its type sniffed server-side and pinned with nosniff; the upstream never sees the
+// user's cookies or a Referer.
+func (s *Server) handleSavedImage(w http.ResponseWriter, r *http.Request) {
+	uid, err := db.ParseUUID(auth.UserID(r.Context()))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid token subject")
+		return
+	}
+	id, err := db.ParseUUID(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	item, err := s.q.GetSavedItemForUser(r.Context(), db.GetSavedItemForUserParams{ID: id, UserID: uid})
+	if err != nil || item.Kind != saved.KindArticle {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	raw := r.URL.Query().Get("url")
+	if len(raw) > maxBookmarkURLLen || !isWebURL(raw) {
+		writeError(w, http.StatusBadRequest, "url must be an http or https link")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	img, err := s.saved.OpenImage(ctx, raw)
+	switch {
+	case errors.Is(err, saved.ErrNotImage):
+		writeError(w, http.StatusUnsupportedMediaType, "not a supported image")
+		return
+	case errors.Is(err, saved.ErrImageTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "image too large")
+		return
+	case err != nil:
+		// Blocked by the SSRF guard, unreachable or an upstream error: the details
+		// (resolved addresses included) stay in the log.
+		log.Printf("discodrive: saved image %s: %v", db.UUIDString(item.ID), err)
+		writeError(w, http.StatusBadGateway, "image unavailable")
+		return
+	}
+	defer img.Body.Close()
+	h := w.Header()
+	h.Set("Content-Type", img.ContentType)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	h.Set("Cache-Control", "private, max-age=86400")
+	if img.Size >= 0 {
+		h.Set("Content-Length", strconv.FormatInt(img.Size, 10))
+	}
+	_, _ = io.Copy(w, img.Body)
 }
 
 // DELETE /me/saved/{id} — remove the record. Files produced in the user's tree

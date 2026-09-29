@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // Reader for saved articles: markdown from /me/saved/{id}/content rendered
-// in a narrow reader column. Real <img> tags are enabled — article images
-// stay external links by design.
-import { renderMarkdown } from '~/lib/preview/markdown'
+// in a narrow reader column. Article images are external: the CSP blocks them
+// (img-src 'self' data: blob:), so they are fetched through the server's
+// /me/saved/{id}/image proxy with the session token and shown as blobs.
+import { renderMarkdown, hydrateExternalImages } from '~/lib/preview/markdown'
 
 interface SavedItem {
   id: string
@@ -22,6 +23,8 @@ const item = ref<SavedItem | null>(null)
 const html = ref('')
 const error = ref('')
 const busy = ref(true)
+const body = ref<HTMLElement | null>(null)
+let disposeImages: (() => void) | null = null
 
 onMounted(async () => {
   const id = String(route.params.id)
@@ -37,7 +40,16 @@ onMounted(async () => {
   } finally {
     busy.value = false
   }
+  await nextTick()
+  if (body.value && item.value) {
+    disposeImages = hydrateExternalImages(body.value, item.value.url, async (url) => {
+      const blob = await request<Blob>(`/me/saved/${id}/image`, { query: { url }, responseType: 'blob' })
+      return URL.createObjectURL(blob)
+    })
+  }
 })
+
+onBeforeUnmount(() => disposeImages?.())
 
 // The stored file carries a YAML frontmatter (url/title/saved) for sync & MCP
 // consumers; the reader shows its own header instead.
@@ -83,7 +95,7 @@ function savedDate(): string {
         </div>
       </header>
       <!-- eslint-disable-next-line vue/no-v-html — renderMarkdown escapes raw HTML (html:false) -->
-      <article class="md-body docx-body" v-html="html" />
+      <article ref="body" class="md-body docx-body" v-html="html" />
     </div>
   </div>
 </template>
