@@ -79,6 +79,7 @@
     "error_rollback": "Zurücksetzen fehlgeschlagen",
     "error_share": "Teilen fehlgeschlagen",
     "error_revoke": "Widerruf fehlgeschlagen",
+    "error_upload": "Hochladen fehlgeschlagen",
     "btn_download": "Herunterladen",
     "btn_versions": "Versionsverlauf",
     "btn_share": "Teilen",

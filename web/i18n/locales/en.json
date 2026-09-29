@@ -79,6 +79,7 @@
     "error_rollback": "Could not roll back",
     "error_share": "Could not share",
     "error_revoke": "Could not revoke",
+    "error_upload": "Could not upload",
     "btn_download": "Download",
     "btn_versions": "Version history",
     "btn_share": "Share",

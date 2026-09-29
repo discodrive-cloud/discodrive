@@ -79,6 +79,7 @@
     "error_rollback": "No se pudo revertir",
     "error_share": "No se pudo compartir",
     "error_revoke": "No se pudo revocar",
+    "error_upload": "No se pudo subir",
     "btn_download": "Descargar",
     "btn_versions": "Historial de versiones",
     "btn_share": "Compartir",

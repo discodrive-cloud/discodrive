@@ -79,6 +79,7 @@
     "error_rollback": "Не удалось откатить",
     "error_share": "Не удалось расшарить",
     "error_revoke": "Не удалось отозвать",
+    "error_upload": "Не удалось загрузить",
     "btn_download": "Скачать",
     "btn_versions": "История версий",
     "btn_share": "Поделиться",
