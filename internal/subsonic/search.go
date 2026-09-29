@@ -52,7 +52,7 @@ func runSearch(h *Handler, c *reqCtx, wrapKey string) {
 	// Artists.
 	artists, err := h.q.SearchArtists(ctx, db.SearchArtistsParams{
 		UserID: userUUID,
-		Query:  pgtype.Text{String: q, Valid: true},
+		Query:  pgtype.Text{String: db.EscapeLike(q), Valid: true},
 		Lim:    artistCount,
 		Off:    artistOffset,
 	})
@@ -91,7 +91,7 @@ func runSearch(h *Handler, c *reqCtx, wrapKey string) {
 	// Albums.
 	albums, err := h.q.SearchAlbums(ctx, db.SearchAlbumsParams{
 		UserID: userUUID,
-		Query:  pgtype.Text{String: q, Valid: true},
+		Query:  pgtype.Text{String: db.EscapeLike(q), Valid: true},
 		Lim:    albumCount,
 		Off:    albumOffset,
 	})
@@ -132,7 +132,7 @@ func runSearch(h *Handler, c *reqCtx, wrapKey string) {
 	// Songs.
 	songs, err := h.q.SearchSongs(ctx, db.SearchSongsParams{
 		UserID: userUUID,
-		Query:  pgtype.Text{String: q, Valid: true},
+		Query:  pgtype.Text{String: db.EscapeLike(q), Valid: true},
 		Lim:    songCount,
 		Off:    songOffset,
 	})
