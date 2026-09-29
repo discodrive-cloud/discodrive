@@ -67,5 +67,15 @@ server {
         alias /data/;
         # Recheck on nginx open: Go validation alone cannot prevent path swaps.
         disable_symlinks on;
+        # After X-Accel-Redirect nginx keeps only a few of the app's headers
+        # (Content-Type, Content-Disposition, ...), so the security headers are set
+        # again for the file itself. File bytes never need scripts, and sandbox keeps an
+        # uploaded page inert even if a browser renders it. Any add_header here turns
+        # off inheritance from the server block, hence HSTS is repeated.
+        add_header Strict-Transport-Security "max-age=31536000" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Content-Security-Policy "default-src 'none'; img-src 'self' data: blob:; media-src 'self'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "no-referrer" always;
     }
 }
