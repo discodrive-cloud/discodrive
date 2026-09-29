@@ -406,7 +406,7 @@ func (u *Uploads) Complete(ctx context.Context, id, userID string) (PushResult, 
 			return PushResult{}, err
 		}
 		ctx = reservation.WithCredit(ctx, actual)
-		fs = &FileService{pool: reservation.Connection(), q: reservation.Queries(), st: u.fs.st, quota: reservation.Checker(), noVersions: u.fs.noVersions}
+		fs = u.fs.onConn(reservation.Connection(), reservation.Queries(), reservation.Checker())
 	}
 
 	// Verify before publishing: without this the session happily pushes whatever chunks

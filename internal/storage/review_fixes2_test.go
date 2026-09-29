@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"discodrive/internal/db"
+	"discodrive/internal/quota"
 	"discodrive/internal/storage"
 )
 
@@ -153,4 +154,44 @@ func conflictNames(t *testing.T, fs *storage.FileService, userID, dirID string) 
 		names = append(names, k.Name)
 	}
 	return strings.Join(names, "\n")
+}
+
+// A resumable upload publishes through a FileService bound to its reserved connection.
+// That copy must mark its path busy in the set the rescan reads, or a rescan during the
+// publication imports the file itself and then waits on the upload's uncommitted row.
+func TestRescanLeavesResumableCompleteAlone(t *testing.T) {
+	var disk *pausingDisk
+	fs, q, userID, _ := setupFSWith(t, func(st storage.Storage) storage.Storage {
+		disk = newPausingDisk("/up.txt", false)
+		disk.Storage = st
+		return disk
+	})
+	checker := quota.New(q, 0)
+	fs.SetQuota(checker)
+	u := storage.NewUploads(disk, fs)
+	if err := u.SetQuota(checker); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	id, err := u.Init(ctx, userID, nil, "up.txt", 5, storage.PushMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.Chunk(ctx, id, userID, 0, strings.NewReader("hello")); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := u.Complete(ctx, id, userID)
+		done <- err
+	}()
+	<-disk.paused
+	rescanDuring(t, fs, disk)
+	close(disk.release)
+	if err := <-done; err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if names := liveNames(t, fs, userID); len(names) != 1 {
+		t.Fatalf("live nodes %v, want just up.txt", names)
+	}
 }

@@ -53,13 +53,24 @@ type FileService struct {
 
 	// rescanMu serializes reconciliation: two concurrent walks of one tree would race
 	// to insert the same discovered nodes.
-	rescanMu sync.Mutex
+	rescanMu *sync.Mutex
 	// busy holds paths an operation has changed on disk but not yet committed.
-	busy busyPaths
+	// Pointers, so a copy bound to another connection (onConn) guards the same tree.
+	busy *busyPaths
 }
 
 func NewFileService(pool *pgxpool.Pool, st Storage) *FileService {
-	return &FileService{pool: pool, q: db.New(pool), st: st}
+	return &FileService{pool: pool, q: db.New(pool), st: st, rescanMu: new(sync.Mutex), busy: new(busyPaths)}
+}
+
+// onConn returns a copy of s that runs its queries on conn (an upload's reserved
+// connection) and checks quota with checker. It shares the busy set and the rescan
+// lock with s: a rescan through s must see the copy's writes in flight.
+func (s *FileService) onConn(conn interface {
+	Begin(context.Context) (pgx.Tx, error)
+}, q *db.Queries, checker *quota.Checker) *FileService {
+	return &FileService{pool: conn, q: q, st: s.st, quota: checker, noVersions: s.noVersions,
+		rescanMu: s.rescanMu, busy: s.busy}
 }
 
 // SetQuota installs the quota checker. Called once at startup, before the service
