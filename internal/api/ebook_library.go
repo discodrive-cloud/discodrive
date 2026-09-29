@@ -31,11 +31,17 @@ type ebookBookDTO struct {
 	HasCover    bool     `json:"hasCover"`
 }
 
-// ebookListResponse wraps a book list with total count.
+// ebookListResponse wraps a book list with total count. Without filters Total is
+// the exact count; with a filter or search it is exact on the last page and a
+// lower bound (offset + page + 1) while HasMore is true.
 type ebookListResponse struct {
-	Books []ebookBookDTO `json:"books"`
-	Total int64          `json:"total"`
+	Books   []ebookBookDTO `json:"books"`
+	Total   int64          `json:"total"`
+	HasMore bool           `json:"hasMore"`
 }
+
+// maxEbookListStart caps the page offset: it must fit the int32 query argument.
+const maxEbookListStart = 1 << 30
 
 // ebookFacetsResponse contains the distinct facet values for the current user.
 type ebookFacetsResponse struct {
@@ -114,11 +120,13 @@ func (s *Server) handleListEbooks(w http.ResponseWriter, r *http.Request) {
 	author := q.Get("author")
 	series := q.Get("series")
 	genre := q.Get("genre")
-	start, _ := strconv.Atoi(q.Get("start"))
-	if start < 0 {
+	start, err := strconv.ParseInt(q.Get("start"), 10, 64)
+	if err != nil || start < 0 {
 		start = 0
 	}
-	limit := int32(ebookLibraryPageSize)
+	start = min(start, maxEbookListStart)
+	// One row past the page tells whether another page exists.
+	limit := int32(ebookLibraryPageSize + 1)
 	offset := int32(start)
 
 	ctx := r.Context()
@@ -128,7 +136,7 @@ func (s *Server) handleListEbooks(w http.ResponseWriter, r *http.Request) {
 	case search != "":
 		books, err = s.q.SearchAccessibleBooks(ctx, db.SearchAccessibleBooksParams{
 			UserID:  uid,
-			Column2: pgtype.Text{String: search, Valid: true},
+			Column2: pgtype.Text{String: db.EscapeLike(search), Valid: true},
 			Limit:   limit,
 			Offset:  offset,
 		})
@@ -165,7 +173,13 @@ func (s *Server) handleListEbooks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Total count — only for the unfiltered case; for filtered results use len.
+	hasMore := len(books) > ebookLibraryPageSize
+	if hasMore {
+		books = books[:ebookLibraryPageSize]
+	}
+
+	// Exact count for the unfiltered library; filtered results would need a
+	// second full query per filter, so report what the page proves instead.
 	var total int64
 	if search == "" && author == "" && series == "" && genre == "" {
 		total, err = s.q.CountAccessibleBooks(ctx, uid)
@@ -174,7 +188,10 @@ func (s *Server) handleListEbooks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		total = int64(len(books))
+		total = start + int64(len(books))
+		if hasMore {
+			total++
+		}
 	}
 
 	dtos := make([]ebookBookDTO, 0, len(books))
@@ -182,7 +199,7 @@ func (s *Server) handleListEbooks(w http.ResponseWriter, r *http.Request) {
 		dtos = append(dtos, s.bookToDTO(r, b))
 	}
 
-	writeJSON(w, http.StatusOK, ebookListResponse{Books: dtos, Total: total})
+	writeJSON(w, http.StatusOK, ebookListResponse{Books: dtos, Total: total, HasMore: hasMore})
 }
 
 // handleEbookFacets handles GET /me/ebooks/library/facets.
