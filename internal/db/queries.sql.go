@@ -2891,6 +2891,19 @@ func (q *Queries) ListWebdavDevicesByEmail(ctx context.Context, email string) ([
 	return items, nil
 }
 
+const lockTreePath = `-- name: LockTreePath :exec
+SELECT pg_advisory_xact_lock(1146110292, hashtext($1::text))
+`
+
+// Serializes writers of one tree path until the transaction ends: two pushes to the
+// same file must not both read the old row and then overwrite each other's bytes.
+// The two-key form keeps these locks apart from the single-key upload/quota locks;
+// a hash collision only makes two unrelated paths wait for each other.
+func (q *Queries) LockTreePath(ctx context.Context, path string) error {
+	_, err := q.db.Exec(ctx, lockTreePath, path)
+	return err
+}
+
 const markBackupCodeUsed = `-- name: MarkBackupCodeUsed :execrows
 UPDATE backup_codes SET used_at = now() WHERE id = $1 AND used_at IS NULL
 `

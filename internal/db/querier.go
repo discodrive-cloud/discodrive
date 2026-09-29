@@ -353,6 +353,11 @@ type Querier interface {
 	ListWebAuthnCredentials(ctx context.Context, userID pgtype.UUID) ([]WebauthnCredential, error)
 	ListWebdavDevicesByEmail(ctx context.Context, email string) ([]Device, error)
 	LockBootstrap(ctx context.Context) (ServerBootstrap, error)
+	// Serializes writers of one tree path until the transaction ends: two pushes to the
+	// same file must not both read the old row and then overwrite each other's bytes.
+	// The two-key form keeps these locks apart from the single-key upload/quota locks;
+	// a hash collision only makes two unrelated paths wait for each other.
+	LockTreePath(ctx context.Context, path string) error
 	LockUploadQuota(ctx context.Context) error
 	MarkBackupCodeUsed(ctx context.Context, id pgtype.UUID) (int64, error)
 	MarkQuotaNotified(ctx context.Context, id pgtype.UUID) error

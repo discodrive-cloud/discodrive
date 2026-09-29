@@ -270,6 +270,13 @@ UPDATE nodes SET version = version + 1, modified_at = now() WHERE id = $1 RETURN
 SELECT * FROM nodes
 WHERE user_id = sqlc.arg(user_id) AND disk_path = sqlc.arg(path)::text AND deleted_at IS NULL;
 
+-- Serializes writers of one tree path until the transaction ends: two pushes to the
+-- same file must not both read the old row and then overwrite each other's bytes.
+-- The two-key form keeps these locks apart from the single-key upload/quota locks;
+-- a hash collision only makes two unrelated paths wait for each other.
+-- name: LockTreePath :exec
+SELECT pg_advisory_xact_lock(1146110292, hashtext(sqlc.arg(path)::text));
+
 -- Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree).
 -- name: RewriteSubtreePaths :exec
 UPDATE nodes

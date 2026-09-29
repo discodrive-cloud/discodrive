@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -516,13 +518,17 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 	defer tx.Rollback(ctx)
 	qtx := q.WithTx(tx)
 
+	// One writer per path at a time. Without the lock two pushes of the same file both
+	// read the old row: the second snapshot captured the first push's bytes under the
+	// old version, and for a new file the second insert failed after its bytes had
+	// already replaced the first push's content on disk.
+	if err := qtx.LockTreePath(ctx, rel); err != nil {
+		return PushResult{}, err
+	}
 	existing, err := qtx.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: ownerUUID, Path: rel})
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		// new file
-		if err := s.st.Move(tmpRel, rel); err != nil {
-			return PushResult{}, err
-		}
+		// new file. Row first: the unique index decides a name race before any bytes move.
 		node, err := qtx.CreateNode(ctx, db.CreateNodeParams{
 			UserID: ownerUUID, ParentID: parentUUID, Name: name, IsDir: false,
 			Size: int8val(size), ContentHash: text(sha), DiskPath: text(rel), Mime: text(detectMime(name)),
@@ -531,7 +537,7 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 		if err != nil {
 			return PushResult{}, mapInsertErr(err)
 		}
-		return s.finishPush(ctx, tx, qtx, ownerUUID, node, "create", false)
+		return s.finishPush(ctx, tx, qtx, ownerUUID, node, "create", false, tmpRel, rel)
 
 	case err != nil:
 		return PushResult{}, err
@@ -548,9 +554,6 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 		if err := s.snapshot(ctx, qtx, existing); err != nil {
 			return PushResult{}, err
 		}
-		if err := s.st.Move(tmpRel, rel); err != nil { // overwrites the primary file
-			return PushResult{}, err
-		}
 		node, err := qtx.UpdateNodeContent(ctx, db.UpdateNodeContentParams{
 			ID: existing.ID, Size: int8val(size), ContentHash: text(sha), Mime: text(detectMime(name)),
 			ModifiedAt: tsval(meta.ModifiedAt),
@@ -558,17 +561,30 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 		if err != nil {
 			return PushResult{}, err
 		}
-		return s.finishPush(ctx, tx, qtx, ownerUUID, node, "update", false)
+		return s.finishPush(ctx, tx, qtx, ownerUUID, node, "update", false, tmpRel, rel) // overwrites the primary file
 	}
 
 	// CONFLICT: the server version stays as the primary; the client version becomes
 	// a separate copy named `name (conflict, device, date).ext`.
-	cname := conflictName(name, device, time.Now())
-	crel := prefix + "/" + cname
-	defer s.busy.hold(crel)()
-	if err := s.st.Move(tmpRel, crel); err != nil {
-		return PushResult{}, err
+	// Conflict copies of one file are serialized by the path lock above, so a free name
+	// found here stays free (two conflicts within one second used to collide).
+	now := time.Now()
+	var cname, crel string
+	for n := 1; ; n++ {
+		cname = conflictName(name, device, now, n)
+		if err := validateName(cname); err != nil {
+			return PushResult{}, err
+		}
+		crel = prefix + "/" + cname
+		_, err := qtx.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: ownerUUID, Path: crel})
+		if errors.Is(err, pgx.ErrNoRows) || n == 20 {
+			break
+		}
+		if err != nil {
+			return PushResult{}, err
+		}
 	}
+	defer s.busy.hold(crel)()
 	cnode, err := qtx.CreateConflictNode(ctx, db.CreateConflictNodeParams{
 		UserID: ownerUUID, ParentID: parentUUID, Name: cname,
 		Size: int8val(size), ContentHash: text(sha), DiskPath: text(crel),
@@ -578,17 +594,23 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 	if err != nil {
 		return PushResult{}, mapInsertErr(err)
 	}
-	return s.finishPush(ctx, tx, qtx, ownerUUID, cnode, "create", true)
+	return s.finishPush(ctx, tx, qtx, ownerUUID, cnode, "create", true, tmpRel, crel)
 }
 
-// finishPush appends to change_log and commits the transaction. It does not snapshot:
+// finishPush appends to change_log, moves the staged bytes to dst and commits. The move
+// is the last step that can fail before the commit, so a refused row (name race, a
+// failed change_log insert) never leaves its bytes in the tree. It does not snapshot:
 // the content it publishes IS the newest version, and that version lives in the file
 // itself. Only content a push replaces goes to .versions.
-func (s *FileService) finishPush(ctx context.Context, tx pgx.Tx, qtx *db.Queries, uid pgtype.UUID, node db.Node, op string, conflicted bool) (PushResult, error) {
+func (s *FileService) finishPush(ctx context.Context, tx pgx.Tx, qtx *db.Queries, uid pgtype.UUID, node db.Node, op string, conflicted bool, tmpRel, dst string) (PushResult, error) {
 	if err := recordChange(ctx, qtx, uid, node.ID, op, node.Version); err != nil {
 		return PushResult{}, err
 	}
+	if err := s.st.Move(tmpRel, dst); err != nil {
+		return PushResult{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
+		// The bytes are already at dst; a failed commit leaves them for rescan to import.
 		return PushResult{}, err
 	}
 	return PushResult{Node: node, Conflicted: conflicted}, nil
@@ -624,8 +646,19 @@ func (s *FileService) ReplaceContentInPlace(ctx context.Context, userID, nodeID 
 	defer tx.Rollback(ctx)
 	qtx := q.WithTx(tx)
 
-	if err := s.st.Move(tmpRel, node.DiskPath.String); err != nil {
+	// Same per-path lock as Push, and re-read under it: the node may have been renamed,
+	// moved or deleted while the content was being staged.
+	if err := qtx.LockTreePath(ctx, node.DiskPath.String); err != nil {
 		return db.Node{}, err
+	}
+	cur, err := qtx.GetNodeForUpdate(ctx, node.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.Node{}, ErrNotFound
+	} else if err != nil {
+		return db.Node{}, err
+	}
+	if cur.DiskPath != node.DiskPath {
+		return db.Node{}, ErrNotFound
 	}
 	updated, err := qtx.UpdateNodeContent(ctx, db.UpdateNodeContentParams{
 		ID: node.ID, Size: int8val(size), ContentHash: text(sha), Mime: text(detectMime(node.Name)),
@@ -633,13 +666,11 @@ func (s *FileService) ReplaceContentInPlace(ctx context.Context, userID, nodeID 
 	if err != nil {
 		return db.Node{}, err
 	}
-	if err := recordChange(ctx, qtx, node.UserID, updated.ID, "update", updated.Version); err != nil {
+	res, err := s.finishPush(ctx, tx, qtx, node.UserID, updated, "update", false, tmpRel, node.DiskPath.String)
+	if err != nil {
 		return db.Node{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return db.Node{}, err
-	}
-	return updated, nil
+	return res.Node, nil
 }
 
 // recordChange allocates a monotonic seq for the user and appends a row to change_log.
@@ -913,14 +944,66 @@ func tmpName() string {
 	return ".tmp/" + hex.EncodeToString(b)
 }
 
+// maxNameBytes is the longest file name the disk takes (NAME_MAX on Linux and macOS).
+const maxNameBytes = 255
+
+// maxDeviceRunes bounds the device label inside a conflict copy's name.
+const maxDeviceRunes = 32
+
 // conflictName builds the name for a conflict copy: "name (conflict, device, date).ext".
-func conflictName(name, device string, ts time.Time) string {
-	if device == "" {
-		device = "device"
-	}
+// device is client input (a multipart field), so only letters, digits, spaces and
+// "-_." survive; anything else, a path separator above all, becomes "_". A long base
+// name is shortened so the result still fits in one file name. n > 1 numbers further
+// copies made within the same second.
+func conflictName(name, device string, ts time.Time, n int) string {
+	device = sanitizeDevice(device)
 	ext := filepath.Ext(name)
 	base := strings.TrimSuffix(name, ext)
-	return base + " (conflict, " + device + ", " + ts.Format("2006-01-02 15-04-05") + ")" + ext
+	if len(ext) > maxNameBytes/2 {
+		base, ext = name, ""
+	}
+	stamp := ts.Format("2006-01-02 15-04-05")
+	if n > 1 {
+		stamp += ", " + strconv.Itoa(n)
+	}
+	suffix := " (conflict, " + device + ", " + stamp + ")" + ext
+	return truncateUTF8(base, maxNameBytes-len(suffix)) + suffix
+}
+
+func sanitizeDevice(device string) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range device {
+		if n == maxDeviceRunes {
+			break
+		}
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_', r == '.', r == ' ':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+		n++
+	}
+	out := strings.TrimSpace(b.String())
+	if strings.Trim(out, "._ ") == "" {
+		return "device"
+	}
+	return out
+}
+
+// truncateUTF8 cuts s to at most n bytes without splitting a character.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 0 {
+		return ""
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func parentDir(rel string) string {
@@ -1190,12 +1273,8 @@ func (s *FileService) Adopt(ctx context.Context, userID, tmpRel, diskRel string,
 	if err != nil {
 		return db.Node{}, mapInsertErr(err)
 	}
-	if err := s.st.Move(tmpRel, rel); err != nil {
-		return db.Node{}, err
-	}
-	res, err := s.finishPush(ctx, tx, qtx, ownerUUID, node, "create", false)
+	res, err := s.finishPush(ctx, tx, qtx, ownerUUID, node, "create", false, tmpRel, rel)
 	if err != nil {
-		// The bytes are already at rel; a failed commit leaves them for rescan to import.
 		return db.Node{}, err
 	}
 	return res.Node, nil
