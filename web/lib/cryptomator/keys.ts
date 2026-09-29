@@ -33,6 +33,30 @@ interface MasterkeyFile {
 }
 
 /**
+ * Bounds for the scrypt parameters read from masterkey.cryptomator. The file comes
+ * from the server, so a crafted one could ask for gigabytes of memory and hang the
+ * tab. Cryptomator itself writes N=32768, r=8 (32 MiB). p is not stored in the file
+ * and is always 1.
+ */
+export const SCRYPT_MAX_N = 2 ** 20;
+export const SCRYPT_MAX_R = 32;
+/** 128·N·r bytes of working memory; 1 GiB (e.g. N=2^20 with r=8) is the ceiling. */
+export const SCRYPT_MAX_MEMORY = 1024 * 1024 * 1024;
+
+/** Throws a descriptive Error unless N and r are safe scrypt parameters. */
+export function checkScryptParams(N: unknown, r: unknown): asserts N is number {
+  if (typeof N !== 'number' || !Number.isInteger(N) || N < 2 || (N & (N - 1)) !== 0 || N > SCRYPT_MAX_N) {
+    throw new Error(`unsupported vault: scryptCostParam must be a power of two between 2 and ${SCRYPT_MAX_N}, got ${String(N)}`);
+  }
+  if (typeof r !== 'number' || !Number.isInteger(r) || r < 1 || r > SCRYPT_MAX_R) {
+    throw new Error(`unsupported vault: scryptBlockSize must be between 1 and ${SCRYPT_MAX_R}, got ${String(r)}`);
+  }
+  if (128 * N * r > SCRYPT_MAX_MEMORY) {
+    throw new Error(`unsupported vault: scrypt parameters N=${N}, r=${r} need more than 1 GiB of memory`);
+  }
+}
+
+/**
  * AES Key Wrap (RFC 3394) unwrap — JS implementation.
  * Port of Go keywrap.go aesKWUnwrap.
  * kek: 32B, wrapped: 40B → plaintext: 32B.
@@ -95,6 +119,7 @@ export async function openVault(
   const passwordBytes = utf8Encode(password);
   const N = mk.scryptCostParam;
   const r = mk.scryptBlockSize;
+  checkScryptParams(N, r); // before any work: an unbounded N/r would hang the tab
   const p = 1;
   const dkLen = 32;
 
