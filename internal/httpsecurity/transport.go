@@ -45,6 +45,20 @@ func New(cidrs, listenHost string, allowLocalHTTP bool) (*Policy, error) {
 	return p, nil
 }
 
+// WideTrustedRanges returns the trusted proxy ranges wider than one IPv4 /24 or one
+// IPv6 /64. Any host in such a range may assert HTTPS and pick the client IP the
+// per-IP limits count, so a foothold anywhere in, say, 10.0.0.0/8 bypasses both; the
+// server warns about them at startup.
+func (p *Policy) WideTrustedRanges() []netip.Prefix {
+	var wide []netip.Prefix
+	for _, prefix := range p.proxies {
+		if (prefix.Addr().Is4() && prefix.Bits() < 24) || (!prefix.Addr().Is4() && prefix.Bits() < 64) {
+			wide = append(wide, prefix)
+		}
+	}
+	return wide
+}
+
 func peerIP(r *http.Request) netip.Addr {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
