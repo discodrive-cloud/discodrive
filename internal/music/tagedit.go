@@ -20,7 +20,15 @@ var (
 	ErrNotAudio         = errors.New("music: not an audio file")
 	ErrReadOnlyFormat   = errors.New("music: format is read-only")
 	ErrNotInMusicFolder = errors.New("music: node is not inside the user's music folder")
+	// ErrTagConflict: the file changed (e.g. a sync push) while its tags were being
+	// edited. The concurrent change is kept; in versioned mode the tagged copy is
+	// saved as a conflict copy next to it.
+	ErrTagConflict = errors.New("music: file changed while its tags were being edited")
 )
+
+// beforeTagCommit runs between applying the tags to the private copy and
+// committing it. Tests use it to land a concurrent write; a no-op otherwise.
+var beforeTagCommit = func() {}
 
 // TagInfo holds the result of a Read call.
 type TagInfo struct {
@@ -295,16 +303,45 @@ func (e *TagEditor) Write(ctx context.Context, userID, nodeID string, t tagwrite
 	}
 
 	// Determine save mode from per-user settings.
-	uid, _ := db.ParseUUID(userID)
-	ms, _ := e.q.GetMusicSettings(ctx, uid)
+	beforeTagCommit()
 
+	// A settings read error must not silently pick the non-versioned mode.
+	uid, err := db.ParseUUID(userID)
+	if err != nil {
+		return err
+	}
+	ms, err := e.q.GetMusicSettings(ctx, uid)
+	if err != nil {
+		return err
+	}
+
+	// The edit was made on the content of node.Version: a concurrent change
+	// (a sync push, another edit) must win or conflict, never be overwritten.
 	if ms.TagEditVersioning {
 		// Versioned mode: strip the "<userID>/" prefix to get a user-relative path.
+		// A stale base makes Push keep the newer file and store ours as a
+		// conflict copy.
 		relPath := strings.TrimPrefix(node.DiskPath.String, userID+"/")
-		if _, err := e.files.PushByPath(ctx, userID, relPath, nil, bytes.NewReader(newBytes)); err != nil {
+		base := node.Version
+		res, err := e.files.PushByPath(ctx, userID, relPath, &base, bytes.NewReader(newBytes))
+		if err != nil {
 			return err
 		}
+		if res.Conflicted {
+			return ErrTagConflict
+		}
 	} else {
+		// In-place mode has no version to conflict on: re-check just before the
+		// swap. (ReplaceContentInPlace takes no base version, so a write landing
+		// between this check and the swap can still be lost; the window is now
+		// the swap itself instead of the whole tag edit.)
+		cur, err := e.q.GetNodeForUser(ctx, db.GetNodeForUserParams{ID: node.ID, UserID: uid})
+		if err != nil {
+			return err
+		}
+		if cur.Version != node.Version || cur.ContentHash != node.ContentHash {
+			return ErrTagConflict
+		}
 		if _, err := e.files.ReplaceContentInPlace(ctx, userID, nodeID, bytes.NewReader(newBytes)); err != nil {
 			return err
 		}
