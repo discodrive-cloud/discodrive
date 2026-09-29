@@ -6,7 +6,9 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"runtime/debug"
 	"strconv"
 	"time"
 
@@ -167,11 +169,22 @@ func (w *Worker) tick(ctx context.Context, every time.Duration, name string, job
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := job(ctx); err != nil {
+			if err := runJob(ctx, job); err != nil {
 				log.Printf("discodrive: job %s: %v", name, err)
 			}
 		}
 	}
+}
+
+// runJob runs one tick of a job, turning a panic into an error: a job that trips on
+// bad data must not take the whole server down, and the next tick tries again.
+func runJob(ctx context.Context, job func(context.Context) error) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("panic: %v\n%s", p, debug.Stack())
+		}
+	}()
+	return job(ctx)
 }
 
 // quotaNotify sends a notification to users who have crossed 90% of their quota (once),
