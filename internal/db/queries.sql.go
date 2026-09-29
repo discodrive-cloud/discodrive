@@ -33,7 +33,7 @@ func (q *Queries) AddressbookShareForUser(ctx context.Context, arg AddressbookSh
 const appendChange = `-- name: AppendChange :one
 INSERT INTO change_log (user_id, node_id, seq, op, version, device_id)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, user_id, node_id, seq, op, version, device_id, created_at
+RETURNING id, user_id, node_id, seq, op, version, device_id, created_at, prev_path
 `
 
 type AppendChangeParams struct {
@@ -64,8 +64,36 @@ func (q *Queries) AppendChange(ctx context.Context, arg AppendChangeParams) (Cha
 		&i.Version,
 		&i.DeviceID,
 		&i.CreatedAt,
+		&i.PrevPath,
 	)
 	return i, err
+}
+
+const appendPathChange = `-- name: AppendPathChange :exec
+INSERT INTO change_log (user_id, node_id, seq, op, version, prev_path)
+VALUES ($1, $2, $3, $4, $5, $6::text)
+`
+
+type AppendPathChangeParams struct {
+	UserID   pgtype.UUID `json:"user_id"`
+	NodeID   pgtype.UUID `json:"node_id"`
+	Seq      int64       `json:"seq"`
+	Op       string      `json:"op"`
+	Version  int64       `json:"version"`
+	PrevPath string      `json:"prev_path"`
+}
+
+// A change that moved the node (move/rename): prev_path is its disk_path before.
+func (q *Queries) AppendPathChange(ctx context.Context, arg AppendPathChangeParams) error {
+	_, err := q.db.Exec(ctx, appendPathChange,
+		arg.UserID,
+		arg.NodeID,
+		arg.Seq,
+		arg.Op,
+		arg.Version,
+		arg.PrevPath,
+	)
+	return err
 }
 
 const approvePairing = `-- name: ApprovePairing :one
@@ -1927,19 +1955,29 @@ func (q *Queries) ListChangesSince(ctx context.Context, arg ListChangesSincePara
 const listChangesSinceUnderPrefix = `-- name: ListChangesSinceUnderPrefix :many
 SELECT cl.seq, cl.op, cl.version, cl.created_at,
        n.id AS node_id, n.name, n.parent_id, n.is_dir, n.size, n.content_hash, n.disk_path,
-       (n.deleted_at IS NOT NULL)::bool AS deleted
+       (n.deleted_at IS NOT NULL)::bool AS deleted, cl.prev_path
 FROM change_log cl
 JOIN nodes n ON n.id = cl.node_id
-WHERE cl.user_id = $1 AND cl.seq > $2 AND n.disk_path LIKE $3::text ESCAPE '\'
-ORDER BY cl.seq
-LIMIT $4
+WHERE cl.user_id = $2 AND cl.seq > $3
+  AND n.disk_path LIKE $4::text ESCAPE '\'
+UNION ALL
+SELECT cl.seq, cl.op, cl.version, cl.created_at,
+       n.id AS node_id, n.name, n.parent_id, n.is_dir, n.size, n.content_hash, n.disk_path,
+       (n.deleted_at IS NOT NULL)::bool AS deleted, cl.prev_path
+FROM change_log cl
+JOIN nodes n ON n.id = cl.node_id
+WHERE cl.user_id = $2 AND cl.seq > $3
+  AND cl.prev_path LIKE $4::text ESCAPE '\'
+  AND n.disk_path NOT LIKE $4::text ESCAPE '\'
+ORDER BY seq
+LIMIT $1
 `
 
 type ListChangesSinceUnderPrefixParams struct {
+	Lim    int32       `json:"lim"`
 	UserID pgtype.UUID `json:"user_id"`
 	Seq    int64       `json:"seq"`
 	Prefix string      `json:"prefix"`
-	Lim    int32       `json:"lim"`
 }
 
 type ListChangesSinceUnderPrefixRow struct {
@@ -1955,14 +1993,21 @@ type ListChangesSinceUnderPrefixRow struct {
 	ContentHash pgtype.Text        `json:"content_hash"`
 	DiskPath    pgtype.Text        `json:"disk_path"`
 	Deleted     bool               `json:"deleted"`
+	PrevPath    pgtype.Text        `json:"prev_path"`
 }
 
+// The scoped feed: changes of nodes under the sync folder, plus moves whose previous
+// path was under it (prev_path). A row whose node is now outside the folder is such a
+// move out, and the caller reports it to the scoped client as a delete. Two branches
+// rather than one OR: with the OR a full pull (since=0) hashed every node of the table;
+// this way each branch filters before the join (EXPLAIN on 60k nodes: 0.5 MB vs 11 MB),
+// and an incremental pull stays on change_log_user_seq + nodes_pkey either way.
 func (q *Queries) ListChangesSinceUnderPrefix(ctx context.Context, arg ListChangesSinceUnderPrefixParams) ([]ListChangesSinceUnderPrefixRow, error) {
 	rows, err := q.db.Query(ctx, listChangesSinceUnderPrefix,
+		arg.Lim,
 		arg.UserID,
 		arg.Seq,
 		arg.Prefix,
-		arg.Lim,
 	)
 	if err != nil {
 		return nil, err
@@ -1984,6 +2029,7 @@ func (q *Queries) ListChangesSinceUnderPrefix(ctx context.Context, arg ListChang
 			&i.ContentHash,
 			&i.DiskPath,
 			&i.Deleted,
+			&i.PrevPath,
 		); err != nil {
 			return nil, err
 		}
@@ -2991,10 +3037,10 @@ func (q *Queries) NotificationPrefsForEvent(ctx context.Context, arg Notificatio
 
 const recordSubtreeChanges = `-- name: RecordSubtreeChanges :exec
 WITH descendants AS (
-    SELECT id, version, row_number() OVER (ORDER BY disk_path) AS rn
+    SELECT id, version, disk_path, row_number() OVER (ORDER BY disk_path) AS rn
     FROM nodes
     WHERE user_id = $1
-      AND starts_with(disk_path, $2::text || '/')
+      AND starts_with(disk_path, $3::text || '/')
       AND deleted_at IS NULL
 ),
 bump AS (
@@ -3002,24 +3048,28 @@ bump AS (
     WHERE id = $1
     RETURNING change_seq
 )
-INSERT INTO change_log (user_id, node_id, seq, op, version)
+INSERT INTO change_log (user_id, node_id, seq, op, version, prev_path)
 SELECT $1, d.id,
        (SELECT change_seq FROM bump) - (SELECT count(*) FROM descendants) + d.rn,
-       'move', d.version
+       'move', d.version,
+       $2::text || substring(d.disk_path FROM char_length($3::text) + 1)
 FROM descendants d
 `
 
 type RecordSubtreeChangesParams struct {
-	UserID pgtype.UUID `json:"user_id"`
-	Prefix string      `json:"prefix"`
+	UserID    pgtype.UUID `json:"user_id"`
+	OldPrefix string      `json:"old_prefix"`
+	Prefix    string      `json:"prefix"`
 }
 
 // Append change_log rows for every live strict descendant of prefix. Needed after
 // a subtree path rewrite (move/rename): cursor-based clients (and the scoped feed,
 // which filters on current disk_path) only see rows recorded after their cursor,
-// so without these rows a folder moved into the sync scope arrives empty.
+// so without these rows a folder moved into the sync scope arrives empty. prev_path is
+// where each descendant was under old_prefix, so a scoped feed also learns about a
+// folder moved OUT of its scope.
 func (q *Queries) RecordSubtreeChanges(ctx context.Context, arg RecordSubtreeChangesParams) error {
-	_, err := q.db.Exec(ctx, recordSubtreeChanges, arg.UserID, arg.Prefix)
+	_, err := q.db.Exec(ctx, recordSubtreeChanges, arg.UserID, arg.OldPrefix, arg.Prefix)
 	return err
 }
 

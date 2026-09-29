@@ -259,10 +259,10 @@ func (s *FileService) Rename(ctx context.Context, userID, nodeID, newName string
 	if err := s.st.Move(oldRel, newRel); err != nil {
 		return db.Node{}, err
 	}
-	if err := recordChange(ctx, qtx, owner, node.ID, "update", updated.Version); err != nil {
+	if err := recordPathChange(ctx, qtx, owner, node.ID, "update", updated.Version, oldRel); err != nil {
 		return db.Node{}, err
 	}
-	if err := qtx.RecordSubtreeChanges(ctx, db.RecordSubtreeChangesParams{UserID: owner, Prefix: newRel}); err != nil {
+	if err := qtx.RecordSubtreeChanges(ctx, db.RecordSubtreeChangesParams{UserID: owner, Prefix: newRel, OldPrefix: oldRel}); err != nil {
 		return db.Node{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -311,10 +311,10 @@ func (s *FileService) Move(ctx context.Context, userID, nodeID string, parentID 
 	if err := s.st.Move(oldRel, newRel); err != nil {
 		return db.Node{}, err
 	}
-	if err := recordChange(ctx, qtx, owner, node.ID, "move", updated.Version); err != nil {
+	if err := recordPathChange(ctx, qtx, owner, node.ID, "move", updated.Version, oldRel); err != nil {
 		return db.Node{}, err
 	}
-	if err := qtx.RecordSubtreeChanges(ctx, db.RecordSubtreeChangesParams{UserID: owner, Prefix: newRel}); err != nil {
+	if err := qtx.RecordSubtreeChanges(ctx, db.RecordSubtreeChangesParams{UserID: owner, Prefix: newRel, OldPrefix: oldRel}); err != nil {
 		return db.Node{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -733,6 +733,18 @@ func recordChange(ctx context.Context, qtx *db.Queries, userID, nodeID pgtype.UU
 		UserID: userID, NodeID: nodeID, Seq: seq, Op: op, Version: version,
 	})
 	return err
+}
+
+// recordPathChange is recordChange for a change that moved the node: prevPath is its
+// disk_path before, which lets a feed scoped to a folder see the node leave it.
+func recordPathChange(ctx context.Context, qtx *db.Queries, userID, nodeID pgtype.UUID, op string, version int64, prevPath string) error {
+	seq, err := qtx.NextChangeSeq(ctx, userID)
+	if err != nil {
+		return err
+	}
+	return qtx.AppendPathChange(ctx, db.AppendPathChangeParams{
+		UserID: userID, NodeID: nodeID, Seq: seq, Op: op, Version: version, PrevPath: prevPath,
+	})
 }
 
 // snapshot copies the content a write is about to replace into the version store and

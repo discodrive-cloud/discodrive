@@ -166,6 +166,7 @@ type ChangeLog struct {
 	Version   int64              `json:"version"`
 	DeviceID  pgtype.UUID        `json:"device_id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	PrevPath  pgtype.Text        `json:"prev_path"`
 }
 
 type Device struct {

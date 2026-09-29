@@ -289,10 +289,12 @@ WHERE user_id = sqlc.arg(user_id)
 -- Append change_log rows for every live strict descendant of prefix. Needed after
 -- a subtree path rewrite (move/rename): cursor-based clients (and the scoped feed,
 -- which filters on current disk_path) only see rows recorded after their cursor,
--- so without these rows a folder moved into the sync scope arrives empty.
+-- so without these rows a folder moved into the sync scope arrives empty. prev_path is
+-- where each descendant was under old_prefix, so a scoped feed also learns about a
+-- folder moved OUT of its scope.
 -- name: RecordSubtreeChanges :exec
 WITH descendants AS (
-    SELECT id, version, row_number() OVER (ORDER BY disk_path) AS rn
+    SELECT id, version, disk_path, row_number() OVER (ORDER BY disk_path) AS rn
     FROM nodes
     WHERE user_id = sqlc.arg(user_id)
       AND starts_with(disk_path, sqlc.arg(prefix)::text || '/')
@@ -303,10 +305,11 @@ bump AS (
     WHERE id = sqlc.arg(user_id)
     RETURNING change_seq
 )
-INSERT INTO change_log (user_id, node_id, seq, op, version)
+INSERT INTO change_log (user_id, node_id, seq, op, version, prev_path)
 SELECT sqlc.arg(user_id), d.id,
        (SELECT change_seq FROM bump) - (SELECT count(*) FROM descendants) + d.rn,
-       'move', d.version
+       'move', d.version,
+       sqlc.arg(old_prefix)::text || substring(d.disk_path FROM char_length(sqlc.arg(prefix)::text) + 1)
 FROM descendants d;
 
 -- Soft-delete a node and its whole subtree. trash_root is where the node's bytes are
@@ -330,6 +333,11 @@ INSERT INTO change_log (user_id, node_id, seq, op, version, device_id)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
+-- A change that moved the node (move/rename): prev_path is its disk_path before.
+-- name: AppendPathChange :exec
+INSERT INTO change_log (user_id, node_id, seq, op, version, prev_path)
+VALUES ($1, $2, $3, $4, $5, sqlc.arg(prev_path)::text);
+
 -- Delta sync: changes after seq, with the node's current state.
 -- LIMIT — pagination: large deltas aren't returned in a single chunk (3.1).
 -- content_hash — lets the client tell a real change from a touch.
@@ -343,14 +351,30 @@ WHERE cl.user_id = $1 AND cl.seq > $2
 ORDER BY cl.seq
 LIMIT sqlc.arg(lim);
 
+-- The scoped feed: changes of nodes under the sync folder, plus moves whose previous
+-- path was under it (prev_path). A row whose node is now outside the folder is such a
+-- move out, and the caller reports it to the scoped client as a delete. Two branches
+-- rather than one OR: with the OR a full pull (since=0) hashed every node of the table;
+-- this way each branch filters before the join (EXPLAIN on 60k nodes: 0.5 MB vs 11 MB),
+-- and an incremental pull stays on change_log_user_seq + nodes_pkey either way.
 -- name: ListChangesSinceUnderPrefix :many
 SELECT cl.seq, cl.op, cl.version, cl.created_at,
        n.id AS node_id, n.name, n.parent_id, n.is_dir, n.size, n.content_hash, n.disk_path,
-       (n.deleted_at IS NOT NULL)::bool AS deleted
+       (n.deleted_at IS NOT NULL)::bool AS deleted, cl.prev_path
 FROM change_log cl
 JOIN nodes n ON n.id = cl.node_id
-WHERE cl.user_id = $1 AND cl.seq > $2 AND n.disk_path LIKE sqlc.arg(prefix)::text ESCAPE '\'
-ORDER BY cl.seq
+WHERE cl.user_id = sqlc.arg(user_id) AND cl.seq > sqlc.arg(seq)
+  AND n.disk_path LIKE sqlc.arg(prefix)::text ESCAPE '\'
+UNION ALL
+SELECT cl.seq, cl.op, cl.version, cl.created_at,
+       n.id AS node_id, n.name, n.parent_id, n.is_dir, n.size, n.content_hash, n.disk_path,
+       (n.deleted_at IS NOT NULL)::bool AS deleted, cl.prev_path
+FROM change_log cl
+JOIN nodes n ON n.id = cl.node_id
+WHERE cl.user_id = sqlc.arg(user_id) AND cl.seq > sqlc.arg(seq)
+  AND cl.prev_path LIKE sqlc.arg(prefix)::text ESCAPE '\'
+  AND n.disk_path NOT LIKE sqlc.arg(prefix)::text ESCAPE '\'
+ORDER BY seq
 LIMIT sqlc.arg(lim);
 
 -- A version is snapshotted once, when the content that carried it is replaced. The

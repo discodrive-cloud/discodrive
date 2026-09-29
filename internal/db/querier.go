@@ -76,6 +76,8 @@ type Querier interface {
 	AddUploadReservation(ctx context.Context, arg AddUploadReservationParams) error
 	AddressbookShareForUser(ctx context.Context, arg AddressbookShareForUserParams) (pgtype.UUID, error)
 	AppendChange(ctx context.Context, arg AppendChangeParams) (ChangeLog, error)
+	// A change that moved the node (move/rename): prev_path is its disk_path before.
+	AppendPathChange(ctx context.Context, arg AppendPathChangeParams) error
 	ApprovePairing(ctx context.Context, arg ApprovePairingParams) (pgtype.UUID, error)
 	// Which interactive second factors the user has. Used by Login to branch.
 	AvailableMFAFactors(ctx context.Context, userID pgtype.UUID) (AvailableMFAFactorsRow, error)
@@ -281,6 +283,12 @@ type Querier interface {
 	// LIMIT — pagination: large deltas aren't returned in a single chunk (3.1).
 	// content_hash — lets the client tell a real change from a touch.
 	ListChangesSince(ctx context.Context, arg ListChangesSinceParams) ([]ListChangesSinceRow, error)
+	// The scoped feed: changes of nodes under the sync folder, plus moves whose previous
+	// path was under it (prev_path). A row whose node is now outside the folder is such a
+	// move out, and the caller reports it to the scoped client as a delete. Two branches
+	// rather than one OR: with the OR a full pull (since=0) hashed every node of the table;
+	// this way each branch filters before the join (EXPLAIN on 60k nodes: 0.5 MB vs 11 MB),
+	// and an incremental pull stays on change_log_user_seq + nodes_pkey either way.
 	ListChangesSinceUnderPrefix(ctx context.Context, arg ListChangesSinceUnderPrefixParams) ([]ListChangesSinceUnderPrefixRow, error)
 	ListChildren(ctx context.Context, arg ListChildrenParams) ([]Node, error)
 	ListCompletedEpisodesByChannelDesc(ctx context.Context, channelID pgtype.UUID) ([]ListCompletedEpisodesByChannelDescRow, error)
@@ -386,7 +394,9 @@ type Querier interface {
 	// Append change_log rows for every live strict descendant of prefix. Needed after
 	// a subtree path rewrite (move/rename): cursor-based clients (and the scoped feed,
 	// which filters on current disk_path) only see rows recorded after their cursor,
-	// so without these rows a folder moved into the sync scope arrives empty.
+	// so without these rows a folder moved into the sync scope arrives empty. prev_path is
+	// where each descendant was under old_prefix, so a scoped feed also learns about a
+	// folder moved OUT of its scope.
 	RecordSubtreeChanges(ctx context.Context, arg RecordSubtreeChangesParams) error
 	RefreshAlbumSongCount(ctx context.Context, id pgtype.UUID) error
 	// Refreshes the users.storage_used cache from the live totals. The column feeds the
