@@ -20,7 +20,6 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/mewkiz/flac v1.0.13
 	github.com/mmcdole/gofeed v1.3.0
-	github.com/nwaples/rardecode v1.1.3
 	github.com/pdfcpu/pdfcpu v0.13.0
 	github.com/pquerna/otp v1.5.0
 	github.com/smallstep/pkcs7 v0.2.3
@@ -33,6 +32,8 @@ require (
 	golang.org/x/crypto v0.53.0
 	golang.org/x/net v0.55.0
 )
+
+require github.com/nwaples/rardecode/v2 v2.4.1
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
