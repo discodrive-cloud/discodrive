@@ -77,17 +77,24 @@ export async function logoutSession(): Promise<boolean> {
   return true
 }
 
+export type RequestOptions = Record<string, any> & { keepSessionOn401?: boolean }
+
 export function useApi() {
   const sess = useSession()
   const storageTick = useStorageTick()
 
-  async function request<T = any>(path: string, opts: any = {}): Promise<T> {
+  // keepSessionOn401: the endpoint answers 401 for a wrong credential the user typed
+  // (current password, TOTP code, identity confirmation), not for a dead session. The
+  // caller shows the error inline instead of being signed out. The server keeps its
+  // status codes because other clients depend on them.
+  async function request<T = any>(path: string, opts: RequestOptions = {}): Promise<T> {
+    const { keepSessionOn401, ...fetchOpts } = opts
     const requestToken = sess.value.token
-    const headers: Record<string, string> = { ...(opts.headers || {}) }
+    const headers: Record<string, string> = { ...(fetchOpts.headers || {}) }
     if (sess.value.token) headers.Authorization = `Bearer ${sess.value.token}`
     try {
       // .raw — needed to access response headers: the server renews the session via X-Token.
-      const res = await apiFetch.raw<T>(path, { ...opts, headers })
+      const res = await apiFetch.raw<T>(path, { ...fetchOpts, headers })
       const fresh = res.headers.get('X-Token')
       // Only adopt a renewed token if it isn't older than the current one. A cached
       // or slow-in-flight response can carry a stale X-Token; saving it would regress
@@ -100,12 +107,12 @@ export function useApi() {
       // means the sidebar meter follows every operation, including ones added later.
       // Chunk uploads are the exception: they fire per 8 MiB, so useUploads signals
       // once when the file is complete instead.
-      if ((opts.method || 'GET').toUpperCase() !== 'GET' && !path.startsWith('/upload/')) {
+      if ((fetchOpts.method || 'GET').toUpperCase() !== 'GET' && !path.startsWith('/upload/')) {
         storageTick.value++
       }
       return res._data as T
     } catch (e: any) {
-      if (e?.response?.status === 401 && sess.value.token === requestToken) {
+      if (e?.response?.status === 401 && !keepSessionOn401 && sess.value.token === requestToken) {
         clearSession()
         await navigateTo('/login')
       }

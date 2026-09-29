@@ -64,3 +64,15 @@ it('late 401 cannot sign out a new login', async () => {
   await expect(request).rejects.toEqual({ response: { status: 401 } })
   expect(api.useSession().value.token).toBe(token('second'))
 })
+it('401 signs out by default', async () => {
+  fetchMock.raw.mockRejectedValueOnce({ response: { status: 401 } })
+  await expect(api.useApi().request('/me')).rejects.toEqual({ response: { status: 401 } })
+  expect(api.useSession().value.token).toBe('')
+})
+it('keepSessionOn401 leaves the session for a wrong credential', async () => {
+  const err = { response: { status: 401 }, data: { error: 'invalid current password' } }
+  fetchMock.raw.mockRejectedValueOnce(err)
+  await expect(api.useApi().request('/me/password', { method: 'PUT', keepSessionOn401: true })).rejects.toBe(err)
+  expect(api.useSession().value.token).toBe(token('first'))
+  expect(fetchMock.raw.mock.calls[0][1]).not.toHaveProperty('keepSessionOn401')
+})
