@@ -224,3 +224,26 @@ func TestProppatchByShareeIsForbidden(t *testing.T) {
 		t.Fatalf("owner PROPPATCH: %s", rec.Body.String())
 	}
 }
+
+// Two cards with one vCard UID in an address book are refused with
+// CARDDAV:no-uid-conflict (RFC 6352 §6.3.2.1); updating the existing card still works.
+func TestSecondCardWithSameUIDIsRefused(t *testing.T) {
+	e := setupReview(t)
+	if rec := e.req(t, e.ownerID, http.MethodPut, e.abDir+"one.vcf", vcardWith("same-uid", ""), nil); rec.Code >= 300 {
+		t.Fatalf("first card: %d %s", rec.Code, rec.Body.String())
+	}
+	rec := e.req(t, e.ownerID, http.MethodPut, e.abDir+"two.vcf", vcardWith("same-uid", "NOTE:dup\r\n"), nil)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "no-uid-conflict") {
+		t.Fatalf("second card with the same UID: %d %s, want 403 no-uid-conflict", rec.Code, rec.Body.String())
+	}
+	if rec := e.req(t, e.ownerID, http.MethodPut, e.abDir+"one.vcf", vcardWith("same-uid", "NOTE:edited\r\n"), nil); rec.Code >= 300 {
+		t.Fatalf("updating the card in place: %d %s", rec.Code, rec.Body.String())
+	}
+	objs, err := e.svc.ListAddressbookObjects(context.Background(), e.abID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(objs) != 1 {
+		t.Fatalf("address book holds %d cards, want 1", len(objs))
+	}
+}

@@ -220,10 +220,14 @@ func (b *Backend) PutAddressObject(ctx context.Context, path string, card vcard.
 	}
 	// If-Match / If-None-Match are checked by the service inside the write's transaction.
 	etag, err := b.svc.PutAddressbookObjectIf(ctx, abID, obj, string(raw), putCheck(opts))
-	if errors.Is(err, dav.ErrPrecondition) {
+	switch {
+	case errors.Is(err, dav.ErrPrecondition):
 		return nil, webdav.NewHTTPError(http.StatusPreconditionFailed, err)
-	}
-	if err != nil {
+	case errors.Is(err, dav.ErrUIDConflict):
+		// RFC 6352 §6.3.2.1: CARDDAV:no-uid-conflict, 403
+		return nil, webdav.NewHTTPError(http.StatusForbidden,
+			errors.Unwrap(carddav.NewPreconditionError(carddav.PreconditionNoUIDConflict)))
+	case err != nil:
 		return nil, err
 	}
 	return &carddav.AddressObject{Path: objectPath(uid, uri, obj), ETag: etag}, nil

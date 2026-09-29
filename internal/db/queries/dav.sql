@@ -21,9 +21,18 @@ DELETE FROM resource_shares WHERE resource_type = $1 AND resource_id = $2;
 
 -- name: CalendarObjectWithUID :one
 -- Another object of the collection that carries the iCalendar UID (RFC 4791 no-uid-conflict).
--- Index: calendar_objects_ical_uid (migration 000019).
+-- Index: calendar_objects_ical_uid (migration 000023).
 SELECT uid FROM calendar_objects
 WHERE calendar_id = sqlc.arg(calendar_id)
   AND parsed ->> 'uid' = sqlc.arg(ical_uid)::text
+  AND uid <> sqlc.arg(object_uid)
+LIMIT 1;
+
+-- name: AddressbookObjectWithUID :one
+-- Another object of the address book that carries the vCard UID (RFC 6352 no-uid-conflict).
+-- Index: addressbook_objects_vcard_uid (migration 000023).
+SELECT uid FROM addressbook_objects
+WHERE addressbook_id = sqlc.arg(addressbook_id)
+  AND parsed ->> 'uid' = sqlc.arg(vcard_uid)::text
   AND uid <> sqlc.arg(object_uid)
 LIMIT 1;

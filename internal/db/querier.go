@@ -74,6 +74,9 @@ type Querier interface {
 	AddPlayQueueEntry(ctx context.Context, arg AddPlayQueueEntryParams) error
 	AddPlaylistSong(ctx context.Context, arg AddPlaylistSongParams) error
 	AddUploadReservation(ctx context.Context, arg AddUploadReservationParams) error
+	// Another object of the address book that carries the vCard UID (RFC 6352 no-uid-conflict).
+	// Index: addressbook_objects_vcard_uid (migration 000023).
+	AddressbookObjectWithUID(ctx context.Context, arg AddressbookObjectWithUIDParams) (string, error)
 	AddressbookShareForUser(ctx context.Context, arg AddressbookShareForUserParams) (pgtype.UUID, error)
 	AppendChange(ctx context.Context, arg AppendChangeParams) (ChangeLog, error)
 	// A change that moved the node (move/rename): prev_path is its disk_path before.
@@ -93,7 +96,7 @@ type Querier interface {
 	BumpCalendarCtag(ctx context.Context, id pgtype.UUID) error
 	BumpNodeVersion(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Another object of the collection that carries the iCalendar UID (RFC 4791 no-uid-conflict).
-	// Index: calendar_objects_ical_uid (migration 000019).
+	// Index: calendar_objects_ical_uid (migration 000023).
 	CalendarObjectWithUID(ctx context.Context, arg CalendarObjectWithUIDParams) (string, error)
 	// A user's access level to a file_node, accounting for inheritance: we check
 	// the node itself AND all its ancestors (recursive CTE), taking active shares for the user.

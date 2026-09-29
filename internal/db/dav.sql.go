@@ -11,6 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const addressbookObjectWithUID = `-- name: AddressbookObjectWithUID :one
+SELECT uid FROM addressbook_objects
+WHERE addressbook_id = $1
+  AND parsed ->> 'uid' = $2::text
+  AND uid <> $3
+LIMIT 1
+`
+
+type AddressbookObjectWithUIDParams struct {
+	AddressbookID pgtype.UUID `json:"addressbook_id"`
+	VcardUid      string      `json:"vcard_uid"`
+	ObjectUid     string      `json:"object_uid"`
+}
+
+// Another object of the address book that carries the vCard UID (RFC 6352 no-uid-conflict).
+// Index: addressbook_objects_vcard_uid (migration 000023).
+func (q *Queries) AddressbookObjectWithUID(ctx context.Context, arg AddressbookObjectWithUIDParams) (string, error) {
+	row := q.db.QueryRow(ctx, addressbookObjectWithUID, arg.AddressbookID, arg.VcardUid, arg.ObjectUid)
+	var uid string
+	err := row.Scan(&uid)
+	return uid, err
+}
+
 const calendarObjectWithUID = `-- name: CalendarObjectWithUID :one
 SELECT uid FROM calendar_objects
 WHERE calendar_id = $1
@@ -26,7 +49,7 @@ type CalendarObjectWithUIDParams struct {
 }
 
 // Another object of the collection that carries the iCalendar UID (RFC 4791 no-uid-conflict).
-// Index: calendar_objects_ical_uid (migration 000019).
+// Index: calendar_objects_ical_uid (migration 000023).
 func (q *Queries) CalendarObjectWithUID(ctx context.Context, arg CalendarObjectWithUIDParams) (string, error) {
 	row := q.db.QueryRow(ctx, calendarObjectWithUID, arg.CalendarID, arg.IcalUid, arg.ObjectUid)
 	var uid string

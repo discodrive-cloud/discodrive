@@ -24,8 +24,9 @@ var ErrBadID = errors.New("dav: malformed id")
 // ErrPrecondition — If-Match / If-None-Match did not hold at the time of the write.
 var ErrPrecondition = errors.New("dav: precondition failed")
 
-// ErrUIDConflict — another object of the calendar already carries this iCalendar UID
-// (RFC 4791 §5.3.2.1 no-uid-conflict).
+// ErrUIDConflict — another object of the collection already carries this UID: the
+// iCalendar UID of a calendar object (RFC 4791 §5.3.2.1) or the vCard UID of a card
+// (RFC 6352 §6.3.2.1), no-uid-conflict.
 var ErrUIDConflict = errors.New("dav: another object in the collection has this UID")
 
 // PutCheck decides a conditional write from the current state of the object: exists, and
@@ -483,6 +484,23 @@ func (s *Service) PutAddressbookObjectIf(ctx context.Context, abID, uid, data st
 		}
 		if !check(gerr == nil, cur.Etag) {
 			return "", ErrPrecondition
+		}
+	}
+	if parsedUID != "" {
+		_, cerr := qtx.AddressbookObjectWithUID(ctx, db.AddressbookObjectWithUIDParams{AddressbookID: aid, VcardUid: parsedUID, ObjectUid: uid})
+		if cerr != nil && !errors.Is(cerr, pgx.ErrNoRows) {
+			return "", cerr
+		}
+		if cerr == nil {
+			// Refused for a new resource; duplicates stored before this check stay
+			// writable in place, as for calendars.
+			_, gerr := qtx.GetAddressbookObject(ctx, db.GetAddressbookObjectParams{AddressbookID: aid, Uid: uid})
+			if errors.Is(gerr, pgx.ErrNoRows) {
+				return "", ErrUIDConflict
+			}
+			if gerr != nil {
+				return "", gerr
+			}
 		}
 	}
 	if _, err = qtx.UpsertAddressbookObject(ctx, db.UpsertAddressbookObjectParams{

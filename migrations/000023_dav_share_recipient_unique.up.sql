@@ -26,3 +26,7 @@ CREATE UNIQUE INDEX resource_shares_dav_recipient
 -- no-uid-conflict); without this index that is a scan of the whole calendar per write.
 -- Not unique: collections written before this check may already hold duplicates.
 CREATE INDEX calendar_objects_ical_uid ON calendar_objects (calendar_id, (parsed ->> 'uid'));
+
+-- The same for address books: a card PUT looks for another card with the same vCard UID
+-- (RFC 6352 §6.3.2.1 no-uid-conflict).
+CREATE INDEX addressbook_objects_vcard_uid ON addressbook_objects (addressbook_id, (parsed ->> 'uid'));
