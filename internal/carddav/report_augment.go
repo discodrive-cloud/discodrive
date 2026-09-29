@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/beevik/etree"
@@ -44,14 +45,20 @@ func (b *Backend) augmentReport(ctx context.Context, body []byte) []byte {
 	if ms == nil || ms.Tag != "multistatus" {
 		return body
 	}
-	repl := map[string]string{}
+	var repl []string // placeholder, raw vCard, ... — for one strings.Replacer pass
 	n := 0
 	for _, resp := range ms.SelectElements("response") {
 		href := resp.SelectElement("href")
 		if href == nil {
 			continue
 		}
-		_, uri, obj := parsePath(href.Text())
+		// href is the escaped path (a UID with '@' or a space comes as %40 / %20); objects
+		// are stored under the unescaped name, as go-webdav hands it to the backend.
+		p, err := url.PathUnescape(href.Text())
+		if err != nil {
+			continue
+		}
+		_, uri, obj := parsePath(p)
 		if uri == "" || obj == "" {
 			continue
 		}
@@ -70,7 +77,7 @@ func (b *Backend) augmentReport(ctx context.Context, body []byte) []byte {
 		ph := fmt.Sprintf("__KF_RAWVCARD_%d__", n)
 		n++
 		ad.SetText(ph)
-		repl[ph] = vcardXMLEscaper.Replace(data)
+		repl = append(repl, ph, vcardXMLEscaper.Replace(data))
 	}
 	if n == 0 {
 		return body
@@ -79,8 +86,7 @@ func (b *Backend) augmentReport(ctx context.Context, body []byte) []byte {
 	if err != nil {
 		return body
 	}
-	for ph, esc := range repl {
-		out = strings.Replace(out, ph, esc, 1)
-	}
-	return []byte(out)
+	// One pass: substituted text is never scanned again, so a card that happens to contain
+	// another placeholder's text cannot pull a different card into its place.
+	return []byte(strings.NewReplacer(repl...).Replace(out))
 }
