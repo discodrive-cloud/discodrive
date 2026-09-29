@@ -186,13 +186,36 @@ func scalarString(v any) string {
 }
 
 // xmlEscape escapes a string for use in both attribute and text contexts.
+// Characters XML 1.0 cannot carry at all (control characters from tags, lone
+// surrogates, U+FFFE/U+FFFF) are dropped, invalid UTF-8 becomes U+FFFD, and
+// tab/newline/CR are written as character references so attribute values keep
+// them. One bad tag must not make the whole response unparseable.
 func xmlEscape(s string) string {
-	r := strings.NewReplacer(
-		`&`, "&amp;",
-		`<`, "&lt;",
-		`>`, "&gt;",
-		`"`, "&quot;",
-		`'`, "&apos;",
-	)
-	return r.Replace(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '&':
+			b.WriteString("&amp;")
+		case r == '<':
+			b.WriteString("&lt;")
+		case r == '>':
+			b.WriteString("&gt;")
+		case r == '"':
+			b.WriteString("&quot;")
+		case r == '\'':
+			b.WriteString("&apos;")
+		case r == '\t':
+			b.WriteString("&#x9;")
+		case r == '\n':
+			b.WriteString("&#xA;")
+		case r == '\r':
+			b.WriteString("&#xD;")
+		case r < 0x20, r >= 0xD800 && r <= 0xDFFF, r == 0xFFFE, r == 0xFFFF:
+			// not an XML 1.0 Char: drop
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
