@@ -40,7 +40,7 @@ func (s *Server) handleSyncPutFile(w http.ResponseWriter, r *http.Request) {
 	}
 	rel, err := s.scopedPushPath(r, rel)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeScopeErr(w, err)
 		return
 	}
 	var base *int64
@@ -84,7 +84,7 @@ func (s *Server) handleSyncMkdir(w http.ResponseWriter, r *http.Request) {
 	}
 	path, err := s.scopedPushPath(r, req.Path)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeScopeErr(w, err)
 		return
 	}
 	node, err := s.files.EnsureDirByPath(r.Context(), auth.UserID(r.Context()), path)
@@ -104,7 +104,7 @@ func (s *Server) handleSyncDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	rel, err := s.scopedPushPath(r, rel)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeScopeErr(w, err)
 		return
 	}
 	if err := s.files.DeleteByPath(r.Context(), auth.UserID(r.Context()), rel); err != nil {

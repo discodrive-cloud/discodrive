@@ -166,6 +166,7 @@ type ChangeLog struct {
 	Version   int64              `json:"version"`
 	DeviceID  pgtype.UUID        `json:"device_id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	PrevPath  pgtype.Text        `json:"prev_path"`
 }
 
 type Device struct {
@@ -267,6 +268,7 @@ type Node struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	IsConflictLoser bool               `json:"is_conflict_loser"`
 	ConflictOf      pgtype.UUID        `json:"conflict_of"`
+	TrashPath       pgtype.Text        `json:"trash_path"`
 }
 
 type NotificationPref struct {

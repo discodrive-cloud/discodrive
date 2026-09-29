@@ -779,7 +779,7 @@ WITH RECURSIVE subtree AS (
     UNION ALL
     SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id WHERE n.deleted_at IS NULL
 )
-SELECT n.id, n.user_id, n.parent_id, n.name, n.is_dir, n.size, n.content_hash, n.disk_path, n.mime, n.is_vault, n.version, n.modified_at, n.modified_by, n.deleted_at, n.created_at, n.is_conflict_loser, n.conflict_of FROM nodes n JOIN subtree s ON n.id = s.id
+SELECT n.id, n.user_id, n.parent_id, n.name, n.is_dir, n.size, n.content_hash, n.disk_path, n.mime, n.is_vault, n.version, n.modified_at, n.modified_by, n.deleted_at, n.created_at, n.is_conflict_loser, n.conflict_of, n.trash_path FROM nodes n JOIN subtree s ON n.id = s.id
 LEFT JOIN books b ON b.node_id = n.id
 WHERE NOT n.is_dir AND n.deleted_at IS NULL
   AND (b.id IS NULL OR (NOT b.metadata_edited AND b.updated_at < n.modified_at))
@@ -812,6 +812,7 @@ func (q *Queries) ListStaleBookNodes(ctx context.Context, id pgtype.UUID) ([]Nod
 			&i.CreatedAt,
 			&i.IsConflictLoser,
 			&i.ConflictOf,
+			&i.TrashPath,
 		); err != nil {
 			return nil, err
 		}

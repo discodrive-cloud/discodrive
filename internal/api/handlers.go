@@ -728,7 +728,7 @@ func (s *Server) handleSyncChanges(w http.ResponseWriter, r *http.Request) {
 	if scopeRequested(r) {
 		scope, err = s.resolveSyncScope(r.Context(), uidStr, uid)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
+			writeScopeErr(w, err)
 			return
 		}
 	}
@@ -745,10 +745,7 @@ func (s *Server) handleSyncChanges(w http.ResponseWriter, r *http.Request) {
 		pr, err = s.q.ListChangesSinceUnderPrefix(r.Context(), db.ListChangesSinceUnderPrefixParams{
 			UserID: uid, Seq: since, Lim: int32(limit + 1), Prefix: prefix,
 		})
-		rows = make([]db.ListChangesSinceRow, len(pr))
-		for i, p := range pr {
-			rows[i] = db.ListChangesSinceRow(p) // identical column set
-		}
+		rows = scopedChangeRows(pr, uidStr+"/"+scope.RelPrefix+"/")
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -866,7 +863,7 @@ func (s *Server) handleUploadInit(w http.ResponseWriter, r *http.Request) {
 		var rel string
 		rel, err = s.scopedPushPath(r, req.Path)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
+			writeScopeErr(w, err)
 			return
 		}
 		id, err = s.uploads.InitByPath(r.Context(), auth.UserID(r.Context()), rel, req.BaseVersion, req.Size,

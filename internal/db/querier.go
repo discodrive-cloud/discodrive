@@ -76,6 +76,8 @@ type Querier interface {
 	AddUploadReservation(ctx context.Context, arg AddUploadReservationParams) error
 	AddressbookShareForUser(ctx context.Context, arg AddressbookShareForUserParams) (pgtype.UUID, error)
 	AppendChange(ctx context.Context, arg AppendChangeParams) (ChangeLog, error)
+	// A change that moved the node (move/rename): prev_path is its disk_path before.
+	AppendPathChange(ctx context.Context, arg AppendPathChangeParams) error
 	ApprovePairing(ctx context.Context, arg ApprovePairingParams) (pgtype.UUID, error)
 	// Which interactive second factors the user has. Used by Login to branch.
 	AvailableMFAFactors(ctx context.Context, userID pgtype.UUID) (AvailableMFAFactorsRow, error)
@@ -240,7 +242,6 @@ type Querier interface {
 	// TOTP 2FA (A.3). Secret is AES-GCM ciphertext.
 	GetUserTOTP(ctx context.Context, userID pgtype.UUID) (UserTotp, error)
 	HardDeleteNode(ctx context.Context, id pgtype.UUID) error
-	HardDeleteSubtree(ctx context.Context, arg HardDeleteSubtreeParams) error
 	// Audit log (A.7).
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	// Backup codes (A.3). One-time, argon2id-hashed.
@@ -282,6 +283,12 @@ type Querier interface {
 	// LIMIT — pagination: large deltas aren't returned in a single chunk (3.1).
 	// content_hash — lets the client tell a real change from a touch.
 	ListChangesSince(ctx context.Context, arg ListChangesSinceParams) ([]ListChangesSinceRow, error)
+	// The scoped feed: changes of nodes under the sync folder, plus moves whose previous
+	// path was under it (prev_path). A row whose node is now outside the folder is such a
+	// move out, and the caller reports it to the scoped client as a delete. Two branches
+	// rather than one OR: with the OR a full pull (since=0) hashed every node of the table;
+	// this way each branch filters before the join (EXPLAIN on 60k nodes: 0.5 MB vs 11 MB),
+	// and an incremental pull stays on change_log_user_seq + nodes_pkey either way.
 	ListChangesSinceUnderPrefix(ctx context.Context, arg ListChangesSinceUnderPrefixParams) ([]ListChangesSinceUnderPrefixRow, error)
 	ListChildren(ctx context.Context, arg ListChildrenParams) ([]Node, error)
 	ListCompletedEpisodesByChannelDesc(ctx context.Context, channelID pgtype.UUID) ([]ListCompletedEpisodesByChannelDescRow, error)
@@ -332,13 +339,21 @@ type Querier interface {
 	ListStarredArtists(ctx context.Context, userID pgtype.UUID) ([]Artist, error)
 	// Returns accessible starred songs for a user, ordered by starred_at desc.
 	ListStarredSongs(ctx context.Context, userID pgtype.UUID) ([]Song, error)
-	// Names of trashed children of one folder: reconciliation must not re-import them.
+	// Trash operations address a tombstone subtree by node id, walking parent_id: paths
+	// cannot tell apart two trashed trees with the same path (a folder deleted, created
+	// again and deleted again). together limits the walk to the rows deleted by the same
+	// operation as the root (same deleted_at); without it the walk takes every tombstone
+	// below the root, including ones deleted earlier on their own. UNION (not UNION ALL)
+	// ends the walk even if parent links were ever corrupted into a cycle.
+	ListTombstoneSubtree(ctx context.Context, arg ListTombstoneSubtreeParams) ([]ListTombstoneSubtreeRow, error)
+	// Names of trashed children of one folder whose bytes may still sit at their old path
+	// (tombstones from before deletes moved bytes to .trash): reconciliation must not
+	// re-import them. A tombstone with a trash_path left its name free on disk.
 	ListTombstonedChildren(ctx context.Context, parentID pgtype.UUID) ([]string, error)
 	// Paths of trashed (soft-deleted) nodes — so a rescan doesn't re-import their files.
 	ListTombstonedNodePaths(ctx context.Context, userID pgtype.UUID) ([]pgtype.Text, error)
 	ListTombstonedRootChildren(ctx context.Context, userID pgtype.UUID) ([]string, error)
 	ListTrashNodes(ctx context.Context, userID pgtype.UUID) ([]Node, error)
-	ListTrashedSubtree(ctx context.Context, arg ListTrashedSubtreeParams) ([]ListTrashedSubtreeRow, error)
 	ListUnusedBackupCodes(ctx context.Context, userID pgtype.UUID) ([]BackupCode, error)
 	ListUserIDs(ctx context.Context) ([]pgtype.UUID, error)
 	// Users with used space — for the admin dashboard, and the definition the quota check
@@ -353,6 +368,11 @@ type Querier interface {
 	ListWebAuthnCredentials(ctx context.Context, userID pgtype.UUID) ([]WebauthnCredential, error)
 	ListWebdavDevicesByEmail(ctx context.Context, email string) ([]Device, error)
 	LockBootstrap(ctx context.Context) (ServerBootstrap, error)
+	// Serializes writers of one tree path until the transaction ends: two pushes to the
+	// same file must not both read the old row and then overwrite each other's bytes.
+	// The two-key form keeps these locks apart from the single-key upload/quota locks;
+	// a hash collision only makes two unrelated paths wait for each other.
+	LockTreePath(ctx context.Context, path string) error
 	LockUploadQuota(ctx context.Context) error
 	MarkBackupCodeUsed(ctx context.Context, id pgtype.UUID) (int64, error)
 	MarkQuotaNotified(ctx context.Context, id pgtype.UUID) error
@@ -374,7 +394,9 @@ type Querier interface {
 	// Append change_log rows for every live strict descendant of prefix. Needed after
 	// a subtree path rewrite (move/rename): cursor-based clients (and the scoped feed,
 	// which filters on current disk_path) only see rows recorded after their cursor,
-	// so without these rows a folder moved into the sync scope arrives empty.
+	// so without these rows a folder moved into the sync scope arrives empty. prev_path is
+	// where each descendant was under old_prefix, so a scoped feed also learns about a
+	// folder moved OUT of its scope.
 	RecordSubtreeChanges(ctx context.Context, arg RecordSubtreeChangesParams) error
 	RefreshAlbumSongCount(ctx context.Context, id pgtype.UUID) error
 	// Refreshes the users.storage_used cache from the live totals. The column feeds the
@@ -384,11 +406,15 @@ type Querier interface {
 	RenameWebAuthnCredential(ctx context.Context, arg RenameWebAuthnCredentialParams) error
 	ResetStaleSavedItems(ctx context.Context) (int64, error)
 	RetrySavedItem(ctx context.Context, arg RetrySavedItemParams) (int64, error)
-	// Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree).
+	// Subtree queries match "prefix or anything under prefix/" as a bytewise range,
+	//   disk_path ~>=~ prefix || '/' AND disk_path ~<~ prefix || '0'   ('0' follows '/'),
+	// which is exactly starts_with(disk_path, prefix || '/') but can use the
+	// text_pattern_ops path indexes (migration 000021); starts_with cannot, and every
+	// folder rename, move or delete read the whole table.
+	// Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree),
+	// trashed rows included. Two branches, one per partial index: as a single condition
+	// the planner merges them and scans the table.
 	RewriteSubtreePaths(ctx context.Context, arg RewriteSubtreePathsParams) error
-	// Like RewriteSubtreePaths, but only for trashed nodes — so restoring doesn't
-	// touch a LIVE node sharing the same disk_path (the name was reused after deletion).
-	RewriteTombstonedSubtreePaths(ctx context.Context, arg RewriteTombstonedSubtreePathsParams) error
 	// Returns accessible books matching a case-insensitive substring in title, author, or series.
 	SearchAccessibleBooks(ctx context.Context, arg SearchAccessibleBooksParams) ([]Book, error)
 	// Returns accessible albums whose name matches a case-insensitive substring.
@@ -437,7 +463,11 @@ type Querier interface {
 	// Returns accessible songs of a given genre excluding a specific artist, in random order.
 	SimilarSongsByGenre(ctx context.Context, arg SimilarSongsByGenreParams) ([]SimilarSongsByGenreRow, error)
 	SoftDeleteNode(ctx context.Context, id pgtype.UUID) error
-	// Soft-delete a node and its whole subtree (disk is cleaned up by GC, step 0.6).
+	// Soft-delete a node and its whole subtree. trash_root is where the node's bytes are
+	// moved (.trash/<user>/<node id>); every row records its own place under it, so a
+	// descendant can be restored or purged on its own. NULL trash_root keeps the old
+	// behaviour (bytes stay at disk_path). All rows get the same deleted_at (now() is the
+	// transaction's time): that is what marks them as trashed together.
 	SoftDeleteSubtree(ctx context.Context, arg SoftDeleteSubtreeParams) error
 	// Returns accessible songs for a specific genre with pagination.
 	SongsByGenre(ctx context.Context, arg SongsByGenreParams) ([]SongsByGenreRow, error)
@@ -470,7 +500,10 @@ type Querier interface {
 	// Delete versions beyond the keep newest; return snapshot paths for disk cleanup.
 	TrimNodeVersions(ctx context.Context, arg TrimNodeVersionsParams) ([]pgtype.Text, error)
 	TrimUploadReservation(ctx context.Context, arg TrimUploadReservationParams) error
-	UndeleteSubtree(ctx context.Context, arg UndeleteSubtreeParams) error
+	// Restore the rows trashed together with the root: clear the tombstone and move each
+	// row's path from old_prefix to new_prefix (where the root is restored to). The
+	// partial unique indexes fire here if a live node already holds a restored name.
+	UndeleteTombstoneSubtree(ctx context.Context, arg UndeleteTombstoneSubtreeParams) error
 	Unstar(ctx context.Context, arg UnstarParams) error
 	UpdateBookMetadata(ctx context.Context, arg UpdateBookMetadataParams) error
 	UpdateBrowserBookmark(ctx context.Context, arg UpdateBrowserBookmarkParams) (BrowserBookmark, error)
@@ -478,6 +511,10 @@ type Querier interface {
 	UpdateNodeContent(ctx context.Context, arg UpdateNodeContentParams) (Node, error)
 	UpdateNodeName(ctx context.Context, arg UpdateNodeNameParams) (Node, error)
 	UpdateNodeParent(ctx context.Context, arg UpdateNodeParentParams) (Node, error)
+	// Parent and name in one statement: the unique name indexes are checked per statement,
+	// so two updates could collide in the state between them (a.txt moving to another
+	// folder as b.txt, where an a.txt already exists).
+	UpdateNodePlace(ctx context.Context, arg UpdateNodePlaceParams) (Node, error)
 	// Password change: new hash + bump token_version (invalidates all active sessions)
 	// + clear the forced-change flag (A.2).
 	UpdatePassword(ctx context.Context, arg UpdatePasswordParams) (User, error)

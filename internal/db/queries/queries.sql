@@ -227,15 +227,17 @@ SELECT * FROM nodes WHERE user_id = $1 AND deleted_at IS NULL;
 SELECT disk_path FROM nodes
 WHERE user_id = $1 AND deleted_at IS NOT NULL AND disk_path IS NOT NULL;
 
--- Names of trashed children of one folder: reconciliation must not re-import them.
+-- Names of trashed children of one folder whose bytes may still sit at their old path
+-- (tombstones from before deletes moved bytes to .trash): reconciliation must not
+-- re-import them. A tombstone with a trash_path left its name free on disk.
 -- name: ListTombstonedChildren :many
-SELECT name FROM nodes WHERE parent_id = $1 AND deleted_at IS NOT NULL;
+SELECT name FROM nodes WHERE parent_id = $1 AND deleted_at IS NOT NULL AND trash_path IS NULL;
 
 -- name: ListTombstonedRootChildren :many
-SELECT name FROM nodes WHERE user_id = $1 AND parent_id IS NULL AND deleted_at IS NOT NULL;
+SELECT name FROM nodes WHERE user_id = $1 AND parent_id IS NULL AND deleted_at IS NOT NULL AND trash_path IS NULL;
 
 -- name: ListExpiredTombstones :many
-SELECT id, user_id, disk_path, is_dir FROM nodes
+SELECT id, user_id, disk_path, is_dir, trash_path FROM nodes
 WHERE deleted_at IS NOT NULL AND deleted_at < $1;
 
 -- name: HardDeleteNode :exec
@@ -256,6 +258,15 @@ SET parent_id = $2, version = version + 1, modified_at = now(), modified_by = $3
 WHERE id = $1
 RETURNING *;
 
+-- Parent and name in one statement: the unique name indexes are checked per statement,
+-- so two updates could collide in the state between them (a.txt moving to another
+-- folder as b.txt, where an a.txt already exists).
+-- name: UpdateNodePlace :one
+UPDATE nodes
+SET parent_id = $2, name = $3, version = version + 1, modified_at = now(), modified_by = $4
+WHERE id = $1
+RETURNING *;
+
 -- name: UpdateNodeContent :one
 UPDATE nodes
 SET size = $2, content_hash = $3, mime = $4, version = version + 1,
@@ -270,23 +281,49 @@ UPDATE nodes SET version = version + 1, modified_at = now() WHERE id = $1 RETURN
 SELECT * FROM nodes
 WHERE user_id = sqlc.arg(user_id) AND disk_path = sqlc.arg(path)::text AND deleted_at IS NULL;
 
--- Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree).
+-- Serializes writers of one tree path until the transaction ends: two pushes to the
+-- same file must not both read the old row and then overwrite each other's bytes.
+-- The two-key form keeps these locks apart from the single-key upload/quota locks;
+-- a hash collision only makes two unrelated paths wait for each other.
+-- name: LockTreePath :exec
+SELECT pg_advisory_xact_lock(1146110292, hashtext(sqlc.arg(path)::text));
+
+-- Subtree queries match "prefix or anything under prefix/" as a bytewise range,
+--   disk_path ~>=~ prefix || '/' AND disk_path ~<~ prefix || '0'   ('0' follows '/'),
+-- which is exactly starts_with(disk_path, prefix || '/') but can use the
+-- text_pattern_ops path indexes (migration 000021); starts_with cannot, and every
+-- folder rename, move or delete read the whole table.
+
+-- Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree),
+-- trashed rows included. Two branches, one per partial index: as a single condition
+-- the planner merges them and scans the table.
 -- name: RewriteSubtreePaths :exec
 UPDATE nodes
 SET disk_path = sqlc.arg(new_prefix)::text || substring(disk_path FROM char_length(sqlc.arg(old_prefix)::text) + 1)
-WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(old_prefix)::text OR starts_with(disk_path, sqlc.arg(old_prefix)::text || '/'));
+WHERE id IN (
+    SELECT l.id FROM nodes l
+    WHERE l.user_id = sqlc.arg(user_id) AND l.deleted_at IS NULL
+      AND (l.disk_path = sqlc.arg(old_prefix)::text
+           OR (l.disk_path ~>=~ (sqlc.arg(old_prefix)::text || '/') AND l.disk_path ~<~ (sqlc.arg(old_prefix)::text || '0')))
+    UNION ALL
+    SELECT t.id FROM nodes t
+    WHERE t.user_id = sqlc.arg(user_id) AND t.deleted_at IS NOT NULL
+      AND (t.disk_path = sqlc.arg(old_prefix)::text
+           OR (t.disk_path ~>=~ (sqlc.arg(old_prefix)::text || '/') AND t.disk_path ~<~ (sqlc.arg(old_prefix)::text || '0')))
+);
 
 -- Append change_log rows for every live strict descendant of prefix. Needed after
 -- a subtree path rewrite (move/rename): cursor-based clients (and the scoped feed,
 -- which filters on current disk_path) only see rows recorded after their cursor,
--- so without these rows a folder moved into the sync scope arrives empty.
+-- so without these rows a folder moved into the sync scope arrives empty. prev_path is
+-- where each descendant was under old_prefix, so a scoped feed also learns about a
+-- folder moved OUT of its scope.
 -- name: RecordSubtreeChanges :exec
 WITH descendants AS (
-    SELECT id, version, row_number() OVER (ORDER BY disk_path) AS rn
+    SELECT id, version, disk_path, row_number() OVER (ORDER BY disk_path) AS rn
     FROM nodes
     WHERE user_id = sqlc.arg(user_id)
-      AND starts_with(disk_path, sqlc.arg(prefix)::text || '/')
+      AND disk_path ~>=~ (sqlc.arg(prefix)::text || '/') AND disk_path ~<~ (sqlc.arg(prefix)::text || '0')
       AND deleted_at IS NULL
 ),
 bump AS (
@@ -294,27 +331,25 @@ bump AS (
     WHERE id = sqlc.arg(user_id)
     RETURNING change_seq
 )
-INSERT INTO change_log (user_id, node_id, seq, op, version)
+INSERT INTO change_log (user_id, node_id, seq, op, version, prev_path)
 SELECT sqlc.arg(user_id), d.id,
        (SELECT change_seq FROM bump) - (SELECT count(*) FROM descendants) + d.rn,
-       'move', d.version
+       'move', d.version,
+       sqlc.arg(old_prefix)::text || substring(d.disk_path FROM char_length(sqlc.arg(prefix)::text) + 1)
 FROM descendants d;
 
--- Like RewriteSubtreePaths, but only for trashed nodes — so restoring doesn't
--- touch a LIVE node sharing the same disk_path (the name was reused after deletion).
--- name: RewriteTombstonedSubtreePaths :exec
-UPDATE nodes
-SET disk_path = sqlc.arg(new_prefix)::text || substring(disk_path FROM char_length(sqlc.arg(old_prefix)::text) + 1)
-WHERE user_id = sqlc.arg(user_id)
-  AND deleted_at IS NOT NULL
-  AND (disk_path = sqlc.arg(old_prefix)::text OR starts_with(disk_path, sqlc.arg(old_prefix)::text || '/'));
-
--- Soft-delete a node and its whole subtree (disk is cleaned up by GC, step 0.6).
+-- Soft-delete a node and its whole subtree. trash_root is where the node's bytes are
+-- moved (.trash/<user>/<node id>); every row records its own place under it, so a
+-- descendant can be restored or purged on its own. NULL trash_root keeps the old
+-- behaviour (bytes stay at disk_path). All rows get the same deleted_at (now() is the
+-- transaction's time): that is what marks them as trashed together.
 -- name: SoftDeleteSubtree :exec
 UPDATE nodes
-SET deleted_at = now()
+SET deleted_at = now(),
+    trash_path = sqlc.narg(trash_root)::text || substring(disk_path FROM char_length(sqlc.arg(prefix)::text) + 1)
 WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
+  AND (disk_path = sqlc.arg(prefix)::text
+       OR (disk_path ~>=~ (sqlc.arg(prefix)::text || '/') AND disk_path ~<~ (sqlc.arg(prefix)::text || '0')))
   AND deleted_at IS NULL;
 
 -- name: NextChangeSeq :one
@@ -324,6 +359,11 @@ UPDATE users SET change_seq = change_seq + 1 WHERE id = $1 RETURNING change_seq;
 INSERT INTO change_log (user_id, node_id, seq, op, version, device_id)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
+
+-- A change that moved the node (move/rename): prev_path is its disk_path before.
+-- name: AppendPathChange :exec
+INSERT INTO change_log (user_id, node_id, seq, op, version, prev_path)
+VALUES ($1, $2, $3, $4, $5, sqlc.arg(prev_path)::text);
 
 -- Delta sync: changes after seq, with the node's current state.
 -- LIMIT — pagination: large deltas aren't returned in a single chunk (3.1).
@@ -338,14 +378,30 @@ WHERE cl.user_id = $1 AND cl.seq > $2
 ORDER BY cl.seq
 LIMIT sqlc.arg(lim);
 
+-- The scoped feed: changes of nodes under the sync folder, plus moves whose previous
+-- path was under it (prev_path). A row whose node is now outside the folder is such a
+-- move out, and the caller reports it to the scoped client as a delete. Two branches
+-- rather than one OR: with the OR a full pull (since=0) hashed every node of the table;
+-- this way each branch filters before the join (EXPLAIN on 60k nodes: 0.5 MB vs 11 MB),
+-- and an incremental pull stays on change_log_user_seq + nodes_pkey either way.
 -- name: ListChangesSinceUnderPrefix :many
 SELECT cl.seq, cl.op, cl.version, cl.created_at,
        n.id AS node_id, n.name, n.parent_id, n.is_dir, n.size, n.content_hash, n.disk_path,
-       (n.deleted_at IS NOT NULL)::bool AS deleted
+       (n.deleted_at IS NOT NULL)::bool AS deleted, cl.prev_path
 FROM change_log cl
 JOIN nodes n ON n.id = cl.node_id
-WHERE cl.user_id = $1 AND cl.seq > $2 AND n.disk_path LIKE sqlc.arg(prefix)::text ESCAPE '\'
-ORDER BY cl.seq
+WHERE cl.user_id = sqlc.arg(user_id) AND cl.seq > sqlc.arg(seq)
+  AND n.disk_path LIKE sqlc.arg(prefix)::text ESCAPE '\'
+UNION ALL
+SELECT cl.seq, cl.op, cl.version, cl.created_at,
+       n.id AS node_id, n.name, n.parent_id, n.is_dir, n.size, n.content_hash, n.disk_path,
+       (n.deleted_at IS NOT NULL)::bool AS deleted, cl.prev_path
+FROM change_log cl
+JOIN nodes n ON n.id = cl.node_id
+WHERE cl.user_id = sqlc.arg(user_id) AND cl.seq > sqlc.arg(seq)
+  AND cl.prev_path LIKE sqlc.arg(prefix)::text ESCAPE '\'
+  AND n.disk_path NOT LIKE sqlc.arg(prefix)::text ESCAPE '\'
+ORDER BY seq
 LIMIT sqlc.arg(lim);
 
 -- A version is snapshotted once, when the content that carried it is replaced. The
@@ -474,23 +530,44 @@ WHERE n.user_id = $1 AND n.deleted_at IS NOT NULL
         SELECT 1 FROM nodes p WHERE p.id = n.parent_id AND p.user_id = n.user_id AND p.deleted_at IS NULL))
 ORDER BY n.deleted_at DESC;
 
--- name: UndeleteSubtree :exec
-UPDATE nodes SET deleted_at = NULL
-WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
-  AND deleted_at IS NOT NULL;
+-- Trash operations address a tombstone subtree by node id, walking parent_id: paths
+-- cannot tell apart two trashed trees with the same path (a folder deleted, created
+-- again and deleted again). together limits the walk to the rows deleted by the same
+-- operation as the root (same deleted_at); without it the walk takes every tombstone
+-- below the root, including ones deleted earlier on their own. UNION (not UNION ALL)
+-- ends the walk even if parent links were ever corrupted into a cycle.
+-- name: ListTombstoneSubtree :many
+WITH RECURSIVE t AS (
+    SELECT r.id, r.deleted_at FROM nodes r
+    WHERE r.id = sqlc.arg(id) AND r.deleted_at IS NOT NULL
+  UNION
+    SELECT c.id, c.deleted_at FROM nodes c JOIN t ON c.parent_id = t.id
+    WHERE c.deleted_at IS NOT NULL
+      AND (NOT sqlc.arg(together)::bool OR c.deleted_at = t.deleted_at)
+)
+SELECT n.id, n.disk_path, n.trash_path, n.is_dir, n.size FROM nodes n JOIN t ON n.id = t.id;
 
--- name: ListTrashedSubtree :many
-SELECT id, disk_path, is_dir FROM nodes
-WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
-  AND deleted_at IS NOT NULL;
-
--- name: HardDeleteSubtree :exec
-DELETE FROM nodes
-WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
-  AND deleted_at IS NOT NULL;
+-- Restore the rows trashed together with the root: clear the tombstone and move each
+-- row's path from old_prefix to new_prefix (where the root is restored to). The
+-- partial unique indexes fire here if a live node already holds a restored name.
+-- name: UndeleteTombstoneSubtree :exec
+WITH RECURSIVE t AS (
+    SELECT r.id, r.deleted_at FROM nodes r
+    WHERE r.id = sqlc.arg(id) AND r.deleted_at IS NOT NULL
+  UNION
+    SELECT c.id, c.deleted_at FROM nodes c JOIN t ON c.parent_id = t.id
+    WHERE c.deleted_at IS NOT NULL AND c.deleted_at = t.deleted_at
+)
+UPDATE nodes n
+SET deleted_at = NULL,
+    trash_path = NULL,
+    disk_path = CASE
+        WHEN n.disk_path = sqlc.arg(old_prefix)::text OR starts_with(n.disk_path, sqlc.arg(old_prefix)::text || '/')
+        THEN sqlc.arg(new_prefix)::text || substring(n.disk_path FROM char_length(sqlc.arg(old_prefix)::text) + 1)
+        ELSE n.disk_path
+    END
+FROM t
+WHERE n.id = t.id;
 
 -- name: ListSecretKeys :many
 SELECT key FROM settings WHERE is_secret = true ORDER BY key;
