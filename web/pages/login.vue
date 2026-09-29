@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { safeRedirect } from '~/lib/safeRedirect'
+
 definePageMeta({ layout: 'auth' })
 
 const { t } = useI18n()
@@ -70,7 +72,9 @@ async function passkeyLogin() {
 }
 
 async function navigateAfterLogin(role: string) {
-  const redirect = route.query.redirect as string | undefined
+  // Only in-app paths: an external or protocol-relative target is ignored (navigateTo
+  // would throw after the session is already set and show "login failed").
+  const redirect = safeRedirect(route.query.redirect)
   if (redirect) { await navigateTo(redirect); return }
   await navigateTo(role === 'admin' ? '/admin' : '/files')
 }
