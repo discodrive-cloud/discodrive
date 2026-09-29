@@ -2913,6 +2913,32 @@ func (q *Queries) ListWebdavDevicesByEmail(ctx context.Context, email string) ([
 	return items, nil
 }
 
+const lockAdmins = `-- name: LockAdmins :many
+SELECT id FROM users WHERE role = 'admin' ORDER BY id FOR UPDATE
+`
+
+// LockAdmins serializes changes that could leave the server without an admin
+// (demotion, deletion): callers count the locked rows inside their transaction.
+func (q *Queries) LockAdmins(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockAdmins)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markBackupCodeUsed = `-- name: MarkBackupCodeUsed :execrows
 UPDATE backup_codes SET used_at = now() WHERE id = $1 AND used_at IS NULL
 `
@@ -3197,6 +3223,72 @@ type SetUserLanguageParams struct {
 func (q *Queries) SetUserLanguage(ctx context.Context, arg SetUserLanguageParams) error {
 	_, err := q.db.Exec(ctx, setUserLanguage, arg.ID, arg.Language)
 	return err
+}
+
+const setUserQuota = `-- name: SetUserQuota :one
+UPDATE users SET storage_quota = $2 WHERE id = $1 RETURNING id, tenant_id, email, password_hash, storage_quota, storage_used, created_at, role, change_seq, quota_notified_at, token_version, language, must_change_password, bookmark_seq, bookmark_gc_seq, session_ttl_minutes
+`
+
+type SetUserQuotaParams struct {
+	ID           pgtype.UUID `json:"id"`
+	StorageQuota pgtype.Int8 `json:"storage_quota"`
+}
+
+func (q *Queries) SetUserQuota(ctx context.Context, arg SetUserQuotaParams) (User, error) {
+	row := q.db.QueryRow(ctx, setUserQuota, arg.ID, arg.StorageQuota)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.StorageQuota,
+		&i.StorageUsed,
+		&i.CreatedAt,
+		&i.Role,
+		&i.ChangeSeq,
+		&i.QuotaNotifiedAt,
+		&i.TokenVersion,
+		&i.Language,
+		&i.MustChangePassword,
+		&i.BookmarkSeq,
+		&i.BookmarkGcSeq,
+		&i.SessionTtlMinutes,
+	)
+	return i, err
+}
+
+const setUserRole = `-- name: SetUserRole :one
+UPDATE users SET role = $2 WHERE id = $1 RETURNING id, tenant_id, email, password_hash, storage_quota, storage_used, created_at, role, change_seq, quota_notified_at, token_version, language, must_change_password, bookmark_seq, bookmark_gc_seq, session_ttl_minutes
+`
+
+type SetUserRoleParams struct {
+	ID   pgtype.UUID `json:"id"`
+	Role string      `json:"role"`
+}
+
+func (q *Queries) SetUserRole(ctx context.Context, arg SetUserRoleParams) (User, error) {
+	row := q.db.QueryRow(ctx, setUserRole, arg.ID, arg.Role)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.StorageQuota,
+		&i.StorageUsed,
+		&i.CreatedAt,
+		&i.Role,
+		&i.ChangeSeq,
+		&i.QuotaNotifiedAt,
+		&i.TokenVersion,
+		&i.Language,
+		&i.MustChangePassword,
+		&i.BookmarkSeq,
+		&i.BookmarkGcSeq,
+		&i.SessionTtlMinutes,
+	)
+	return i, err
 }
 
 const setUserSessionTTL = `-- name: SetUserSessionTTL :exec

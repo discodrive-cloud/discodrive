@@ -355,6 +355,9 @@ type Querier interface {
 	ListUsersWithUsage(ctx context.Context) ([]ListUsersWithUsageRow, error)
 	ListWebAuthnCredentials(ctx context.Context, userID pgtype.UUID) ([]WebauthnCredential, error)
 	ListWebdavDevicesByEmail(ctx context.Context, email string) ([]Device, error)
+	// LockAdmins serializes changes that could leave the server without an admin
+	// (demotion, deletion): callers count the locked rows inside their transaction.
+	LockAdmins(ctx context.Context) ([]pgtype.UUID, error)
 	LockBootstrap(ctx context.Context) (ServerBootstrap, error)
 	LockUploadQuota(ctx context.Context) error
 	MarkBackupCodeUsed(ctx context.Context, id pgtype.UUID) (int64, error)
@@ -435,6 +438,8 @@ type Querier interface {
 	SetSavedItemError(ctx context.Context, arg SetSavedItemErrorParams) error
 	SetSharePasswordHash(ctx context.Context, arg SetSharePasswordHashParams) error
 	SetUserLanguage(ctx context.Context, arg SetUserLanguageParams) error
+	SetUserQuota(ctx context.Context, arg SetUserQuotaParams) (User, error)
+	SetUserRole(ctx context.Context, arg SetUserRoleParams) (User, error)
 	SetUserSessionTTL(ctx context.Context, arg SetUserSessionTTLParams) error
 	SharedAccessForUser(ctx context.Context, arg SharedAccessForUserParams) (SharedAccessForUserRow, error)
 	// Returns accessible songs of a given genre excluding a specific artist, in random order.

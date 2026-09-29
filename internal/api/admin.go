@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -50,13 +51,6 @@ func writeQuotaAssignErr(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "internal error")
-}
-
-func int8Ptr(v *int64) pgtype.Int8 {
-	if v == nil {
-		return pgtype.Int8{}
-	}
-	return pgtype.Int8{Int64: *v, Valid: true}
 }
 
 // GET /admin/overview — disk stats and users with quota and used space.
@@ -132,6 +126,10 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if req.Quota != nil && *req.Quota < 0 {
+		writeError(w, http.StatusBadRequest, "quota must be a non-negative number of bytes or null")
+		return
+	}
 	// Validate the quota the user will actually get, default included — otherwise
 	// creating users with the form's quota field left empty would hand out
 	// DEFAULT_USER_QUOTA_GB each time without ever testing it against the cap.
@@ -157,59 +155,139 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// PATCH /admin/users/{id} {role,quota?}
+// PATCH /admin/users/{id} {role?, quota?} — both optional: an absent field is left
+// as it is, "quota": null removes the personal quota, a number (bytes) sets it.
 func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	uid, err := db.ParseUUID(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	caller, err := db.ParseUUID(auth.UserID(r.Context()))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid token subject")
+		return
+	}
 	var req struct {
-		Role  string `json:"role"`
-		Quota *int64 `json:"quota"`
+		Role  string          `json:"role"`
+		Quota json.RawMessage `json:"quota"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if req.Role != "admin" && req.Role != "user" {
+	if req.Role != "" && req.Role != "admin" && req.Role != "user" {
 		writeError(w, http.StatusBadRequest, "role must be admin or user")
 		return
 	}
-	// This user's current quota is being replaced, so it must not count against the new one.
-	if err := s.quotaChecker().CheckAssign(r.Context(), uid, req.Quota); err != nil {
-		writeQuotaAssignErr(w, err)
+	quota, ok := parseQuotaChange(req.Quota)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "quota must be a non-negative number of bytes or null")
 		return
 	}
-	u, err := s.q.UpdateUser(r.Context(), db.UpdateUserParams{ID: uid, StorageQuota: int8Ptr(req.Quota), Role: req.Role})
-	if errors.Is(err, pgx.ErrNoRows) {
+	if quota.Set {
+		// This user's current quota is being replaced, so it must not count against the new one.
+		if err := s.quotaChecker().CheckAssign(r.Context(), uid, quota.Bytes); err != nil {
+			writeQuotaAssignErr(w, err)
+			return
+		}
+	}
+	u, err := s.auth.AdminUpdateUser(r.Context(), caller, uid, req.Role, quota)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "user not found")
-		return
-	}
-	if err != nil {
+	case errors.Is(err, auth.ErrSelfDemote), errors.Is(err, auth.ErrLastAdmin):
+		writeError(w, http.StatusConflict, err.Error())
+	case err != nil:
 		writeError(w, http.StatusInternalServerError, "internal error")
-		return
+	default:
+		writeJSON(w, http.StatusOK, toUserDTO(u))
 	}
-	writeJSON(w, http.StatusOK, toUserDTO(u))
+}
+
+// parseQuotaChange reads the tri-state "quota" field: absent = unchanged, null =
+// remove, a whole non-negative number = set. A negative quota would break the
+// overcommit arithmetic of the server-wide cap.
+func parseQuotaChange(raw json.RawMessage) (auth.QuotaChange, bool) {
+	if len(raw) == 0 {
+		return auth.QuotaChange{}, true
+	}
+	if string(raw) == "null" {
+		return auth.QuotaChange{Set: true}, true
+	}
+	var v int64
+	if err := json.Unmarshal(raw, &v); err != nil || v < 0 {
+		return auth.QuotaChange{}, false
+	}
+	return auth.QuotaChange{Set: true, Bytes: &v}, true
 }
 
 // DELETE /admin/users/{id}
 func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id == auth.UserID(r.Context()) {
-		writeError(w, http.StatusBadRequest, "cannot delete your own account")
-		return
-	}
-	uid, err := db.ParseUUID(id)
+	// Compare parsed UUIDs: an upper-case or undashed spelling of the caller's own id
+	// must not slip past the self-delete guard.
+	uid, err := db.ParseUUID(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	if err := s.q.DeleteUser(r.Context(), uid); err != nil {
+	caller, err := db.ParseUUID(auth.UserID(r.Context()))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid token subject")
+		return
+	}
+	err = s.auth.AdminDeleteUser(r.Context(), caller, uid)
+	switch {
+	case errors.Is(err, auth.ErrSelfDelete):
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	case errors.Is(err, auth.ErrLastAdmin):
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	case errors.Is(err, pgx.ErrNoRows):
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	case err != nil:
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	s.removeUserFiles(db.UUIDString(uid))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deletedUsersDir holds the trees of deleted users until they are removed from disk.
+const deletedUsersDir = ".deleted-users"
+
+// removeUserFiles clears a deleted user's data from disk: the file tree "<uid>/", the
+// favicons of "saved/<uid>/" and the episodes and covers of "podcasts/<uid>/". It runs
+// after the DB delete committed, so a failed delete never loses files. The trees are
+// first renamed into .deleted-users/<uid>/ (instant, same filesystem), then removed in
+// the background: a large tree does not hold up the request, and whatever a crash or
+// an I/O error leaves behind sits under .deleted-users/, never under a live path.
+// The returned channel closes once the background removal is over.
+func (s *Server) removeUserFiles(uid string) (done <-chan struct{}) {
+	finished := make(chan struct{})
+	if s.storageRoot == "" {
+		close(finished)
+		return finished
+	}
+	disk := storage.NewLocalDisk(s.storageRoot)
+	hold := deletedUsersDir + "/" + uid
+	for _, m := range [][2]string{{uid, "files"}, {"saved/" + uid, "saved"}, {"podcasts/" + uid, "podcasts"}} {
+		if ok, err := disk.Exists(m[0]); err != nil || !ok {
+			continue
+		}
+		if err := disk.Move(m[0], hold+"/"+m[1]); err != nil {
+			log.Printf("discodrive: delete user %s: move %s aside: %v", uid, m[0], err)
+		}
+	}
+	go func() {
+		defer close(finished)
+		if err := disk.Remove(hold); err != nil {
+			log.Printf("discodrive: delete user %s: remove %s: %v (safe to delete by hand)", uid, hold, err)
+		}
+	}()
+	return finished
 }
 
 // GET /admin/settings — non-secret application settings.

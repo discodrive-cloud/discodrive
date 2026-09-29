@@ -147,6 +147,17 @@ DELETE FROM users WHERE id = $1;
 -- name: CountAdmins :one
 SELECT count(*) FROM users WHERE role = 'admin';
 
+-- LockAdmins serializes changes that could leave the server without an admin
+-- (demotion, deletion): callers count the locked rows inside their transaction.
+-- name: LockAdmins :many
+SELECT id FROM users WHERE role = 'admin' ORDER BY id FOR UPDATE;
+
+-- name: SetUserRole :one
+UPDATE users SET role = $2 WHERE id = $1 RETURNING *;
+
+-- name: SetUserQuota :one
+UPDATE users SET storage_quota = $2 WHERE id = $1 RETURNING *;
+
 -- name: CreateDevice :one
 INSERT INTO devices (user_id, name, kind, token_version)
 VALUES ($1, $2, $3, $4)
