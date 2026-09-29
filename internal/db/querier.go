@@ -90,6 +90,7 @@ type Querier interface {
 	// the node itself AND all its ancestors (recursive CTE), taking active shares for the user.
 	CalendarShareForUser(ctx context.Context, arg CalendarShareForUserParams) (pgtype.UUID, error)
 	ClaimEpisodeForDownload(ctx context.Context, arg ClaimEpisodeForDownloadParams) (int64, error)
+	// bytes_done restarts at 0: 'processing' rows count toward the owner's used space.
 	ClaimSavedItem(ctx context.Context, id pgtype.UUID) (int64, error)
 	ClearBookAuthors(ctx context.Context, bookID pgtype.UUID) error
 	ClearBookTags(ctx context.Context, bookID pgtype.UUID) error
@@ -268,6 +269,10 @@ type Querier interface {
 	// row lock on users serializes a user's mutations, so per-user commit order
 	// equals seq order and a committed bookmark_seq is always a safe cursor.
 	ListBrowserBookmarks(ctx context.Context, userID pgtype.UUID) ([]BrowserBookmark, error)
+	// Every row of one change group. A bulk import or a folder delete stamps all its rows
+	// with a single seq, so a page cut inside a group must be completed from here — a
+	// cursor at that seq would otherwise skip the rest of the group.
+	ListBrowserBookmarksAtSeq(ctx context.Context, arg ListBrowserBookmarksAtSeqParams) ([]BrowserBookmark, error)
 	ListBrowserBookmarksNeedingFavicon(ctx context.Context, limit int32) ([]BrowserBookmark, error)
 	ListCalendarObjects(ctx context.Context, calendarID pgtype.UUID) ([]CalendarObject, error)
 	ListCalendars(ctx context.Context, userID pgtype.UUID) ([]Calendar, error)
@@ -340,8 +345,9 @@ type Querier interface {
 	// runs against (kept identical in UserStorageUsage, TotalStorageUsage and
 	// RefreshStorageUsed). "Used" is what the user actually occupies on disk: live files,
 	// files still in the trash (they are deleted for real only after TRASH_DAYS), version
-	// snapshots, and downloaded podcast episodes (which live outside the file tree, in
-	// podcasts/<user>/). Anything narrower would let a user park unlimited data past their
+	// snapshots, downloaded podcast episodes (which live outside the file tree, in
+	// podcasts/<user>/), and Saved downloads still in flight (bytes_done of 'processing'
+	// rows; a finished download is a node). Anything narrower would let a user park unlimited data past their
 	// quota in the trash, in .versions, or in a podcast subscription.
 	ListUsersWithUsage(ctx context.Context) ([]ListUsersWithUsageRow, error)
 	ListWebAuthnCredentials(ctx context.Context, userID pgtype.UUID) ([]WebauthnCredential, error)

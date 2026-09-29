@@ -20,6 +20,14 @@ WHERE user_id = $1 AND seq > $2
 ORDER BY seq
 LIMIT $3;
 
+-- Every row of one change group. A bulk import or a folder delete stamps all its rows
+-- with a single seq, so a page cut inside a group must be completed from here — a
+-- cursor at that seq would otherwise skip the rest of the group.
+-- name: ListBrowserBookmarksAtSeq :many
+SELECT * FROM browser_bookmarks
+WHERE user_id = $1 AND seq = $2
+ORDER BY id;
+
 -- name: NextBookmarkSeq :one
 UPDATE users SET bookmark_seq = bookmark_seq + 1 WHERE id = $1 RETURNING bookmark_seq;
 

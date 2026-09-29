@@ -28,7 +28,8 @@ LIMIT $2 OFFSET $3;
 SELECT * FROM saved_items WHERE id = $1 AND user_id = $2;
 
 -- name: ClaimSavedItem :execrows
-UPDATE saved_items SET status = 'processing', error_msg = '', cookie_header = NULL, updated_at = now()
+-- bytes_done restarts at 0: 'processing' rows count toward the owner's used space.
+UPDATE saved_items SET status = 'processing', error_msg = '', cookie_header = NULL, bytes_done = 0, updated_at = now()
 WHERE id = $1 AND status = 'pending';
 
 -- name: UpdateSavedItemProgress :execrows

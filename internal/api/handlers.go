@@ -151,8 +151,19 @@ func (s *Server) handleSetupAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// POST /auth/register
+// registrationSettingKey turns public self-registration on. Accounts are normally
+// created by an admin (POST /admin/users); an open /auth/register would let anyone who
+// can reach the host take a quota, publish share links and make the server fetch URLs.
+// An admin enables it with PUT /admin/settings {"key":"registration.enabled","value":"true"}.
+const registrationSettingKey = "registration.enabled"
+
+// POST /auth/register — disabled unless registration.enabled is "true".
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if s.getSettingValue(r.Context(), registrationSettingKey) != "true" {
+		// 404, not 403: a closed instance does not advertise that registration exists.
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -850,7 +861,10 @@ func (s *Server) handleUploadInit(w http.ResponseWriter, r *http.Request) {
 	}
 	var id string
 	if req.Path != "" {
-		rel, err := s.scopedPushPath(r, req.Path)
+		// Not `rel, err :=` — that would shadow err and the InitByPath error below
+		// would never reach the check after this block.
+		var rel string
+		rel, err = s.scopedPushPath(r, req.Path)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return

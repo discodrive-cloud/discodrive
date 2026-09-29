@@ -38,8 +38,9 @@ SELECT id FROM users WHERE role = 'admin' ORDER BY created_at;
 -- runs against (kept identical in UserStorageUsage, TotalStorageUsage and
 -- RefreshStorageUsed). "Used" is what the user actually occupies on disk: live files,
 -- files still in the trash (they are deleted for real only after TRASH_DAYS), version
--- snapshots, and downloaded podcast episodes (which live outside the file tree, in
--- podcasts/<user>/). Anything narrower would let a user park unlimited data past their
+-- snapshots, downloaded podcast episodes (which live outside the file tree, in
+-- podcasts/<user>/), and Saved downloads still in flight (bytes_done of 'processing'
+-- rows; a finished download is a node). Anything narrower would let a user park unlimited data past their
 -- quota in the trash, in .versions, or in a podcast subscription.
 -- name: ListUsersWithUsage :many
 SELECT u.id, u.email, u.role, u.storage_quota, u.created_at,
@@ -53,7 +54,8 @@ SELECT u.id, u.email, u.role, u.storage_quota, u.created_at,
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = u.id AND e.disk_path IS NOT NULL
-       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = u.id), 0))::bigint AS used
+       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = u.id), 0)
+         + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = u.id AND si.status = 'processing'), 0))::bigint AS used
 FROM users u
 ORDER BY u.created_at;
 
@@ -72,7 +74,8 @@ SELECT (COALESCE((
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = sqlc.arg(user_id) AND e.disk_path IS NOT NULL
-       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = sqlc.arg(user_id)), 0))::bigint AS used;
+       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = sqlc.arg(user_id)), 0)
+         + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = sqlc.arg(user_id) AND si.status = 'processing'), 0))::bigint AS used;
 
 -- The part of a user's occupied space that emptying the trash would release: trashed
 -- files plus the version history that goes with them. Files sit there for TRASH_DAYS,
@@ -95,7 +98,8 @@ SELECT (COALESCE((
            SELECT SUM(size) FROM file_versions
        ), 0) + COALESCE((
            SELECT SUM(size) FROM podcast_episodes WHERE disk_path IS NOT NULL
-       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0))::bigint AS used;
+       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0)
+         + COALESCE((SELECT SUM(bytes_done) FROM saved_items WHERE status = 'processing'), 0))::bigint AS used;
 
 -- Sum of the quotas handed out to users, optionally excluding one (the user being
 -- edited). NULL exclude_id excludes nobody. Used to keep the handed-out total within
@@ -122,7 +126,8 @@ FROM (
            ), 0) + COALESCE((
                SELECT SUM(e.size) FROM podcast_episodes e
                WHERE e.user_id = usr.id AND e.disk_path IS NOT NULL
-           ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0))::bigint AS used
+           ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0)
+             + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = usr.id AND si.status = 'processing'), 0))::bigint AS used
     FROM users usr
 ) AS fresh
 WHERE u.id = fresh.id AND u.storage_used <> fresh.used;
@@ -270,7 +275,7 @@ WHERE user_id = sqlc.arg(user_id) AND disk_path = sqlc.arg(path)::text AND delet
 UPDATE nodes
 SET disk_path = sqlc.arg(new_prefix)::text || substring(disk_path FROM char_length(sqlc.arg(old_prefix)::text) + 1)
 WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(old_prefix)::text OR disk_path LIKE sqlc.arg(old_prefix)::text || '/%');
+  AND (disk_path = sqlc.arg(old_prefix)::text OR starts_with(disk_path, sqlc.arg(old_prefix)::text || '/'));
 
 -- Append change_log rows for every live strict descendant of prefix. Needed after
 -- a subtree path rewrite (move/rename): cursor-based clients (and the scoped feed,
@@ -281,7 +286,7 @@ WITH descendants AS (
     SELECT id, version, row_number() OVER (ORDER BY disk_path) AS rn
     FROM nodes
     WHERE user_id = sqlc.arg(user_id)
-      AND disk_path LIKE sqlc.arg(prefix)::text || '/%'
+      AND starts_with(disk_path, sqlc.arg(prefix)::text || '/')
       AND deleted_at IS NULL
 ),
 bump AS (
@@ -302,14 +307,14 @@ UPDATE nodes
 SET disk_path = sqlc.arg(new_prefix)::text || substring(disk_path FROM char_length(sqlc.arg(old_prefix)::text) + 1)
 WHERE user_id = sqlc.arg(user_id)
   AND deleted_at IS NOT NULL
-  AND (disk_path = sqlc.arg(old_prefix)::text OR disk_path LIKE sqlc.arg(old_prefix)::text || '/%');
+  AND (disk_path = sqlc.arg(old_prefix)::text OR starts_with(disk_path, sqlc.arg(old_prefix)::text || '/'));
 
 -- Soft-delete a node and its whole subtree (disk is cleaned up by GC, step 0.6).
 -- name: SoftDeleteSubtree :exec
 UPDATE nodes
 SET deleted_at = now()
 WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(prefix)::text OR disk_path LIKE sqlc.arg(prefix)::text || '/%')
+  AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
   AND deleted_at IS NULL;
 
 -- name: NextChangeSeq :one
@@ -472,19 +477,19 @@ ORDER BY n.deleted_at DESC;
 -- name: UndeleteSubtree :exec
 UPDATE nodes SET deleted_at = NULL
 WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(prefix)::text OR disk_path LIKE sqlc.arg(prefix)::text || '/%')
+  AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
   AND deleted_at IS NOT NULL;
 
 -- name: ListTrashedSubtree :many
 SELECT id, disk_path, is_dir FROM nodes
 WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(prefix)::text OR disk_path LIKE sqlc.arg(prefix)::text || '/%')
+  AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
   AND deleted_at IS NOT NULL;
 
 -- name: HardDeleteSubtree :exec
 DELETE FROM nodes
 WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(prefix)::text OR disk_path LIKE sqlc.arg(prefix)::text || '/%')
+  AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
   AND deleted_at IS NOT NULL;
 
 -- name: ListSecretKeys :many

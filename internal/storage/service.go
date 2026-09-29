@@ -742,7 +742,20 @@ func (s *FileService) TrashGC(ctx context.Context, olderThan time.Duration) erro
 	}
 	for _, r := range rows {
 		if r.DiskPath.Valid {
-			_ = s.st.Remove(r.DiskPath.String)
+			// Soft delete leaves the bytes in place, so a name taken again after deletion
+			// puts a live file (or a live folder with contents) at the tombstone's path.
+			// Removing the path then would destroy live data; Purge guards the same way.
+			// An exact-path lookup covers folders too: a live node always sits under a
+			// live parent (Undelete falls back to the root), and disk_path mirrors the
+			// tree, so nothing live can exist under this path without a live node at it.
+			// It is an index lookup per tombstone; a subtree match would scan the table.
+			_, lerr := s.q.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: r.UserID, Path: r.DiskPath.String})
+			switch {
+			case errors.Is(lerr, pgx.ErrNoRows):
+				_ = s.st.Remove(r.DiskPath.String)
+			case lerr != nil:
+				return lerr
+			}
 		}
 		_ = s.st.Remove(versionDir(db.UUIDString(r.UserID), db.UUIDString(r.ID)))
 		if err := s.q.HardDeleteNode(ctx, r.ID); err != nil {
@@ -1130,6 +1143,64 @@ func (s *FileService) PushByPathWithMeta(ctx context.Context, userID, relPath st
 	return s.PushWithMeta(ctx, userID, parentID, name, baseVersion, "desktop", r, meta)
 }
 
+// Adopt publishes a file the server produced itself (a Saved download or article):
+// the bytes already sit in the staging file tmpRel, and diskRel is where they belong
+// ("<userID>/..."). The node is created right away, so the file counts toward the
+// quota the moment it lands instead of after the next rescan. The destination must be
+// free; the caller picks a free name. size and hash describe the staged bytes.
+func (s *FileService) Adopt(ctx context.Context, userID, tmpRel, diskRel string, size int64, hash string) (db.Node, error) {
+	userRel, ok := strings.CutPrefix(diskRel, userID+"/")
+	if !ok || userRel == "" {
+		return db.Node{}, ErrNotFound
+	}
+	dir, name := path.Split(userRel)
+	if err := validateName(name); err != nil {
+		return db.Node{}, err
+	}
+	parentID, err := s.ensureDirChain(ctx, userID, strings.Trim(dir, "/"))
+	if err != nil {
+		return db.Node{}, err
+	}
+	prefix, parentUUID, ownerUUID, err := s.resolveParent(ctx, userID, parentID)
+	if err != nil {
+		return db.Node{}, err
+	}
+	rel := prefix + "/" + name
+	if rel != diskRel {
+		return db.Node{}, ErrNotFound
+	}
+	defer s.busy.hold(rel)()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return db.Node{}, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+	if _, err := qtx.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: ownerUUID, Path: rel}); err == nil {
+		return db.Node{}, ErrNameTaken
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return db.Node{}, err
+	}
+	// Row first: the unique index decides a name race before any bytes move.
+	node, err := qtx.CreateNode(ctx, db.CreateNodeParams{
+		UserID: ownerUUID, ParentID: parentUUID, Name: name, IsDir: false,
+		Size: int8val(size), ContentHash: text(hash), DiskPath: text(rel), Mime: text(detectMime(name)),
+	})
+	if err != nil {
+		return db.Node{}, mapInsertErr(err)
+	}
+	if err := s.st.Move(tmpRel, rel); err != nil {
+		return db.Node{}, err
+	}
+	res, err := s.finishPush(ctx, tx, qtx, ownerUUID, node, "create", false)
+	if err != nil {
+		// The bytes are already at rel; a failed commit leaves them for rescan to import.
+		return db.Node{}, err
+	}
+	return res.Node, nil
+}
+
 // ensureDirChain idempotently creates the directory chain for dir (user-relative) and
 // returns the node ID of the leaf directory (nil = root).
 func (s *FileService) ensureDirChain(ctx context.Context, userID, dir string) (*string, error) {
@@ -1154,6 +1225,21 @@ func (s *FileService) ensureDirChain(ctx context.Context, userID, dir string) (*
 		node, err := s.q.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: uid, Path: userRelToDisk(userID, prefix)})
 		if errors.Is(err, pgx.ErrNoRows) {
 			created, cerr := s.CreateFolder(ctx, userID, parentID, seg)
+			if errors.Is(cerr, ErrNameTaken) {
+				// A concurrent writer created the same folder between the lookup and
+				// CreateFolder (two Saved downloads, or two sync pushes, into one new
+				// folder). Use theirs; if the name is a file, the re-read says so.
+				node, err = s.q.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: uid, Path: userRelToDisk(userID, prefix)})
+				if err != nil {
+					return nil, cerr
+				}
+				if !node.IsDir {
+					return nil, ErrNameTaken
+				}
+				id := db.UUIDString(node.ID)
+				parentID = &id
+				continue
+			}
 			if cerr != nil {
 				return nil, cerr
 			}

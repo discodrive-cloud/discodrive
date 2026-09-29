@@ -132,12 +132,31 @@ func (s *Server) handleBookmarksChanges(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	full := len(rows) == changesPageLimit
+	if full {
+		// Page full: there may be more. The cursor is a seq, and one seq can span many
+		// rows (a bulk import or a folder delete shares one), so a page must never end
+		// in the middle of a seq group: the next call asks for seq > cursor and would
+		// skip the rest of it. Drop the trailing partial group; when the whole page is
+		// a single group, return that group in full instead.
+		last := rows[len(rows)-1].Seq
+		if rows[0].Seq == last {
+			rows, err = s.q.ListBrowserBookmarksAtSeq(r.Context(), db.ListBrowserBookmarksAtSeqParams{UserID: uid, Seq: last})
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+		} else {
+			for rows[len(rows)-1].Seq == last {
+				rows = rows[:len(rows)-1]
+			}
+		}
+	}
 	resp := changesResponse{Items: make([]bookmarkChangeDTO, 0, len(rows))}
 	for _, b := range rows {
 		resp.Items = append(resp.Items, bookmarkChangeDTO{bookmarkDTO: toBookmarkDTO(b), Deleted: b.Deleted, Seq: b.Seq})
 	}
-	if len(rows) == changesPageLimit {
-		// Page full: there may be more; the safe cursor is the last row seen.
+	if full {
 		resp.HasMore = true
 		resp.Cursor = rows[len(rows)-1].Seq
 	} else {

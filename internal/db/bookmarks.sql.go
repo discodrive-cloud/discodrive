@@ -251,6 +251,54 @@ func (q *Queries) ListBrowserBookmarks(ctx context.Context, userID pgtype.UUID) 
 	return items, nil
 }
 
+const listBrowserBookmarksAtSeq = `-- name: ListBrowserBookmarksAtSeq :many
+SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at FROM browser_bookmarks
+WHERE user_id = $1 AND seq = $2
+ORDER BY id
+`
+
+type ListBrowserBookmarksAtSeqParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	Seq    int64       `json:"seq"`
+}
+
+// Every row of one change group. A bulk import or a folder delete stamps all its rows
+// with a single seq, so a page cut inside a group must be completed from here — a
+// cursor at that seq would otherwise skip the rest of the group.
+func (q *Queries) ListBrowserBookmarksAtSeq(ctx context.Context, arg ListBrowserBookmarksAtSeqParams) ([]BrowserBookmark, error) {
+	rows, err := q.db.Query(ctx, listBrowserBookmarksAtSeq, arg.UserID, arg.Seq)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BrowserBookmark{}
+	for rows.Next() {
+		var i BrowserBookmark
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ParentID,
+			&i.IsFolder,
+			&i.Title,
+			&i.Url,
+			&i.Position,
+			&i.Deleted,
+			&i.Seq,
+			&i.FaviconExt,
+			&i.FaviconTriedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBrowserBookmarksNeedingFavicon = `-- name: ListBrowserBookmarksNeedingFavicon :many
 SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at FROM browser_bookmarks
 WHERE favicon_tried_at IS NULL AND NOT deleted AND NOT is_folder

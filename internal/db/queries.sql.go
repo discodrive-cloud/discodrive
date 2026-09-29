@@ -1499,7 +1499,7 @@ func (q *Queries) HardDeleteNode(ctx context.Context, id pgtype.UUID) error {
 const hardDeleteSubtree = `-- name: HardDeleteSubtree :exec
 DELETE FROM nodes
 WHERE user_id = $1
-  AND (disk_path = $2::text OR disk_path LIKE $2::text || '/%')
+  AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
   AND deleted_at IS NOT NULL
 `
 
@@ -2672,7 +2672,7 @@ func (q *Queries) ListTrashNodes(ctx context.Context, userID pgtype.UUID) ([]Nod
 const listTrashedSubtree = `-- name: ListTrashedSubtree :many
 SELECT id, disk_path, is_dir FROM nodes
 WHERE user_id = $1
-  AND (disk_path = $2::text OR disk_path LIKE $2::text || '/%')
+  AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
   AND deleted_at IS NOT NULL
 `
 
@@ -2773,7 +2773,8 @@ SELECT u.id, u.email, u.role, u.storage_quota, u.created_at,
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = u.id AND e.disk_path IS NOT NULL
-       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = u.id), 0))::bigint AS used
+       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = u.id), 0)
+         + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = u.id AND si.status = 'processing'), 0))::bigint AS used
 FROM users u
 ORDER BY u.created_at
 `
@@ -2791,8 +2792,9 @@ type ListUsersWithUsageRow struct {
 // runs against (kept identical in UserStorageUsage, TotalStorageUsage and
 // RefreshStorageUsed). "Used" is what the user actually occupies on disk: live files,
 // files still in the trash (they are deleted for real only after TRASH_DAYS), version
-// snapshots, and downloaded podcast episodes (which live outside the file tree, in
-// podcasts/<user>/). Anything narrower would let a user park unlimited data past their
+// snapshots, downloaded podcast episodes (which live outside the file tree, in
+// podcasts/<user>/), and Saved downloads still in flight (bytes_done of 'processing'
+// rows; a finished download is a node). Anything narrower would let a user park unlimited data past their
 // quota in the trash, in .versions, or in a podcast subscription.
 func (q *Queries) ListUsersWithUsage(ctx context.Context) ([]ListUsersWithUsageRow, error) {
 	rows, err := q.db.Query(ctx, listUsersWithUsage)
@@ -2960,7 +2962,7 @@ WITH descendants AS (
     SELECT id, version, row_number() OVER (ORDER BY disk_path) AS rn
     FROM nodes
     WHERE user_id = $1
-      AND disk_path LIKE $2::text || '/%'
+      AND starts_with(disk_path, $2::text || '/')
       AND deleted_at IS NULL
 ),
 bump AS (
@@ -3003,7 +3005,8 @@ FROM (
            ), 0) + COALESCE((
                SELECT SUM(e.size) FROM podcast_episodes e
                WHERE e.user_id = usr.id AND e.disk_path IS NOT NULL
-           ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0))::bigint AS used
+           ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0)
+             + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = usr.id AND si.status = 'processing'), 0))::bigint AS used
     FROM users usr
 ) AS fresh
 WHERE u.id = fresh.id AND u.storage_used <> fresh.used
@@ -3036,7 +3039,7 @@ const rewriteSubtreePaths = `-- name: RewriteSubtreePaths :exec
 UPDATE nodes
 SET disk_path = $1::text || substring(disk_path FROM char_length($2::text) + 1)
 WHERE user_id = $3
-  AND (disk_path = $2::text OR disk_path LIKE $2::text || '/%')
+  AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
 `
 
 type RewriteSubtreePathsParams struct {
@@ -3056,7 +3059,7 @@ UPDATE nodes
 SET disk_path = $1::text || substring(disk_path FROM char_length($2::text) + 1)
 WHERE user_id = $3
   AND deleted_at IS NOT NULL
-  AND (disk_path = $2::text OR disk_path LIKE $2::text || '/%')
+  AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
 `
 
 type RewriteTombstonedSubtreePathsParams struct {
@@ -3234,7 +3237,7 @@ const softDeleteSubtree = `-- name: SoftDeleteSubtree :exec
 UPDATE nodes
 SET deleted_at = now()
 WHERE user_id = $1
-  AND (disk_path = $2::text OR disk_path LIKE $2::text || '/%')
+  AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
   AND deleted_at IS NULL
 `
 
@@ -3294,7 +3297,8 @@ SELECT (COALESCE((
            SELECT SUM(size) FROM file_versions
        ), 0) + COALESCE((
            SELECT SUM(size) FROM podcast_episodes WHERE disk_path IS NOT NULL
-       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0))::bigint AS used
+       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0)
+         + COALESCE((SELECT SUM(bytes_done) FROM saved_items WHERE status = 'processing'), 0))::bigint AS used
 `
 
 // Used space across all users — checked against the server-wide cap (STORAGE_TOTAL_GB).
@@ -3374,7 +3378,7 @@ func (q *Queries) TrimNodeVersions(ctx context.Context, arg TrimNodeVersionsPara
 const undeleteSubtree = `-- name: UndeleteSubtree :exec
 UPDATE nodes SET deleted_at = NULL
 WHERE user_id = $1
-  AND (disk_path = $2::text OR disk_path LIKE $2::text || '/%')
+  AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
   AND deleted_at IS NOT NULL
 `
 
@@ -3767,7 +3771,8 @@ SELECT (COALESCE((
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = $1 AND e.disk_path IS NOT NULL
-       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = $1), 0))::bigint AS used
+       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = $1), 0)
+         + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = $1 AND si.status = 'processing'), 0))::bigint AS used
 `
 
 // Include published and staged bytes in one snapshot: publication followed by

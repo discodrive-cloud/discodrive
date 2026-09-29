@@ -12,10 +12,11 @@ import (
 )
 
 const claimSavedItem = `-- name: ClaimSavedItem :execrows
-UPDATE saved_items SET status = 'processing', error_msg = '', cookie_header = NULL, updated_at = now()
+UPDATE saved_items SET status = 'processing', error_msg = '', cookie_header = NULL, bytes_done = 0, updated_at = now()
 WHERE id = $1 AND status = 'pending'
 `
 
+// bytes_done restarts at 0: 'processing' rows count toward the owner's used space.
 func (q *Queries) ClaimSavedItem(ctx context.Context, id pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, claimSavedItem, id)
 	if err != nil {

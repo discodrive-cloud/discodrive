@@ -257,6 +257,9 @@ func runServer(cfg config.Config) {
 	// reset cannot race live processing goroutines.
 	savedSvc := saved.NewService(queries, store, cfg.SavedMaxDownloadMB)
 	savedSvc.SetQuota(quotaChecker)
+	// Finished downloads and articles become nodes at once, so they count toward the
+	// quota immediately rather than after the next rescan.
+	savedSvc.SetFiles(fileSvc)
 	savedSvc.SetCipher(cipher)
 	if err := savedSvc.RecoverStale(ctx); err != nil {
 		log.Fatalf("discodrive: saved recover: %v", err)
