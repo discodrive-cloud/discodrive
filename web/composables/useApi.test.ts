@@ -19,6 +19,7 @@ beforeEach(async () => {
   })
   vi.stubGlobal('useStorageTick', () => ({ value: 0 }))
   vi.stubGlobal('resetPlayerSession', vi.fn())
+  vi.stubGlobal('lockVault', vi.fn())
   vi.stubGlobal('navigateTo', vi.fn())
   api = await import('./useApi')
   api.setSession(session('first'))
@@ -75,4 +76,14 @@ it('keepSessionOn401 leaves the session for a wrong credential', async () => {
   await expect(api.useApi().request('/me/password', { method: 'PUT', keepSessionOn401: true })).rejects.toBe(err)
   expect(api.useSession().value.token).toBe(token('first'))
   expect(fetchMock.raw.mock.calls[0][1]).not.toHaveProperty('keepSessionOn401')
+})
+it('logout and an account switch lock the vault', () => {
+  const lock = (globalThis as any).lockVault as ReturnType<typeof vi.fn>
+  lock.mockClear()
+  api.setSession(session('first', 2)) // renewal of the same account
+  expect(lock).not.toHaveBeenCalled()
+  api.setSession({ ...session('other'), email: 'b@example.test' })
+  expect(lock).toHaveBeenCalledTimes(1)
+  api.clearSession()
+  expect(lock).toHaveBeenCalledTimes(2)
 })

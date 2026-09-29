@@ -53,14 +53,38 @@ function clearRateState(vaultFolderId: string) {
   localStorage.removeItem(`kf_vault_lock_${vaultFolderId}`)
 }
 
+function vaultState() {
+  return {
+    keys: useState<VaultKeys | null>('vault_keys', () => null),
+    vaultFolderId: useState<string>('vault_folder_id', () => ''),
+    // breadcrumbs: [{dirId, name}], dirId='' for the vault root
+    dirStack: useState<{ dirId: string; name: string }[]>('vault_dir_stack', () => []),
+    entries: useState<VaultEntry[]>('vault_entries', () => []),
+    // Bumped by every lock. An unlock or listing that started before the lock sees a
+    // different generation when it resumes and drops its result instead of
+    // re-populating keys or plaintext names after the vault was closed.
+    generation: useState<number>('vault_generation', () => 0),
+  }
+}
+
+/**
+ * lockVault — forget the vault keys and the decrypted listing. Called when the vault
+ * browser closes, on logout and on an account switch, so plaintext names never outlive
+ * the dialog or leak to the next user of the tab.
+ */
+export function lockVault(): void {
+  const s = vaultState()
+  s.generation.value++
+  s.keys.value = null
+  s.vaultFolderId.value = ''
+  s.dirStack.value = []
+  s.entries.value = []
+}
+
 export function useVault() {
   const { request } = useApi()
 
-  const keys = useState<VaultKeys | null>('vault_keys', () => null)
-  const vaultFolderId = useState<string>('vault_folder_id', () => '')
-  // breadcrumbs: [{dirId, name}], dirId='' for the vault root
-  const dirStack = useState<{ dirId: string; name: string }[]>('vault_dir_stack', () => [])
-  const entries = useState<VaultEntry[]>('vault_entries', () => [])
+  const { keys, vaultFolderId, dirStack, entries, generation } = vaultState()
 
   /** Returns true if nodes contains vault.cryptomator — the marker for a vault folder */
   function isVaultListing(nodes: Node[]): boolean {
@@ -110,6 +134,7 @@ export function useVault() {
     if (!keys.value) throw new Error('Vault is locked')
     const k = keys.value
     const vfId = vaultFolderId.value
+    const gen = generation.value
 
     const path = await dirIdHash(k, dirId)
     const leafFolderId = await resolveStoragePath(vfId, path, rootChildren)
@@ -153,12 +178,16 @@ export function useVault() {
       }
     })
 
+    if (gen !== generation.value) return // locked or another vault opened meanwhile
     entries.value = result.filter((entry): entry is VaultEntry => entry !== undefined)
   }
 
   /** Unlock the vault */
   async function unlock(vaultFolder: Node, password: string): Promise<void> {
     const folderId = vaultFolder.id
+    // Never show one vault's keys or listing while another is being opened.
+    if (vaultFolderId.value !== folderId || keys.value) lockVault()
+    const gen = generation.value
 
     // Rate limiting
     if (import.meta.client) {
@@ -183,6 +212,7 @@ export function useVault() {
       const k = await openVault(masterkeyJson, vaultJwt, password)
       // Success: reset rate-limit state
       clearRateState(folderId)
+      if (gen !== generation.value) return // closed or logged out while scrypt ran
       keys.value = k
       vaultFolderId.value = folderId
       dirStack.value = [{ dirId: '', name: vaultFolder.name }]
@@ -234,10 +264,7 @@ export function useVault() {
 
   /** Lock the vault — clear keys and state */
   function lock(): void {
-    keys.value = null
-    vaultFolderId.value = ''
-    dirStack.value = []
-    entries.value = []
+    lockVault()
   }
 
   return {

@@ -41,13 +41,18 @@ export function setSession(s: Session) {
   const sess = useSession()
   // Switching accounts without an explicit logout (login page over a live session)
   // must not carry the previous account's player queue over.
-  if (sess.value.email && s.email && s.email !== sess.value.email) resetPlayerSession()
+  // The same goes for an unlocked Cryptomator vault.
+  if (sess.value.email && s.email && s.email !== sess.value.email) {
+    resetPlayerSession()
+    lockVault()
+  }
   sess.value = s
   if (import.meta.client) localStorage.setItem('kf_session', JSON.stringify(s))
 }
 
 export function clearSession() {
   resetPlayerSession() // stop playback everywhere and drop the persisted queue
+  lockVault() // vault keys and decrypted names must not survive a logout
   setSession({ token: '', role: '', email: '' })
 }
 

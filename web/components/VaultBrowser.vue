@@ -29,7 +29,15 @@ function startCountdown(until: number) {
   }, 1000)
 }
 
-onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
+// Keys and decrypted names live only as long as this dialog: closing it locks the
+// vault, and a different vault folder never shows the previous one's listing.
+if (vault.vaultFolderId.value !== props.folder.id) lock()
+watch(() => props.folder.id, () => lock())
+
+onBeforeUnmount(() => {
+  if (countdownTimer) clearInterval(countdownTimer)
+  lock()
+})
 
 async function doUnlock() {
   if (unlocking.value) return
