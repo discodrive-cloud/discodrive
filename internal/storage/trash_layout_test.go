@@ -418,6 +418,59 @@ func TestTrashGCWithNewLayout(t *testing.T) {
 	}
 }
 
+// Subtree operations select "b and everything under b/" as a bytewise range. Siblings
+// whose names sort right next to it must stay out of it.
+func TestSubtreeRangeLeavesLookalikeSiblingsAlone(t *testing.T) {
+	ctx := context.Background()
+	fs, _, userID, _ := setupFS(t)
+
+	files := map[string]string{}
+	for _, name := range []string{"b", "b0", "b.x", "b-c", "bé", "b_", "b%", "b 1", "ba"} {
+		dir, err := fs.CreateFolder(ctx, userID, nil, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		did := db.UUIDString(dir.ID)
+		f, err := fs.Push(ctx, userID, &did, "f.txt", nil, "", strings.NewReader(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[name] = db.UUIDString(f.Node.ID)
+	}
+	b, err := fs.NodeByPath(ctx, userID, "/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bid := db.UUIDString(b.ID)
+	if _, err := fs.Rename(ctx, userID, bid, "z"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Delete(ctx, userID, bid); err != nil {
+		t.Fatal(err)
+	}
+	for name, id := range files {
+		if name == "b" {
+			continue
+		}
+		if got := readNode(t, fs, userID, id); got != name {
+			t.Fatalf("%s/f.txt = %q after renaming and deleting b", name, got)
+		}
+		n, err := fs.NodeByPath(ctx, userID, "/"+name+"/f.txt")
+		if err != nil || db.UUIDString(n.ID) != id {
+			t.Fatalf("%s/f.txt path changed: %v", name, err)
+		}
+	}
+	if _, err := fs.Undelete(ctx, userID, bid); err != nil {
+		t.Fatal(err)
+	}
+	if got := readNode(t, fs, userID, files["b"]); got != "b" {
+		t.Fatalf("z/f.txt = %q", got)
+	}
+	if n, err := fs.NodeByPath(ctx, userID, "/z/f.txt"); err != nil || db.UUIDString(n.ID) != files["b"] {
+		t.Fatalf("restored file not at /z/f.txt: %v", err)
+	}
+}
+
 // A node whose bytes are already gone from disk can still be trashed and restored.
 func TestDeleteAndRestoreWithoutBytes(t *testing.T) {
 	ctx := context.Background()

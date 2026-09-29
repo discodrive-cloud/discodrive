@@ -3040,7 +3040,7 @@ WITH descendants AS (
     SELECT id, version, disk_path, row_number() OVER (ORDER BY disk_path) AS rn
     FROM nodes
     WHERE user_id = $1
-      AND starts_with(disk_path, $3::text || '/')
+      AND disk_path ~>=~ ($3::text || '/') AND disk_path ~<~ ($3::text || '0')
       AND deleted_at IS NULL
 ),
 bump AS (
@@ -3118,10 +3118,20 @@ func (q *Queries) RenameWebAuthnCredential(ctx context.Context, arg RenameWebAut
 }
 
 const rewriteSubtreePaths = `-- name: RewriteSubtreePaths :exec
+
 UPDATE nodes
 SET disk_path = $1::text || substring(disk_path FROM char_length($2::text) + 1)
-WHERE user_id = $3
-  AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
+WHERE id IN (
+    SELECT l.id FROM nodes l
+    WHERE l.user_id = $3 AND l.deleted_at IS NULL
+      AND (l.disk_path = $2::text
+           OR (l.disk_path ~>=~ ($2::text || '/') AND l.disk_path ~<~ ($2::text || '0')))
+    UNION ALL
+    SELECT t.id FROM nodes t
+    WHERE t.user_id = $3 AND t.deleted_at IS NOT NULL
+      AND (t.disk_path = $2::text
+           OR (t.disk_path ~>=~ ($2::text || '/') AND t.disk_path ~<~ ($2::text || '0')))
+)
 `
 
 type RewriteSubtreePathsParams struct {
@@ -3130,7 +3140,16 @@ type RewriteSubtreePathsParams struct {
 	UserID    pgtype.UUID `json:"user_id"`
 }
 
-// Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree).
+// Subtree queries match "prefix or anything under prefix/" as a bytewise range,
+//
+//	disk_path ~>=~ prefix || '/' AND disk_path ~<~ prefix || '0'   ('0' follows '/'),
+//
+// which is exactly starts_with(disk_path, prefix || '/') but can use the
+// text_pattern_ops path indexes (migration 000021); starts_with cannot, and every
+// folder rename, move or delete read the whole table.
+// Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree),
+// trashed rows included. Two branches, one per partial index: as a single condition
+// the planner merges them and scans the table.
 func (q *Queries) RewriteSubtreePaths(ctx context.Context, arg RewriteSubtreePathsParams) error {
 	_, err := q.db.Exec(ctx, rewriteSubtreePaths, arg.NewPrefix, arg.OldPrefix, arg.UserID)
 	return err
@@ -3299,7 +3318,8 @@ UPDATE nodes
 SET deleted_at = now(),
     trash_path = $1::text || substring(disk_path FROM char_length($2::text) + 1)
 WHERE user_id = $3
-  AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
+  AND (disk_path = $2::text
+       OR (disk_path ~>=~ ($2::text || '/') AND disk_path ~<~ ($2::text || '0')))
   AND deleted_at IS NULL
 `
 

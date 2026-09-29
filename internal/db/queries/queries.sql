@@ -288,12 +288,29 @@ WHERE user_id = sqlc.arg(user_id) AND disk_path = sqlc.arg(path)::text AND delet
 -- name: LockTreePath :exec
 SELECT pg_advisory_xact_lock(1146110292, hashtext(sqlc.arg(path)::text));
 
--- Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree).
+-- Subtree queries match "prefix or anything under prefix/" as a bytewise range,
+--   disk_path ~>=~ prefix || '/' AND disk_path ~<~ prefix || '0'   ('0' follows '/'),
+-- which is exactly starts_with(disk_path, prefix || '/') but can use the
+-- text_pattern_ops path indexes (migration 000021); starts_with cannot, and every
+-- folder rename, move or delete read the whole table.
+
+-- Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree),
+-- trashed rows included. Two branches, one per partial index: as a single condition
+-- the planner merges them and scans the table.
 -- name: RewriteSubtreePaths :exec
 UPDATE nodes
 SET disk_path = sqlc.arg(new_prefix)::text || substring(disk_path FROM char_length(sqlc.arg(old_prefix)::text) + 1)
-WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(old_prefix)::text OR starts_with(disk_path, sqlc.arg(old_prefix)::text || '/'));
+WHERE id IN (
+    SELECT l.id FROM nodes l
+    WHERE l.user_id = sqlc.arg(user_id) AND l.deleted_at IS NULL
+      AND (l.disk_path = sqlc.arg(old_prefix)::text
+           OR (l.disk_path ~>=~ (sqlc.arg(old_prefix)::text || '/') AND l.disk_path ~<~ (sqlc.arg(old_prefix)::text || '0')))
+    UNION ALL
+    SELECT t.id FROM nodes t
+    WHERE t.user_id = sqlc.arg(user_id) AND t.deleted_at IS NOT NULL
+      AND (t.disk_path = sqlc.arg(old_prefix)::text
+           OR (t.disk_path ~>=~ (sqlc.arg(old_prefix)::text || '/') AND t.disk_path ~<~ (sqlc.arg(old_prefix)::text || '0')))
+);
 
 -- Append change_log rows for every live strict descendant of prefix. Needed after
 -- a subtree path rewrite (move/rename): cursor-based clients (and the scoped feed,
@@ -306,7 +323,7 @@ WITH descendants AS (
     SELECT id, version, disk_path, row_number() OVER (ORDER BY disk_path) AS rn
     FROM nodes
     WHERE user_id = sqlc.arg(user_id)
-      AND starts_with(disk_path, sqlc.arg(prefix)::text || '/')
+      AND disk_path ~>=~ (sqlc.arg(prefix)::text || '/') AND disk_path ~<~ (sqlc.arg(prefix)::text || '0')
       AND deleted_at IS NULL
 ),
 bump AS (
@@ -331,7 +348,8 @@ UPDATE nodes
 SET deleted_at = now(),
     trash_path = sqlc.narg(trash_root)::text || substring(disk_path FROM char_length(sqlc.arg(prefix)::text) + 1)
 WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
+  AND (disk_path = sqlc.arg(prefix)::text
+       OR (disk_path ~>=~ (sqlc.arg(prefix)::text || '/') AND disk_path ~<~ (sqlc.arg(prefix)::text || '0')))
   AND deleted_at IS NULL;
 
 -- name: NextChangeSeq :one

@@ -406,7 +406,14 @@ type Querier interface {
 	RenameWebAuthnCredential(ctx context.Context, arg RenameWebAuthnCredentialParams) error
 	ResetStaleSavedItems(ctx context.Context) (int64, error)
 	RetrySavedItem(ctx context.Context, arg RetrySavedItemParams) (int64, error)
-	// Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree).
+	// Subtree queries match "prefix or anything under prefix/" as a bytewise range,
+	//   disk_path ~>=~ prefix || '/' AND disk_path ~<~ prefix || '0'   ('0' follows '/'),
+	// which is exactly starts_with(disk_path, prefix || '/') but can use the
+	// text_pattern_ops path indexes (migration 000021); starts_with cannot, and every
+	// folder rename, move or delete read the whole table.
+	// Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree),
+	// trashed rows included. Two branches, one per partial index: as a single condition
+	// the planner merges them and scans the table.
 	RewriteSubtreePaths(ctx context.Context, arg RewriteSubtreePathsParams) error
 	// Returns accessible books matching a case-insensitive substring in title, author, or series.
 	SearchAccessibleBooks(ctx context.Context, arg SearchAccessibleBooksParams) ([]Book, error)
