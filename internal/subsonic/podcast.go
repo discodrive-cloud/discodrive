@@ -173,7 +173,7 @@ func getNewestPodcasts(h *Handler, c *reqCtx) {
 		return
 	}
 
-	count := parseSearchIntParam(c, "count", 20)
+	count := parseCountParam(c, "count", 20)
 
 	eps, err := h.q.ListNewestEpisodesForUser(ctx, db.ListNewestEpisodesForUserParams{
 		UserID: userUUID,

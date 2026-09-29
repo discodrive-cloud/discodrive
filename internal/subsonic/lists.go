@@ -2,7 +2,6 @@ package subsonic
 
 import (
 	"context"
-	"strconv"
 
 	"discodrive/internal/db"
 
@@ -58,22 +57,11 @@ func albumObj(e albumListEntry, marks userMarks) map[string]any {
 
 // parseListParams parses the common pagination parameters for album list endpoints.
 func parseListParams(c *reqCtx) (size, offset int32) {
-	size = 10
-	offset = 0
-	if s := c.param("size"); s != "" {
-		if v, err := strconv.Atoi(s); err == nil && v > 0 {
-			size = int32(v)
-		}
+	size = min(parseSearchIntParam(c, "size", 10), 500)
+	if size == 0 {
+		size = 10
 	}
-	if size > 500 {
-		size = 500
-	}
-	if o := c.param("offset"); o != "" {
-		if v, err := strconv.Atoi(o); err == nil && v >= 0 {
-			offset = int32(v)
-		}
-	}
-	return size, offset
+	return size, parseSearchIntParam(c, "offset", 0)
 }
 
 // fetchAlbumList fetches albums according to the requested type and returns them
@@ -104,11 +92,11 @@ func fetchAlbumList(ctx context.Context, h *Handler, userUUID pgtype.UUID, c *re
 	case "byYear":
 		fromYear := int32(0)
 		toYear := int32(9999)
-		if v, err := strconv.Atoi(c.param("fromYear")); err == nil {
-			fromYear = int32(v)
+		if v, ok := parseInt32Param(c, "fromYear"); ok {
+			fromYear = v
 		}
-		if v, err := strconv.Atoi(c.param("toYear")); err == nil {
-			toYear = int32(v)
+		if v, ok := parseInt32Param(c, "toYear"); ok {
+			toYear = v
 		}
 		// When fromYear > toYear, use descending order (as per OpenSubsonic spec).
 		if fromYear > toYear {

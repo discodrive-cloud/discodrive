@@ -2,6 +2,7 @@ package subsonic
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -15,18 +16,42 @@ func init() {
 	endpoints["search2"] = search2
 }
 
-// parseSearchIntParam parses an integer query parameter with a default value.
-// Returns the default if the parameter is missing or invalid.
+// Paging bounds. Offsets stay far from the int32 limit of the query arguments
+// (so offset+count cannot wrap either); counts are generous enough for clients
+// that page through the whole library but keep one response bounded.
+const (
+	maxListOffset = 1 << 30
+	maxListCount  = 10000
+)
+
+// parseSearchIntParam parses a non-negative integer query parameter (an offset)
+// with a default value, clamped to maxListOffset. Returns the default if the
+// parameter is missing or invalid.
 func parseSearchIntParam(c *reqCtx, name string, defaultVal int) int32 {
 	s := c.param(name)
 	if s == "" {
 		return int32(defaultVal)
 	}
-	v, err := strconv.Atoi(s)
+	v, err := strconv.ParseInt(s, 10, 64)
+	if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(s, "-") {
+		return maxListOffset
+	}
 	if err != nil || v < 0 {
 		return int32(defaultVal)
 	}
-	return int32(v)
+	return int32(min(v, maxListOffset))
+}
+
+// parseCountParam is parseSearchIntParam for a result count, capped at maxListCount.
+func parseCountParam(c *reqCtx, name string, defaultVal int) int32 {
+	return min(parseSearchIntParam(c, name, defaultVal), maxListCount)
+}
+
+// parseInt32Param parses an int32 parameter (e.g. a year); ok is false when it is
+// missing, malformed or out of range.
+func parseInt32Param(c *reqCtx, name string) (int32, bool) {
+	v, err := strconv.ParseInt(c.param(name), 10, 32)
+	return int32(v), err == nil
 }
 
 // runSearch executes all three search queries (artists, albums, songs) and writes
@@ -42,11 +67,11 @@ func runSearch(h *Handler, c *reqCtx, wrapKey string) {
 	// Blank/whitespace query means "match everything": ILIKE '%%' matches all rows.
 	q := strings.TrimSpace(c.param("query"))
 
-	artistCount := parseSearchIntParam(c, "artistCount", 20)
+	artistCount := parseCountParam(c, "artistCount", 20)
 	artistOffset := parseSearchIntParam(c, "artistOffset", 0)
-	albumCount := parseSearchIntParam(c, "albumCount", 20)
+	albumCount := parseCountParam(c, "albumCount", 20)
 	albumOffset := parseSearchIntParam(c, "albumOffset", 0)
-	songCount := parseSearchIntParam(c, "songCount", 20)
+	songCount := parseCountParam(c, "songCount", 20)
 	songOffset := parseSearchIntParam(c, "songOffset", 0)
 
 	// Artists.
