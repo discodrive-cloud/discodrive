@@ -468,7 +468,7 @@ const sampleRSSWithCover = `<?xml version="1.0"?>
 </channel></rss>`
 
 // fakeCoverBytes is the payload served by the test HTTP server as the cover image.
-var fakeCoverBytes = []byte("FAKECOVERIMAGE")
+var fakeCoverBytes = []byte("\xff\xd8\xffFAKECOVERIMAGE") // JPEG magic: covers are sniffed
 
 // startRSSServerWithCover spins up an httptest server serving an RSS feed whose
 // channel has an itunes:image, plus the cover and episode files.

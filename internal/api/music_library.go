@@ -4,10 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
-	"mime"
 	"net/http"
-	"path/filepath"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -243,7 +242,6 @@ func (s *Server) handleGetPodcastCover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	path := filepath.Join(s.storageRoot, ch.CoverPath.String)
 	f, err := storage.NewLocalDisk(s.storageRoot).Open(ch.CoverPath.String)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not found")
@@ -255,10 +253,18 @@ func (s *Server) handleGetPodcastCover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	ct := mime.TypeByExtension(filepath.Ext(path))
-	if ct == "" {
-		ct = "image/jpeg"
+	// The type comes from the bytes, never from the feed-controlled file name,
+	// and the browser must not second-guess it.
+	ct, ok := podcast.SniffRaster(f)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not found")
+		return
 	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Type", ct)
 	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
 }
