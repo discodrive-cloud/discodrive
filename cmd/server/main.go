@@ -168,6 +168,9 @@ func runServer(cfg config.Config) {
 	if err != nil {
 		log.Fatalf("discodrive: transport configuration: %v", err)
 	}
+	if wide := transport.WideTrustedRanges(); len(wide) > 0 {
+		log.Printf("discodrive: WARNING: TRUSTED_PROXY_CIDRS trusts wide ranges %v: any host there can assert HTTPS and spoof client IPs (rate limits); list only your reverse proxy's address", wide)
+	}
 	if cfg.DatabaseURL == "" {
 		log.Fatal("discodrive: DATABASE_URL is not set")
 	}
@@ -257,6 +260,9 @@ func runServer(cfg config.Config) {
 	// reset cannot race live processing goroutines.
 	savedSvc := saved.NewService(queries, store, cfg.SavedMaxDownloadMB)
 	savedSvc.SetQuota(quotaChecker)
+	// Finished downloads and articles become nodes at once, so they count toward the
+	// quota immediately rather than after the next rescan.
+	savedSvc.SetFiles(fileSvc)
 	savedSvc.SetCipher(cipher)
 	if err := savedSvc.RecoverStale(ctx); err != nil {
 		log.Fatalf("discodrive: saved recover: %v", err)

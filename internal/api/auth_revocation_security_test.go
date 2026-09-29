@@ -48,7 +48,8 @@ func TestSecurityMFAAfterPasswordChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, err := totp.GenerateCode(key, time.Now())
+	// Codes are single-use per step: enroll with the previous step, sign in with the current.
+	code, err := totp.GenerateCode(key, time.Now().Add(-30*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +95,8 @@ func TestSecurityMFAAfterPasswordChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The current step's code was used above; the concurrent round needs the next one.
+	code, _ = totp.GenerateCode(key, time.Now().Add(30*time.Second))
 	outcomes := make(chan error, 8)
 	start := make(chan struct{})
 	for i := 0; i < 8; i++ {

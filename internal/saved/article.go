@@ -114,12 +114,13 @@ func (s *Service) processArticle(ctx context.Context, item db.SavedItem) (result
 		return result{}, err
 	}
 	tmpRel := ".tmp/saved-" + randHex(16)
-	size, _, err := s.st.WriteFile(tmpRel, strings.NewReader(doc))
+	size, hash, err := s.st.WriteFile(tmpRel, strings.NewReader(doc))
 	if err != nil {
 		_ = s.st.Remove(tmpRel)
 		return result{}, err
 	}
-	if err := s.st.Move(tmpRel, destRel); err != nil {
+	nodeID, err := s.publish(ctx, item.UserID, tmpRel, destRel, size, hash)
+	if err != nil {
 		_ = s.st.Remove(tmpRel)
 		return result{}, err
 	}
@@ -130,6 +131,7 @@ func (s *Service) processArticle(ctx context.Context, item db.SavedItem) (result
 	}
 	res := result{
 		contentPath: pgtype.Text{String: destRel, Valid: true},
+		nodeID:      nodeID,
 		size:        pgtype.Int8{Int64: size, Valid: true},
 		meta:        metaJSON,
 	}

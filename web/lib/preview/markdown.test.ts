@@ -56,12 +56,11 @@ describe('markdown preview renderer', () => {
 describe('markdown reader mode (allowImages)', () => {
   const mdImg = configureMarkdown(new MarkdownIt({ html: false, linkify: true }), { allowImages: true })
 
-  it('renders real lazy images without a referrer', () => {
+  it('renders inert images: the address in data-ext-src, no src the CSP would block', () => {
     const out = mdImg.render('![схема](https://example.com/pic.jpg)')
-    expect(out).toContain('<img src="https://example.com/pic.jpg"')
+    expect(out).toContain('<img data-ext-src="https://example.com/pic.jpg"')
     expect(out).toContain('alt="схема"')
-    expect(out).toContain('loading="lazy"')
-    expect(out).toContain('referrerpolicy="no-referrer"')
+    expect(out).not.toMatch(/<img[^>]*\ssrc=/)
   })
 
   it('escapes hostile src/alt attributes', () => {

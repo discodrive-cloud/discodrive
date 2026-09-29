@@ -26,7 +26,7 @@ func parseEPUB(fpath string) (Meta, error) {
 	}
 
 	// 2. Parse the OPF document.
-	opfData, err := epubReadFile(zr, opfPath)
+	opfData, err := epubReadFile(zr, opfPath, maxEbookMetaBytes)
 	if err != nil {
 		return Meta{}, err
 	}
@@ -42,7 +42,7 @@ func parseEPUB(fpath string) (Meta, error) {
 
 // epubRootfilePath extracts the OPF path from META-INF/container.xml.
 func epubRootfilePath(zr *zip.ReadCloser) (string, error) {
-	data, err := epubReadFile(zr, "META-INF/container.xml")
+	data, err := epubReadFile(zr, "META-INF/container.xml", maxEbookMetaBytes)
 	if err != nil {
 		return "", errors.New("epub: missing META-INF/container.xml")
 	}
@@ -61,16 +61,42 @@ func epubRootfilePath(zr *zip.ReadCloser) (string, error) {
 	return container.Rootfiles[0].FullPath, nil
 }
 
-// epubReadFile reads a named file from the zip, returning its contents.
-func epubReadFile(zr *zip.ReadCloser, name string) ([]byte, error) {
+// Caps on how much of a single zip entry is buffered. Books are untrusted uploads
+// and are indexed automatically, so a zip bomb in one entry must not take the heap
+// of a 128 MB box with it.
+var (
+	maxEbookMetaBytes  int64 = 4 << 20  // container.xml, OPF
+	maxEbookCoverBytes int64 = 20 << 20 // cover image
+)
+
+var errZipEntryTooLarge = errors.New("ebook: zip entry exceeds size limit")
+
+// readZipEntry reads f fully if it is at most limit bytes. The declared size is
+// checked first; the LimitReader protects against a header that lies about it.
+func readZipEntry(f *zip.File, limit int64) ([]byte, error) {
+	if f.UncompressedSize64 > uint64(limit) {
+		return nil, errZipEntryTooLarge
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(io.LimitReader(rc, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, errZipEntryTooLarge
+	}
+	return data, nil
+}
+
+// epubReadFile reads a named file of at most limit bytes from the zip.
+func epubReadFile(zr *zip.ReadCloser, name string, limit int64) ([]byte, error) {
 	for _, f := range zr.File {
 		if f.Name == name {
-			rc, err := f.Open()
-			if err != nil {
-				return nil, err
-			}
-			defer rc.Close()
-			return io.ReadAll(rc)
+			return readZipEntry(f, limit)
 		}
 	}
 	return nil, errors.New("epub: file not found in zip: " + name)
@@ -242,7 +268,7 @@ func epubBuildMeta(pkg *opfPackage, zr *zip.ReadCloser, opfDir string) (Meta, er
 		if opfDir != "." && opfDir != "" {
 			coverPath = opfDir + "/" + coverHref
 		}
-		if data, err := epubReadFile(zr, coverPath); err == nil {
+		if data, err := epubReadFile(zr, coverPath, maxEbookCoverBytes); err == nil {
 			m.CoverData = data
 			m.CoverType = coverType
 		}

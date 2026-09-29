@@ -25,16 +25,7 @@ func (s *Server) handleShareContacts(w http.ResponseWriter, r *http.Request) {
 	}
 	owner := auth.UserID(r.Context())
 	share, err := s.dav.ShareAddressbook(r.Context(), owner, abID, body.Email)
-	switch err {
-	case nil:
-	case dav.ErrNotOwner:
-		writeError(w, http.StatusForbidden, "owner only")
-		return
-	case dav.ErrNotFound:
-		writeError(w, http.StatusNotFound, "user not found")
-		return
-	default:
-		writeError(w, http.StatusInternalServerError, "failed to share")
+	if !writeShareResult(w, err, "address book not found") {
 		return
 	}
 	abName := "Contacts"
@@ -47,7 +38,7 @@ func (s *Server) handleShareContacts(w http.ResponseWriter, r *http.Request) {
 	}
 	s.notify.Emit(r.Context(), db.UUIDString(share.SharedWithUser), "share.received",
 		map[string]any{"NodeName": abName, "SharerEmail": sharerEmail, "ResourceLabel": "address book"})
-	writeJSON(w, http.StatusCreated, map[string]any{"share_id": db.UUIDString(share.ID)})
+	writeShareOK(w)
 }
 
 // GET /me/contacts/shares
@@ -73,7 +64,8 @@ func (s *Server) handleListContactsShares(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, out)
 }
 
-// DELETE /me/contacts/shares/{shareId}
+// DELETE /me/contacts/shares/{shareId} — the owner revokes a share, or the recipient leaves
+// the address book.
 func (s *Server) handleDeleteContactsShare(w http.ResponseWriter, r *http.Request) {
 	err := s.dav.DeleteAddressbookShare(r.Context(), auth.UserID(r.Context()), r.PathValue("shareId"))
 	switch err {

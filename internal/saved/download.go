@@ -112,8 +112,11 @@ func (s *Service) processDownload(ctx context.Context, item db.SavedItem) (resul
 
 	pr := &progressReader{ctx: ctx, r: resp.Body, q: s.q, id: item.ID, max: s.maxDownload,
 		budget: budget, total: total}
+	if budget != quota.Unlimited {
+		pr.allowance = func() (int64, error) { return s.budget(ctx, item) }
+	}
 	tmpRel := ".tmp/saved-" + randHex(16)
-	size, _, err := s.st.WriteFile(tmpRel, pr)
+	size, hash, err := s.st.WriteFile(tmpRel, pr)
 	if err != nil {
 		_ = s.st.Remove(tmpRel)
 		if pr.err != nil {
@@ -121,13 +124,15 @@ func (s *Service) processDownload(ctx context.Context, item db.SavedItem) (resul
 		}
 		return result{}, err
 	}
-	if err := s.st.Move(tmpRel, destRel); err != nil {
+	nodeID, err := s.publish(ctx, item.UserID, tmpRel, destRel, size, hash)
+	if err != nil {
 		_ = s.st.Remove(tmpRel)
 		return result{}, err
 	}
 
 	res := result{
 		contentPath: pgtype.Text{String: destRel, Valid: true},
+		nodeID:      nodeID,
 		size:        pgtype.Int8{Int64: size, Valid: true},
 	}
 	if item.Title == "" {
@@ -237,10 +242,18 @@ type progressReader struct {
 	// nothing constrains it.
 	budget int64
 	total  pgtype.Int8
+	// allowance re-reads what the owner may still write, with this download's persisted
+	// bytes_done already counted as used; nil when nothing limits the owner. It runs
+	// once per quota.ReserveBlock of data, the same cadence as ordinary uploads: tied to
+	// bytes, not seconds, so a slow download does not query the usage sums for nothing
+	// (they scan every file of the user, or of the server under STORAGE_TOTAL_GB).
+	allowance func() (int64, error)
 
-	read int64
-	last time.Time
-	err  error // sticky verdict: errDeleted, errTooLarge or ErrExceeded
+	read      int64
+	persisted int64 // bytes_done as last written to the row, i.e. as counted in usage
+	checked   int64 // read at the last allowance check
+	last      time.Time
+	err       error // sticky verdict: errDeleted, errTooLarge or ErrExceeded
 }
 
 func (p *progressReader) Read(b []byte) (int, error) {
@@ -265,6 +278,21 @@ func (p *progressReader) Read(b []byte) (int, error) {
 		if uerr == nil && rows == 0 {
 			p.err = errDeleted
 			return n, errDeleted
+		}
+		if uerr == nil {
+			p.persisted = p.read
+		}
+	}
+	// The budget sampled at the start does not know about downloads that started later.
+	// Usage already holds our persisted bytes, so our cap is persisted + what is left.
+	if p.allowance != nil && p.read-p.checked >= quota.ReserveBlock {
+		p.checked = p.read
+		if left, aerr := p.allowance(); aerr == nil && left != quota.Unlimited {
+			p.budget = p.persisted + left
+			if p.read > p.budget {
+				p.err = quotaErr(left)
+				return n, p.err
+			}
 		}
 	}
 	return n, err

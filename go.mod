@@ -1,6 +1,6 @@
 module discodrive
 
-go 1.25.11
+go 1.25.14
 
 require (
 	github.com/Sorrow446/go-mp4tag v0.0.0-20240130220823-68ce31d53e37
@@ -20,7 +20,6 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/mewkiz/flac v1.0.13
 	github.com/mmcdole/gofeed v1.3.0
-	github.com/nwaples/rardecode v1.1.3
 	github.com/pdfcpu/pdfcpu v0.13.0
 	github.com/pquerna/otp v1.5.0
 	github.com/smallstep/pkcs7 v0.2.3
@@ -33,6 +32,8 @@ require (
 	golang.org/x/crypto v0.53.0
 	golang.org/x/net v0.55.0
 )
+
+require github.com/nwaples/rardecode/v2 v2.4.1
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
@@ -114,10 +115,10 @@ require (
 	go.opentelemetry.io/otel v1.41.0 // indirect
 	go.opentelemetry.io/otel/metric v1.41.0 // indirect
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
-	golang.org/x/image v0.41.0 // indirect
+	golang.org/x/image v0.43.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

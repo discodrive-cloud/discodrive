@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isHttpUrl, withScheme } from '~/lib/safeUrl'
 // Browser bookmark tree: the server copy that extensions two-way sync with.
 // Edits here (rename/delete/add) propagate to every synced browser.
 import BookmarkTree, { type BookmarkNode } from '~/components/saved/BookmarkTree.vue'
@@ -99,7 +100,7 @@ async function submitAdd() {
       body: {
         is_folder: addMode.value === 'folder',
         title: addTitle.value.trim(),
-        url: addMode.value === 'bookmark' ? addURL.value.trim() : '',
+        url: addMode.value === 'bookmark' ? withScheme(addURL.value) : '',
         ...(addParent.value ? { parent_id: addParent.value } : {}),
       },
     })
@@ -222,9 +223,10 @@ useModalEscape(computed(() => addMode.value !== ''), closeAdd)
         >
           <SavedFavicon :src="node.has_favicon ? `/me/bookmarks/${node.id}/favicon` : ''" icon="lucide:globe" />
           <div class="min-w-0 flex-1">
-            <a :href="node.url" target="_blank" rel="noopener" class="block truncate text-sm hover:text-accent">
+            <a v-if="isHttpUrl(node.url)" :href="node.url" target="_blank" rel="noopener" class="block truncate text-sm hover:text-accent">
               {{ node.title || node.url }}
             </a>
+            <span v-else class="block truncate text-sm text-muted">{{ node.title || node.url }}</span>
             <div class="truncate text-xs text-muted">{{ node.url }}</div>
           </div>
           <div class="flex shrink-0 items-center gap-0.5 opacity-0 transition group-hover:opacity-100">

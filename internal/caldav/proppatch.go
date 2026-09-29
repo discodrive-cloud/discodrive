@@ -68,8 +68,26 @@ func (b *Backend) HandleProppatch(w http.ResponseWriter, r *http.Request) {
 		names = append(names, op.Prop.Props...)
 	}
 
+	// A calendar shared with the caller is the owner's: the Set* queries are scoped to the
+	// owner, so nothing a sharee sends is saved. Renaming is refused with 403 (RFC 4918
+	// §9.2: all or nothing) so the client does not show a name the server never took.
+	// Color and order are different: Apple sends calendar-order (and color) for every
+	// calendar in the sidebar, shared ones included, whenever the user drags one; a 403
+	// there surfaces as an account error. They are cosmetic and client-local, so a
+	// sharee's color/order still gets 200 without being stored, as before.
+	status := "HTTP/1.1 200 OK"
+	sharee := false
+	if _, uri, obj := parsePath(r.URL.Path); uri != "" && obj == "" {
+		if cal, err := b.resolveCalendar(r.Context(), uri); err == nil && db.UUIDString(cal.UserID) != userID(r.Context()) {
+			sharee = true
+			if hasName {
+				status = "HTTP/1.1 403 Forbidden"
+			}
+		}
+	}
+
 	// persist displayname / color / order on the collection (if PROPPATCH targets a calendar/list)
-	if (hasName && newName != "") || newColor != "" || newOrder != nil {
+	if !sharee && ((hasName && newName != "") || newColor != "" || newOrder != nil) {
 		if _, uri, obj := parsePath(r.URL.Path); uri != "" && obj == "" {
 			if cal, err := b.resolveCalendar(r.Context(), uri); err == nil {
 				calID := db.UUIDString(cal.ID)
@@ -110,7 +128,7 @@ func (b *Backend) HandleProppatch(w http.ResponseWriter, r *http.Request) {
 		}
 		sb.WriteString("/>")
 	}
-	sb.WriteString(`</prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>`)
+	sb.WriteString(`</prop><status>` + status + `</status></propstat></response></multistatus>`)
 
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusMultiStatus)

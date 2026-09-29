@@ -17,7 +17,8 @@ func TestLiveNodePathIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nodes_live_path index missing: %v", err)
 	}
-	if !strings.Contains(def, "(user_id, disk_path)") || !strings.Contains(def, "deleted_at IS NULL") {
+	// text_pattern_ops since migration 000021: equality lookups and subtree ranges.
+	if !strings.Contains(def, "(user_id, disk_path text_pattern_ops)") || !strings.Contains(def, "deleted_at IS NULL") {
 		t.Fatalf("unexpected index definition: %s", def)
 	}
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"syscall"
@@ -45,10 +46,52 @@ func ValidateURL(raw string) error {
 	return nil
 }
 
-// isBlockedIP reports whether ip is loopback, private, link-local, or unspecified.
+// blockedPrefixes are the special-purpose ranges an outbound fetch must never reach
+// on top of what the net.IP predicates below cover. 100.64.0.0/10 matters most:
+// self-hosted servers often sit in a Tailscale tailnet, whose peers all live in CGNAT space.
+var blockedPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),       // "this network"
+	netip.MustParsePrefix("100.64.0.0/10"),   // CGNAT, Tailscale
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),    // TEST-NET-1
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"), // TEST-NET-2
+	netip.MustParsePrefix("203.0.113.0/24"),  // TEST-NET-3
+	netip.MustParsePrefix("224.0.0.0/4"),     // multicast
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved, includes 255.255.255.255
+	netip.MustParsePrefix("::/96"),           // IPv4-compatible (deprecated)
+	netip.MustParsePrefix("64:ff9b::/96"),    // NAT64: reaches any IPv4, private ones too
+	netip.MustParsePrefix("64:ff9b:1::/48"),  // local-use NAT64
+	netip.MustParsePrefix("100::/64"),        // discard-only
+	netip.MustParsePrefix("2001::/23"),       // IETF protocol assignments (Teredo, ORCHID…)
+	netip.MustParsePrefix("2001:db8::/32"),   // documentation
+	netip.MustParsePrefix("2002::/16"),       // 6to4: embeds an arbitrary IPv4
+	netip.MustParsePrefix("fc00::/7"),        // unique local
+	netip.MustParsePrefix("fe80::/10"),       // link-local
+	netip.MustParsePrefix("fec0::/10"),       // site-local (deprecated)
+	netip.MustParsePrefix("ff00::/8"),        // multicast
+}
+
+// isBlockedIP reports whether ip is anything but a public unicast address:
+// loopback, private, link-local, unspecified, multicast or one of blockedPrefixes.
+// IPv4-mapped IPv6 addresses are checked as the IPv4 address they carry.
 func isBlockedIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	addr = addr.Unmap()
+	if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() ||
+		addr.IsLinkLocalMulticast() || addr.IsInterfaceLocalMulticast() ||
+		addr.IsMulticast() || addr.IsUnspecified() {
+		return true
+	}
+	for _, p := range blockedPrefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // Dialer re-checks the *resolved* IP at connection time (after DNS, before
@@ -98,7 +141,10 @@ func NewClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		Transport: uaTransport{inner: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
+			// No proxy, ever: with HTTP(S)_PROXY set, the transport dials the proxy
+			// and the proxy dials the target, so Dialer's IP check would only ever
+			// see the proxy's address.
+			Proxy:                 nil,
 			DialContext:           Dialer.DialContext,
 			ResponseHeaderTimeout: 30 * time.Second,
 		}},

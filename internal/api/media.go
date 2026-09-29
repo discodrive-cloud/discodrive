@@ -176,6 +176,12 @@ func (s *Server) handleMediaCover(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(data)
 		return
 	}
+	// A sibling cover lives in the file's folder: a file shared on its own does
+	// not share that folder's other files.
+	if !s.canReadParent(r, node) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
 	if p, ok := music.ResolveCoverPath(filepath.Dir(abs)); ok {
 		f, err := storage.NewLocalDisk(s.storageRoot).OpenAbsolute(p)
 		if err != nil {
@@ -198,6 +204,23 @@ func (s *Server) handleMediaCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeError(w, http.StatusNotFound, "not found")
+}
+
+// canReadParent reports whether the requester may read node's folder: always
+// for the owner, else only through a share on that folder or an ancestor.
+func (s *Server) canReadParent(r *http.Request, node db.Node) bool {
+	uid, err := db.ParseUUID(auth.UserID(r.Context()))
+	if err != nil {
+		return false
+	}
+	if node.UserID == uid {
+		return true
+	}
+	if !node.ParentID.Valid {
+		return false // the owner's root is never shared as a whole
+	}
+	acc, err := s.q.SharedAccessForUser(r.Context(), db.SharedAccessForUserParams{StartID: node.ParentID, UserID: uid})
+	return err == nil && acc.CanRead
 }
 
 // isPlayableNode: a real file, not an encrypted vault entry, with a mime the

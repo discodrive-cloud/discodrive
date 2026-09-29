@@ -11,6 +11,52 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const browserBookmarkAncestors = `-- name: BrowserBookmarkAncestors :many
+WITH RECURSIVE up AS (
+    SELECT b.id, b.parent_id, b.is_folder FROM browser_bookmarks b
+    WHERE b.user_id = $1 AND b.id = ANY($2::uuid[])
+    UNION
+    SELECT p.id, p.parent_id, p.is_folder FROM browser_bookmarks p
+    JOIN up ON p.id = up.parent_id
+    WHERE p.user_id = $1
+)
+SELECT id, parent_id, is_folder FROM up
+`
+
+type BrowserBookmarkAncestorsParams struct {
+	UserID pgtype.UUID   `json:"user_id"`
+	Ids    []pgtype.UUID `json:"ids"`
+}
+
+type BrowserBookmarkAncestorsRow struct {
+	ID       pgtype.UUID `json:"id"`
+	ParentID pgtype.UUID `json:"parent_id"`
+	IsFolder bool        `json:"is_folder"`
+}
+
+// BrowserBookmarkAncestors returns the given nodes of the user and all their
+// ancestors (tombstones included: they still carry the structure), for the bulk
+// import's parent and cycle checks. UNION ends the walk on an existing cycle.
+func (q *Queries) BrowserBookmarkAncestors(ctx context.Context, arg BrowserBookmarkAncestorsParams) ([]BrowserBookmarkAncestorsRow, error) {
+	rows, err := q.db.Query(ctx, browserBookmarkAncestors, arg.UserID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BrowserBookmarkAncestorsRow{}
+	for rows.Next() {
+		var i BrowserBookmarkAncestorsRow
+		if err := rows.Scan(&i.ID, &i.ParentID, &i.IsFolder); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const bumpBookmarkGCSeq = `-- name: BumpBookmarkGCSeq :exec
 UPDATE users SET bookmark_gc_seq = GREATEST(bookmark_gc_seq, $2) WHERE id = $1
 `
@@ -251,6 +297,54 @@ func (q *Queries) ListBrowserBookmarks(ctx context.Context, userID pgtype.UUID) 
 	return items, nil
 }
 
+const listBrowserBookmarksAtSeq = `-- name: ListBrowserBookmarksAtSeq :many
+SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at FROM browser_bookmarks
+WHERE user_id = $1 AND seq = $2
+ORDER BY id
+`
+
+type ListBrowserBookmarksAtSeqParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	Seq    int64       `json:"seq"`
+}
+
+// Every row of one change group. A bulk import or a folder delete stamps all its rows
+// with a single seq, so a page cut inside a group must be completed from here — a
+// cursor at that seq would otherwise skip the rest of the group.
+func (q *Queries) ListBrowserBookmarksAtSeq(ctx context.Context, arg ListBrowserBookmarksAtSeqParams) ([]BrowserBookmark, error) {
+	rows, err := q.db.Query(ctx, listBrowserBookmarksAtSeq, arg.UserID, arg.Seq)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BrowserBookmark{}
+	for rows.Next() {
+		var i BrowserBookmark
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ParentID,
+			&i.IsFolder,
+			&i.Title,
+			&i.Url,
+			&i.Position,
+			&i.Deleted,
+			&i.Seq,
+			&i.FaviconExt,
+			&i.FaviconTriedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBrowserBookmarksNeedingFavicon = `-- name: ListBrowserBookmarksNeedingFavicon :many
 SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at FROM browser_bookmarks
 WHERE favicon_tried_at IS NULL AND NOT deleted AND NOT is_folder
@@ -297,7 +391,7 @@ WITH RECURSIVE s AS (
     UPDATE users SET bookmark_seq = bookmark_seq + 1 WHERE id = $1 RETURNING bookmark_seq
 ), sub AS (
     SELECT b.id FROM browser_bookmarks b WHERE b.id = $2 AND b.user_id = $1
-    UNION ALL
+    UNION
     SELECT c.id FROM browser_bookmarks c JOIN sub ON c.parent_id = sub.id WHERE c.user_id = $1
 )
 UPDATE browser_bookmarks SET
@@ -317,6 +411,8 @@ type MoveBrowserBookmarkParams struct {
 
 // MoveBookmark re-parents a node. The NOT EXISTS guard rejects a move that
 // would create a cycle (the target parent must not be inside the moved subtree).
+// UNION (not UNION ALL) in the walks below is the cycle guard: a node already
+// visited adds no new row, so even a corrupted, cyclic tree ends the recursion.
 func (q *Queries) MoveBrowserBookmark(ctx context.Context, arg MoveBrowserBookmarkParams) (BrowserBookmark, error) {
 	row := q.db.QueryRow(ctx, moveBrowserBookmark, arg.UserID, arg.ID, arg.ParentID)
 	var i BrowserBookmark
@@ -391,7 +487,7 @@ func (q *Queries) SetBrowserBookmarkTitleIfEmpty(ctx context.Context, arg SetBro
 const tombstoneBrowserBookmarkTree = `-- name: TombstoneBrowserBookmarkTree :execrows
 WITH RECURSIVE sub AS (
     SELECT b.id FROM browser_bookmarks b WHERE b.id = $2 AND b.user_id = $1
-    UNION ALL
+    UNION
     SELECT c.id FROM browser_bookmarks c JOIN sub ON c.parent_id = sub.id WHERE c.user_id = $1
 )
 UPDATE browser_bookmarks SET deleted = true, seq = $3, updated_at = now()
@@ -464,7 +560,7 @@ func (q *Queries) UpdateBrowserBookmark(ctx context.Context, arg UpdateBrowserBo
 	return i, err
 }
 
-const upsertBrowserBookmarkAt = `-- name: UpsertBrowserBookmarkAt :exec
+const upsertBrowserBookmarkAt = `-- name: UpsertBrowserBookmarkAt :execrows
 INSERT INTO browser_bookmarks (id, user_id, parent_id, is_folder, title, url, position, seq)
 VALUES ($1, $2, $8, $3, $4, $5, $6, $7)
 ON CONFLICT (id) DO UPDATE SET
@@ -492,8 +588,9 @@ type UpsertBrowserBookmarkAtParams struct {
 
 // UpsertBookmarkAt is the bulk-import step (tx, seq passed in). LWW: an
 // existing row (including a tombstone) is overwritten and revived.
-func (q *Queries) UpsertBrowserBookmarkAt(ctx context.Context, arg UpsertBrowserBookmarkAtParams) error {
-	_, err := q.db.Exec(ctx, upsertBrowserBookmarkAt,
+// Returns 0 rows when the id belongs to another user (the conflict WHERE fails).
+func (q *Queries) UpsertBrowserBookmarkAt(ctx context.Context, arg UpsertBrowserBookmarkAtParams) (int64, error) {
+	result, err := q.db.Exec(ctx, upsertBrowserBookmarkAt,
 		arg.ID,
 		arg.UserID,
 		arg.IsFolder,
@@ -503,5 +600,8 @@ func (q *Queries) UpsertBrowserBookmarkAt(ctx context.Context, arg UpsertBrowser
 		arg.Seq,
 		arg.ParentID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

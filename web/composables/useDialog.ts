@@ -15,12 +15,20 @@ export const useDialogState = () => useState<DialogState | null>('appDialog', ()
 export function useDialog() {
   const state = useDialogState()
 
+  // Only one dialog is shown at a time. A new one replaces the previous, which then
+  // counts as cancelled, so its caller's await never hangs.
+  function open(next: DialogState) {
+    const prev = state.value
+    state.value = next
+    prev?.resolve(null)
+  }
+
   function confirm(
     title: string,
     opts?: { message?: string; confirmText?: string; danger?: boolean },
   ): Promise<boolean> {
     return new Promise((resolve) => {
-      state.value = {
+      open({
         kind: 'confirm',
         title,
         message: opts?.message,
@@ -28,20 +36,20 @@ export function useDialog() {
         confirmText: opts?.confirmText ?? 'OK',
         danger: opts?.danger ?? false,
         resolve: (v) => resolve(v === true),
-      }
+      })
     })
   }
 
   function prompt(title: string, defaultValue = '', opts?: { confirmText?: string }): Promise<string | null> {
     return new Promise((resolve) => {
-      state.value = {
+      open({
         kind: 'prompt',
         title,
         value: defaultValue,
         confirmText: opts?.confirmText ?? 'OK',
         danger: false,
         resolve: (v) => resolve(typeof v === 'string' ? v : null),
-      }
+      })
     })
   }
 

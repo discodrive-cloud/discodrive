@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"discodrive/internal/db"
+	"discodrive/internal/safecontent"
 )
 
 func init() {
@@ -96,7 +97,10 @@ func (h *Handler) resolveAndServeSong(c *reqCtx) {
 		}
 
 		if ep.Status == "completed" && ep.DiskPath.Valid {
-			h.serveNodeFile(c, ep.DiskPath.String, ep.Title, ep.ContentType)
+			// The recorded type is whatever the host sent (audio/mp3, octet-stream,
+			// ...); serve the allowlisted type it or the file extension implies.
+			ct, _ := safecontent.MediaFor(ep.ContentType, ep.DiskPath.String)
+			h.serveNodeFile(c, ep.DiskPath.String, ep.Title, ct)
 			return
 		}
 

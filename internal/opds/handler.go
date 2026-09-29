@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"discodrive/internal/authlimit"
 	"discodrive/internal/db"
 	"discodrive/internal/secret"
 )
@@ -21,11 +22,12 @@ type Handler struct {
 	storageRoot string
 	xaccel      bool
 	mux         *http.ServeMux
+	authLimit   *authlimit.Limiter // failed credential checks per client; nil = off
 }
 
 // New creates a Handler and registers all OPDS route stubs.
 func New(q *db.Queries, cipher *secret.Cipher, storageRoot string, xaccel bool) *Handler {
-	h := &Handler{q: q, cipher: cipher, storageRoot: storageRoot, xaccel: xaccel, mux: http.NewServeMux()}
+	h := &Handler{q: q, cipher: cipher, storageRoot: storageRoot, xaccel: xaccel, mux: http.NewServeMux(), authLimit: authlimit.NewDefault()}
 	h.registerRoutes()
 	return h
 }
@@ -52,8 +54,18 @@ func (h *Handler) registerRoutes() {
 // ServeHTTP authenticates the request and dispatches to the internal mux.
 // On auth failure it writes 401 with a WWW-Authenticate header and returns.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Only failed checks spend the per-client budget; the anonymous first request
+	// that asks for the Basic challenge does not.
+	if h.authLimit.Blocked(r) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "Too many failed login attempts", http.StatusTooManyRequests)
+		return
+	}
 	userID, ok := h.authenticate(r)
 	if !ok {
+		if r.FormValue("apiKey") != "" || r.Header.Get("Authorization") != "" {
+			h.authLimit.Fail(r)
+		}
 		w.Header().Set("WWW-Authenticate", `Basic realm="discodrive OPDS"`)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return

@@ -12,8 +12,10 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -66,6 +68,9 @@ type Service struct {
 	// quota bounds what the item's owner may write; nil = no limits configured.
 	quota  *quota.Checker
 	cipher *secret.Cipher
+	// files publishes finished downloads and articles as nodes; nil (tests) falls back
+	// to a plain move, leaving the node to the next rescan.
+	files Publisher
 
 	Client   *http.Client
 	Validate func(string) error
@@ -84,6 +89,30 @@ func NewService(q *db.Queries, st storage.Storage, maxDownloadMB int) *Service {
 
 // SetQuota installs the quota checker. Called once at startup, before processing runs.
 func (s *Service) SetQuota(c *quota.Checker) { s.quota = c }
+
+// Publisher creates the node for a file the service produced, so it is counted in the
+// owner's quota as soon as it lands. storage.FileService implements it.
+type Publisher interface {
+	Adopt(ctx context.Context, userID, tmpRel, diskRel string, size int64, hash string) (db.Node, error)
+	Delete(ctx context.Context, userID, nodeID string) error
+}
+
+// SetFiles installs the publisher. Called once at startup, before processing runs.
+func (s *Service) SetFiles(p Publisher) { s.files = p }
+
+// publish moves a finished staging file to destRel ("<uid>/...") and, with a publisher
+// installed, creates its node in the same step.
+// It returns the new node's id ("" without a publisher).
+func (s *Service) publish(ctx context.Context, userID pgtype.UUID, tmpRel, destRel string, size int64, hash string) (string, error) {
+	if s.files == nil {
+		return "", s.st.Move(tmpRel, destRel)
+	}
+	node, err := s.files.Adopt(ctx, db.UUIDString(userID), tmpRel, destRel, size, hash)
+	if err != nil {
+		return "", err
+	}
+	return db.UUIDString(node.ID), nil
+}
 
 // SetCipher enables encrypted, temporary cookies for authenticated downloads.
 func (s *Service) SetCipher(c *secret.Cipher) { s.cipher = c }
@@ -140,9 +169,11 @@ func (s *Service) openCookie(item db.SavedItem) (string, error) {
 	return payload.Cookie, nil
 }
 
-// budget is how many bytes the item's owner may still receive. Saved items land
-// straight on disk (the node row appears at the next rescan), so the quota has to be
-// enforced here — nothing else on this path checks it.
+// budget is how many bytes the item's owner may still receive. Saved items are written
+// by the service itself, not through the file service's staging, so the quota has to
+// be enforced here. While a download runs its bytes_done counts as used space, and the
+// progress reader re-reads the allowance every tick, so parallel downloads of one user
+// see each other; a finished file becomes a node (see publish).
 func (s *Service) budget(ctx context.Context, item db.SavedItem) (int64, error) {
 	return s.quota.Allowance(ctx, item.UserID)
 }
@@ -259,6 +290,15 @@ func (s *Service) process(item db.SavedItem) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
+	// The parsers (readability, html-to-markdown) get up to 2 MiB of user HTML. A panic
+	// here used to kill the whole server, and RecoverStale re-queued the item on the
+	// next start: a crash loop. Mark the item failed instead.
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("discodrive: saved %s %s: panic: %v\n%s", item.Kind, db.UUIDString(item.ID), p, debug.Stack())
+			s.setError(item, "internal error while processing this link")
+		}
+	}()
 
 	var res result
 	var err error
@@ -276,12 +316,7 @@ func (s *Service) process(item db.SavedItem) {
 	}
 	if err != nil {
 		log.Printf("discodrive: saved %s %s: %v", item.Kind, db.UUIDString(item.ID), err)
-		if setErr := s.q.SetSavedItemError(context.Background(), db.SetSavedItemErrorParams{
-			ID:       item.ID,
-			ErrorMsg: truncate(err.Error(), 500),
-		}); setErr != nil {
-			log.Printf("discodrive: saved set-error %s: %v", db.UUIDString(item.ID), setErr)
-		}
+		s.setError(item, err.Error())
 		return
 	}
 
@@ -301,9 +336,15 @@ func (s *Service) process(item db.SavedItem) {
 		return
 	}
 	if n == 0 && res.contentPath.Valid {
-		// The row was deleted while we were finishing: drop the produced file.
-		// (A rescan may already have imported it; then it lands in the trash —
-		// an accepted micro-race, see the design notes.)
+		// The row was deleted while we were finishing: drop the produced file. It is
+		// already a node, so it goes to the trash like any deleted file (removing only
+		// the bytes would leave a node pointing at nothing).
+		if res.nodeID != "" && s.files != nil {
+			if err := s.files.Delete(context.Background(), db.UUIDString(item.UserID), res.nodeID); err != nil {
+				log.Printf("discodrive: saved drop %s: %v", db.UUIDString(item.ID), err)
+			}
+			return
+		}
 		_ = s.st.Remove(res.contentPath.String)
 	}
 }
@@ -311,14 +352,31 @@ func (s *Service) process(item db.SavedItem) {
 // result is what a kind processor returns on success.
 type result struct {
 	contentPath pgtype.Text // relative to the storage root (includes the user id)
+	nodeID      string      // node created for contentPath by the publisher; "" = none
 	size        pgtype.Int8
 	title       string // only set when the item had no title; empty = keep existing
 	meta        []byte // nil = keep existing
 }
 
+// setError records a failed item. The message is shown to the user.
+func (s *Service) setError(item db.SavedItem, msg string) {
+	if err := s.q.SetSavedItemError(context.Background(), db.SetSavedItemErrorParams{
+		ID:       item.ID,
+		ErrorMsg: truncate(msg, 500),
+	}); err != nil {
+		log.Printf("discodrive: saved set-error %s: %v", db.UUIDString(item.ID), err)
+	}
+}
+
+// truncate cuts s to at most n bytes without splitting a UTF-8 sequence: Postgres
+// rejects invalid UTF-8, and a failed SetSavedItemError left the item in processing.
 func truncate(s string, n int) string {
+	s = strings.ToValidUTF8(s, "�")
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }

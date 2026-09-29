@@ -133,12 +133,14 @@ type LoginResult struct {
 func (s *Service) Login(ctx context.Context, email, password string) (LoginResult, error) {
 	u, err := s.getUserByEmail(ctx, email)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// Same Argon2 cost as a wrong password: timing must not reveal the account.
+		burnPasswordCheck(password)
 		return LoginResult{}, ErrInvalidCreds
 	}
 	if err != nil {
 		return LoginResult{}, err
 	}
-	ok, err := VerifyPassword(password, u.PasswordHash)
+	ok, err := verifyPassword(password, u.PasswordHash)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -330,6 +332,14 @@ func (s *Service) verifyWebdavPassword(ctx context.Context, email, password stri
 	if err != nil {
 		return "", "", false
 	}
+	checked := false
+	// An unknown email or one without app passwords still costs one Argon2 run (under
+	// the caller's slot), so timing does not reveal which accounts have DAV access.
+	defer func() {
+		if !checked && ctx.Err() == nil {
+			burnPasswordCheck(password)
+		}
+	}()
 	for _, d := range devs {
 		if ctx.Err() != nil {
 			return "", "", false
@@ -337,6 +347,7 @@ func (s *Service) verifyWebdavPassword(ctx context.Context, email, password stri
 		if !d.SecretHash.Valid {
 			continue
 		}
+		checked = true
 		if good, _ := verifyPassword(password, d.SecretHash.String); good {
 			userID, deviceID = db.UUIDString(d.UserID), db.UUIDString(d.ID)
 			if s.davCache != nil {

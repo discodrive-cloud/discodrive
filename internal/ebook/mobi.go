@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"os"
 	"strings"
 )
@@ -11,56 +12,107 @@ import (
 // parseMOBI reads metadata from a MOBI, AZW, or AZW3 file.
 // It parses the PalmDB container, MOBI header, and EXTH record block.
 // Cover extraction is best-effort: any bounds error silently leaves CoverData nil.
+//
+// Only what is needed is read: the PalmDB header, the record list, record 0 (headers
+// and EXTH metadata) and the cover record, each bounded. A book is often tens of MB and
+// a comic-style AZW several hundred; reading it whole could take the server's memory.
 func parseMOBI(path string) (Meta, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return Meta{}, err
 	}
-	return parseMOBIBytes(data)
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return Meta{}, err
+	}
+	return parseMOBIFrom(f, st.Size())
 }
 
-// parseMOBIBytes is the testable core that operates on an in-memory buffer.
+// parseMOBIBytes is parseMOBI over an in-memory buffer (tests).
 func parseMOBIBytes(data []byte) (Meta, error) {
+	return parseMOBIFrom(bytes.NewReader(data), int64(len(data)))
+}
+
+// maxMOBIRecord0Bytes bounds record 0 (PalmDOC + MOBI + EXTH headers). Real ones are a
+// few KiB to a few hundred KiB even with a long description.
+const maxMOBIRecord0Bytes = 4 << 20
+
+// mobiRecords is the PalmDB record table of an open file.
+type mobiRecords struct {
+	r       io.ReaderAt
+	size    int64
+	offsets []int64
+}
+
+// bounds returns the byte range of record idx; ok is false when the table is broken.
+func (m mobiRecords) bounds(idx int) (start, end int64, ok bool) {
+	if idx < 0 || idx >= len(m.offsets) {
+		return 0, 0, false
+	}
+	start, end = m.offsets[idx], m.size
+	if idx+1 < len(m.offsets) {
+		end = m.offsets[idx+1]
+	}
+	return start, end, start >= 0 && start <= end && end <= m.size
+}
+
+// read returns record idx if it is no longer than limit.
+func (m mobiRecords) read(idx int, limit int64) ([]byte, bool) {
+	start, end, ok := m.bounds(idx)
+	if !ok || end-start > limit {
+		return nil, false
+	}
+	buf := make([]byte, end-start)
+	if _, err := m.r.ReadAt(buf, start); err != nil && !errors.Is(err, io.EOF) {
+		return nil, false
+	}
+	return buf, true
+}
+
+func parseMOBIFrom(r io.ReaderAt, size int64) (Meta, error) {
 	// --- PalmDB header ---
 	// Minimum size: 78 bytes header + at least 1 record-info entry (8 bytes) = 86 bytes.
-	if len(data) < 86 {
+	if size < 86 {
 		return Meta{}, errors.New("mobi: file too short to be a valid MOBI")
+	}
+	var hdr [78]byte
+	if _, err := r.ReadAt(hdr[:], 0); err != nil {
+		return Meta{}, err
 	}
 
 	// Number of records is a big-endian uint16 at offset 76.
-	numRecords := int(beU16(data, 76))
+	numRecords := int(beU16(hdr[:], 76))
 	if numRecords < 1 {
 		return Meta{}, errors.New("mobi: no records in PalmDB")
 	}
 
 	// Record-info list starts at offset 78; each entry is 8 bytes.
 	// Entry layout: uint32 offset, uint8 attribs, uint8 uniqueID[3].
-	recInfoBase := 78
-	recInfoSize := 8
-
-	// We need at least record 0's info (and record 1's info to bound record 0).
-	minNeeded := recInfoBase + (numRecords)*recInfoSize
-	if len(data) < minNeeded {
+	const recInfoBase, recInfoSize = 78, 8
+	if size < int64(recInfoBase+numRecords*recInfoSize) {
 		return Meta{}, errors.New("mobi: truncated record-info list")
 	}
+	table := make([]byte, numRecords*recInfoSize) // at most 65535 × 8 bytes
+	if _, err := r.ReadAt(table, recInfoBase); err != nil && !errors.Is(err, io.EOF) {
+		return Meta{}, err
+	}
+	recs := mobiRecords{r: r, size: size, offsets: make([]int64, numRecords)}
+	for i := range numRecords {
+		recs.offsets[i] = int64(beU32(table, i*recInfoSize))
+	}
 
-	// Record 0 offset.
-	rec0Offset := int(beU32(data, recInfoBase))
-	if rec0Offset < 0 || rec0Offset >= len(data) {
+	// Record 0: from its offset to record 1's (or the end of the file).
+	if recs.offsets[0] >= size {
 		return Meta{}, errors.New("mobi: record 0 offset out of bounds")
 	}
-
-	// Record 0 length: use record 1's offset as the upper bound.
-	var rec0End int
-	if numRecords > 1 {
-		rec0End = int(beU32(data, recInfoBase+recInfoSize))
-	} else {
-		rec0End = len(data)
-	}
-	if rec0End < rec0Offset || rec0End > len(data) {
+	if _, _, ok := recs.bounds(0); !ok {
 		return Meta{}, errors.New("mobi: record 0 bounds invalid")
 	}
-	rec0 := data[rec0Offset:rec0End]
+	rec0, ok := recs.read(0, maxMOBIRecord0Bytes)
+	if !ok {
+		return Meta{}, errors.New("mobi: record 0 too large or unreadable")
+	}
 
 	// --- PalmDOC header (16 bytes at start of record 0) ---
 	if len(rec0) < 16 {
@@ -204,7 +256,7 @@ func parseMOBIBytes(data []byte) (Meta, error) {
 	if hasCoverOffset && firstImageIndex != 0xFFFFFFFF {
 		coverRecIdx := int(firstImageIndex) + int(coverOffsetVal)
 		if coverRecIdx >= 0 && coverRecIdx < numRecords {
-			coverData := mobiReadRecord(data, recInfoBase, recInfoSize, coverRecIdx, numRecords)
+			coverData, _ := recs.read(coverRecIdx, maxEbookCoverBytes)
 			if len(coverData) > 0 {
 				m.CoverData = coverData
 				m.CoverType = sniffImageType(coverData)
@@ -213,30 +265,6 @@ func parseMOBIBytes(data []byte) (Meta, error) {
 	}
 
 	return m, nil
-}
-
-// mobiReadRecord extracts the raw bytes of PalmDB record at index idx.
-// Returns nil on any bounds error (cover is best-effort).
-func mobiReadRecord(data []byte, recInfoBase, recInfoSize, idx, numRecords int) []byte {
-	entryOff := recInfoBase + idx*recInfoSize
-	if entryOff+4 > len(data) {
-		return nil
-	}
-	start := int(beU32(data, entryOff))
-	var end int
-	if idx+1 < numRecords {
-		nextOff := entryOff + recInfoSize
-		if nextOff+4 > len(data) {
-			return nil
-		}
-		end = int(beU32(data, nextOff))
-	} else {
-		end = len(data)
-	}
-	if start < 0 || end < start || end > len(data) {
-		return nil
-	}
-	return data[start:end]
 }
 
 // sniffImageType returns the MIME type of an image based on magic bytes.

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isHttpUrl } from '~/lib/safeUrl'
 // Pocket: the read-later article list. Articles are fetched server-side into
 // markdown and read at /saved/{id}; processing state polls until idle.
 interface SavedItem {
@@ -79,7 +80,7 @@ function statusBadge(item: SavedItem): { label: string; cls: string } | null {
 function open(item: SavedItem) {
   if (item.has_content) {
     navigateTo(`/saved/${item.id}`)
-  } else {
+  } else if (isHttpUrl(item.url)) {
     window.open(item.url, '_blank', 'noopener')
   }
 }
@@ -150,6 +151,7 @@ async function remove(item: SavedItem) {
           </div>
           <div class="flex shrink-0 items-center gap-1">
             <a
+              v-if="isHttpUrl(item.url)"
               class="btn-ghost px-1.5 py-1"
               :href="item.url"
               target="_blank"

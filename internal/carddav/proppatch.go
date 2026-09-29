@@ -52,8 +52,17 @@ func (b *Backend) HandleProppatch(w http.ResponseWriter, r *http.Request) {
 		names = append(names, op.Prop.Props...)
 	}
 
+	// An address book shared with the caller is the owner's to rename: answer 403 rather than
+	// acknowledging a change the owner-scoped query silently drops.
+	status := "HTTP/1.1 200 OK"
+	if _, uri, obj := parsePath(r.URL.Path); uri != "" && obj == "" {
+		if ab, err := b.resolveAddressbook(r.Context(), uri); err == nil && db.UUIDString(ab.UserID) != userID(r.Context()) {
+			status = "HTTP/1.1 403 Forbidden"
+		}
+	}
+
 	// persist displayname on the collection (if PROPPATCH targets an address book)
-	if hasName && newName != "" {
+	if status == "HTTP/1.1 200 OK" && hasName && newName != "" {
 		if _, uri, obj := parsePath(r.URL.Path); uri != "" && obj == "" {
 			if ab, err := b.resolveAddressbook(r.Context(), uri); err == nil {
 				_ = b.svc.SetAddressbookName(r.Context(), userID(r.Context()), db.UUIDString(ab.ID), newName)
@@ -79,7 +88,7 @@ func (b *Backend) HandleProppatch(w http.ResponseWriter, r *http.Request) {
 		}
 		sb.WriteString("/>")
 	}
-	sb.WriteString(`</prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>`)
+	sb.WriteString(`</prop><status>` + status + `</status></propstat></response></multistatus>`)
 
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusMultiStatus)

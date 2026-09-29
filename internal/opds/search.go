@@ -91,7 +91,7 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	offset := parseOffset(r)
 	books, err := h.q.SearchAccessibleBooks(ctx, db.SearchAccessibleBooksParams{
 		UserID:  userID,
-		Column2: pgtype.Text{String: q, Valid: true},
+		Column2: pgtype.Text{String: db.EscapeLike(q), Valid: true},
 		Limit:   int32(pageSize),
 		Offset:  int32(offset),
 	})

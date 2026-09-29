@@ -77,6 +77,7 @@ func applyTaskForm(todo *ical.Component, f taskForm) {
 
 // taskToForm reads the first VTODO component from a calendar into a form struct.
 func taskToForm(uid string, cal *ical.Calendar) taskForm {
+	normalizeTimes(cal) // a DUE with a Windows/custom TZID would otherwise read as no due date
 	f := taskForm{UID: uid}
 	for _, comp := range cal.Children {
 		if comp.Name != ical.CompToDo {
@@ -85,8 +86,10 @@ func taskToForm(uid string, cal *ical.Calendar) taskForm {
 		f.Summary = propText(comp, ical.PropSummary)
 		f.Notes = propText(comp, ical.PropDescription)
 		if due := comp.Props.Get(ical.PropDue); due != nil {
-			f.DueAllDay = due.Params.Get(ical.ParamValue) == "DATE"
-			if t, e := due.DateTime(time.Local); e == nil {
+			f.DueAllDay = due.Params.Get(ical.ParamValue) == "DATE" || len(due.Value) == len("20060102")
+			if t, e := due.DateTime(dateZone(due, time.Local)); e == nil {
+				// an all-day due date is a date: midnight UTC, as for all-day events, so
+				// that no zone moves it to the neighbouring day
 				f.Due = t.Format(time.RFC3339)
 			}
 		}

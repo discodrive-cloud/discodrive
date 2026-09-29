@@ -127,6 +127,17 @@ func TestNginxRejectsSymlinks(t *testing.T) {
 			if resp.StatusCode != 200 || string(body) != "public" {
 				t.Fatalf("ordinary delivery: %d %q", resp.StatusCode, body)
 			}
+			// X-Accel drops the app's headers; the file location must set its own.
+			for h, want := range map[string]string{
+				"X-Content-Type-Options":    "nosniff",
+				"Content-Security-Policy":   "sandbox",
+				"Strict-Transport-Security": "max-age=",
+				"X-Frame-Options":           "DENY",
+			} {
+				if got := resp.Header.Get(h); !strings.Contains(got, want) {
+					t.Fatalf("file delivery header %s = %q, want %q", h, got, want)
+				}
+			}
 		} else if (resp.StatusCode != 403 && resp.StatusCode != 404) || strings.Contains(string(body), "private") {
 			t.Fatalf("link delivery: %s %d %q", path, resp.StatusCode, body)
 		}

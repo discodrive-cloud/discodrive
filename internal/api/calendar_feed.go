@@ -51,23 +51,70 @@ func (s *Server) handleCalendarFeed(w http.ResponseWriter, r *http.Request) {
 		p.Value = c.Name
 		out.Props.Set(p)
 	}
+	zones := map[string]bool{}
 	for _, o := range objs {
 		cal, derr := ical.NewDecoder(strings.NewReader(o.Data)).Decode()
 		if derr != nil {
 			continue
 		}
 		for _, comp := range cal.Children {
-			if comp.Name == ical.CompEvent || comp.Name == "VTIMEZONE" {
-				out.Children = append(out.Children, comp)
+			switch comp.Name {
+			case ical.CompEvent:
+				out.Children = append(out.Children, feedEvent(comp))
+			case ical.CompTimezone:
+				// every object carries its own copy of the zones it uses: one per TZID
+				id := propRaw(comp, ical.PropTimezoneID)
+				if !zones[id] {
+					zones[id] = true
+					out.Children = append(out.Children, comp)
+				}
 			}
 		}
 	}
 	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+	// The feed may be password-protected and carries private data: no shared caches.
+	w.Header().Set("Cache-Control", "private, no-store")
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	_ = ical.NewEncoder(w).Encode(out)
+}
+
+// feedBusyKeep — what is left of a PRIVATE or CONFIDENTIAL event in the public feed: when it
+// is, and how it repeats. Everything else (summary, description, location, organizer, ...)
+// is dropped and the event reads as "Busy".
+var feedBusyKeep = map[string]bool{
+	ical.PropUID: true, ical.PropDateTimeStamp: true, ical.PropDateTimeStart: true,
+	ical.PropDateTimeEnd: true, ical.PropDuration: true, ical.PropRecurrenceRule: true,
+	ical.PropRecurrenceDates: true, ical.PropExceptionDates: true, ical.PropRecurrenceID: true,
+	ical.PropSequence: true, ical.PropTransparency: true, ical.PropStatus: true,
+	ical.PropClass: true,
+}
+
+// feedEvent prepares a VEVENT for the public read-only feed: attendees (other people's
+// addresses) and alarms (the owner's reminders, which subscribers' clients would fire)
+// never leave; a PRIVATE or CONFIDENTIAL event is reduced to its busy time.
+func feedEvent(ev *ical.Component) *ical.Component {
+	class := strings.ToUpper(strings.TrimSpace(propRaw(ev, ical.PropClass)))
+	private := class == "PRIVATE" || class == "CONFIDENTIAL"
+	props := make(ical.Props, len(ev.Props))
+	for name, ps := range ev.Props {
+		if name == ical.PropAttendee || (private && !feedBusyKeep[name]) {
+			continue
+		}
+		props[name] = ps
+	}
+	if private {
+		props.SetText(ical.PropSummary, "Busy")
+	}
+	var children []*ical.Component
+	for _, c := range ev.Children {
+		if c.Name != ical.CompAlarm {
+			children = append(children, c)
+		}
+	}
+	return &ical.Component{Name: ev.Name, Props: props, Children: children}
 }
 
 // POST /me/calendars/{id}/feed {password?} → {token, has_password}

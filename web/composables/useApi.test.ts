@@ -19,6 +19,7 @@ beforeEach(async () => {
   })
   vi.stubGlobal('useStorageTick', () => ({ value: 0 }))
   vi.stubGlobal('resetPlayerSession', vi.fn())
+  vi.stubGlobal('lockVault', vi.fn())
   vi.stubGlobal('navigateTo', vi.fn())
   api = await import('./useApi')
   api.setSession(session('first'))
@@ -63,4 +64,48 @@ it('late 401 cannot sign out a new login', async () => {
   response.reject({ response: { status: 401 } })
   await expect(request).rejects.toEqual({ response: { status: 401 } })
   expect(api.useSession().value.token).toBe(token('second'))
+})
+it('401 signs out by default', async () => {
+  fetchMock.raw.mockRejectedValueOnce({ response: { status: 401 } })
+  await expect(api.useApi().request('/me')).rejects.toEqual({ response: { status: 401 } })
+  expect(api.useSession().value.token).toBe('')
+})
+it('keepSessionOn401 leaves the session for a wrong credential', async () => {
+  const err = { response: { status: 401 }, data: { error: 'invalid current password' } }
+  fetchMock.raw.mockRejectedValueOnce(err)
+  await expect(api.useApi().request('/me/password', { method: 'PUT', keepSessionOn401: true })).rejects.toBe(err)
+  expect(api.useSession().value.token).toBe(token('first'))
+  expect(fetchMock.raw.mock.calls[0][1]).not.toHaveProperty('keepSessionOn401')
+})
+it('follows a logout in another tab', () => {
+  expect(api.followStoredSession(JSON.stringify({ token: '', role: '', email: '' }))).toBe('cleared')
+  expect(api.useSession().value.token).toBe('')
+  expect(api.followStoredSession(null)).toBe('none')
+})
+it('adopts a renewal of the same account quietly and never steps back', () => {
+  expect(api.followStoredSession(JSON.stringify(session('first', 5)))).toBe('renewed')
+  expect(api.useSession().value.token).toBe(token('first', 5))
+  expect(api.followStoredSession(JSON.stringify(session('first', 3)))).toBe('none')
+  expect(api.useSession().value.token).toBe(token('first', 5))
+})
+it('switches to another account signed in elsewhere', () => {
+  const other = { token: `e30.${Buffer.from(JSON.stringify({ sid: 'x', sub: 'user-b', iat: 1 })).toString('base64url')}.s`, role: 'admin', email: 'b@example.test' }
+  const lock = (globalThis as any).lockVault as ReturnType<typeof vi.fn>
+  lock.mockClear()
+  expect(api.followStoredSession(JSON.stringify(other))).toBe('switched')
+  expect(api.useSession().value).toEqual(other)
+  expect(lock).toHaveBeenCalled()
+})
+it('treats a corrupt stored session as signed out', () => {
+  expect(api.followStoredSession('{not json')).toBe('cleared')
+})
+it('logout and an account switch lock the vault', () => {
+  const lock = (globalThis as any).lockVault as ReturnType<typeof vi.fn>
+  lock.mockClear()
+  api.setSession(session('first', 2)) // renewal of the same account
+  expect(lock).not.toHaveBeenCalled()
+  api.setSession({ ...session('other'), email: 'b@example.test' })
+  expect(lock).toHaveBeenCalledTimes(1)
+  api.clearSession()
+  expect(lock).toHaveBeenCalledTimes(2)
 })

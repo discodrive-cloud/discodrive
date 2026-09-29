@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nwaples/rardecode"
+	"github.com/nwaples/rardecode/v2"
 )
 
 // comicInfo maps the root <ComicInfo> element found in ComicInfo.xml files
@@ -35,11 +35,15 @@ var comicImageExts = map[string]string{
 
 // maxComicEntryBytes caps how many bytes we buffer from a single comic archive
 // entry (cover image or ComicInfo.xml), bounding memory against decompression
-// bombs in untrusted uploads. NOTE: for CBR this does not fully neutralize
-// GO-2025-4020 — rardecode allocates its decode window from the archive header
-// before entry bytes are read; that residual DoS is tracked in SECURITY_AUDIT.md
-// until rardecode is replaced.
+// bombs in untrusted uploads.
 const maxComicEntryBytes = 64 << 20 // 64 MiB — generous for a single comic page
+
+// maxRARDictBytes caps the decode window a RAR archive may ask for. rardecode
+// allocates the window from the archive header before any entry is read, and the
+// format allows up to 64 GB (GO-2025-4020); one crafted .cbr would take the whole
+// server down. RAR4 uses at most 4 MiB and RAR5 defaults to 32 MiB, so real comics
+// fit; an archive packed with a larger dictionary is indexed without a cover.
+const maxRARDictBytes = 64 << 20
 
 // readComicEntry reads up to maxComicEntryBytes from r. ok is false if the read
 // failed or the entry exceeded the cap (in which case the caller skips it rather
@@ -128,25 +132,22 @@ func parseCBZ(path string) (Meta, error) {
 }
 
 // parseCBR reads a CBR (rar) comic archive using the rardecode streaming reader.
-// Since RAR is a sequential format with no random-access API, we make a single
-// pass collecting ComicInfo.xml and all image entries, then pick the cover.
+// RAR is sequential with no random access, so one pass collects ComicInfo.xml and
+// the cover: the lexicographically first image. Only the best candidate so far is
+// held in memory; entries that cannot win are skipped undecoded-to-memory, so a
+// comic of hundreds of pages costs one page of RAM, not all of them.
 func parseCBR(path string) (Meta, error) {
-	rr, err := rardecode.OpenReader(path, "")
+	rr, err := rardecode.OpenReader(path, rardecode.MaxDictionarySize(maxRARDictBytes))
 	if err != nil {
 		return Meta{}, err
 	}
 	defer rr.Close()
 
-	type imageEntry struct {
-		name string
-		data []byte
-	}
-
 	var (
-		infoData []byte
-		images   []imageEntry
+		infoData  []byte
+		coverName string
+		coverData []byte
 	)
-
 	for {
 		hdr, err := rr.Next()
 		if err == io.EOF {
@@ -163,25 +164,18 @@ func parseCBR(path string) (Meta, error) {
 			infoData, _ = readComicEntry(rr)
 			continue
 		}
-		if _, ok := comicImageExts[filepath.Ext(lower)]; ok {
+		if _, ok := comicImageExts[filepath.Ext(lower)]; ok && (coverData == nil || hdr.Name < coverName) {
 			if data, ok := readComicEntry(rr); ok {
-				images = append(images, imageEntry{name: hdr.Name, data: data})
+				coverName, coverData = hdr.Name, data
 			}
 		}
 	}
 
 	m := comicBuildMeta(infoData)
-
-	// Cover: lexicographically first image by name.
-	if len(images) > 0 {
-		sort.Slice(images, func(i, j int) bool {
-			return images[i].name < images[j].name
-		})
-		first := images[0]
-		m.CoverData = first.data
-		m.CoverType = comicImageExts[filepath.Ext(strings.ToLower(first.name))]
+	if coverData != nil {
+		m.CoverData = coverData
+		m.CoverType = comicImageExts[filepath.Ext(strings.ToLower(coverName))]
 	}
-
 	return m, nil
 }
 

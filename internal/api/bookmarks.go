@@ -132,12 +132,31 @@ func (s *Server) handleBookmarksChanges(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	full := len(rows) == changesPageLimit
+	if full {
+		// Page full: there may be more. The cursor is a seq, and one seq can span many
+		// rows (a bulk import or a folder delete shares one), so a page must never end
+		// in the middle of a seq group: the next call asks for seq > cursor and would
+		// skip the rest of it. Drop the trailing partial group; when the whole page is
+		// a single group, return that group in full instead.
+		last := rows[len(rows)-1].Seq
+		if rows[0].Seq == last {
+			rows, err = s.q.ListBrowserBookmarksAtSeq(r.Context(), db.ListBrowserBookmarksAtSeqParams{UserID: uid, Seq: last})
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+		} else {
+			for rows[len(rows)-1].Seq == last {
+				rows = rows[:len(rows)-1]
+			}
+		}
+	}
 	resp := changesResponse{Items: make([]bookmarkChangeDTO, 0, len(rows))}
 	for _, b := range rows {
 		resp.Items = append(resp.Items, bookmarkChangeDTO{bookmarkDTO: toBookmarkDTO(b), Deleted: b.Deleted, Seq: b.Seq})
 	}
-	if len(rows) == changesPageLimit {
-		// Page full: there may be more; the safe cursor is the last row seen.
+	if full {
 		resp.HasMore = true
 		resp.Cursor = rows[len(rows)-1].Seq
 	} else {
@@ -173,6 +192,9 @@ func (s *Server) handleBookmarkCreate(w http.ResponseWriter, r *http.Request) {
 		req.URL = ""
 	} else if req.URL == "" {
 		writeError(w, http.StatusBadRequest, "url is required for a bookmark")
+		return
+	} else if !isWebURL(req.URL) {
+		writeError(w, http.StatusBadRequest, "url must be an http or https link")
 		return
 	}
 	var id pgtype.UUID
@@ -241,12 +263,30 @@ func (s *Server) handleBookmarksBulk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	count, cursor, err := s.bookmarks.BulkImport(r.Context(), uid, req.Items)
+	// Bookmarks that are not web links (javascript: bookmarklets, data:, place:,
+	// about:…) are left out rather than failing the import: a browser tree nearly
+	// always has a few, and one refusal would stop the whole initial sync.
+	items := req.Items[:0:0]
+	for _, it := range req.Items {
+		if it.IsFolder || isWebURL(it.URL) {
+			items = append(items, it)
+		}
+	}
+	skipped := len(req.Items) - len(items)
+	count, cursor := 0, int64(0)
+	var err error
+	if len(items) > 0 {
+		count, cursor, err = s.bookmarks.BulkImport(r.Context(), uid, items)
+	} else {
+		var st db.GetBookmarkSyncStateRow
+		st, err = s.q.GetBookmarkSyncState(r.Context(), uid)
+		cursor = st.BookmarkSeq
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "import failed: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"count": count, "cursor": cursor})
+	writeJSON(w, http.StatusOK, map[string]any{"count": count, "cursor": cursor, "skipped": skipped})
 }
 
 // PATCH /me/bookmarks/{id} — edit title/url/position and/or move to another
@@ -286,6 +326,10 @@ func (s *Server) handleBookmarkUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if current.IsFolder && req.URL != nil && *req.URL != "" {
 		writeError(w, http.StatusBadRequest, "folders have no url")
+		return
+	}
+	if !current.IsFolder && req.URL != nil && !isWebURL(*req.URL) {
+		writeError(w, http.StatusBadRequest, "url must be an http or https link")
 		return
 	}
 

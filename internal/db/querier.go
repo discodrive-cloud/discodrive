@@ -74,23 +74,39 @@ type Querier interface {
 	AddPlayQueueEntry(ctx context.Context, arg AddPlayQueueEntryParams) error
 	AddPlaylistSong(ctx context.Context, arg AddPlaylistSongParams) error
 	AddUploadReservation(ctx context.Context, arg AddUploadReservationParams) error
+	// Another object of the address book that carries the vCard UID (RFC 6352 no-uid-conflict).
+	// Index: addressbook_objects_vcard_uid (migration 000023).
+	AddressbookObjectWithUID(ctx context.Context, arg AddressbookObjectWithUIDParams) (string, error)
 	AddressbookShareForUser(ctx context.Context, arg AddressbookShareForUserParams) (pgtype.UUID, error)
 	AppendChange(ctx context.Context, arg AppendChangeParams) (ChangeLog, error)
+	// A change that moved the node (move/rename): prev_path is its disk_path before.
+	AppendPathChange(ctx context.Context, arg AppendPathChangeParams) error
 	ApprovePairing(ctx context.Context, arg ApprovePairingParams) (pgtype.UUID, error)
 	// Which interactive second factors the user has. Used by Login to branch.
 	AvailableMFAFactors(ctx context.Context, userID pgtype.UUID) (AvailableMFAFactorsRow, error)
 	BookAuthors(ctx context.Context, bookID pgtype.UUID) ([]BookAuthorsRow, error)
 	BookTags(ctx context.Context, bookID pgtype.UUID) ([]string, error)
+	// BrowserBookmarkAncestors returns the given nodes of the user and all their
+	// ancestors (tombstones included: they still carry the structure), for the bulk
+	// import's parent and cycle checks. UNION ends the walk on an existing cycle.
+	BrowserBookmarkAncestors(ctx context.Context, arg BrowserBookmarkAncestorsParams) ([]BrowserBookmarkAncestorsRow, error)
 	BrowserSessionActive(ctx context.Context, arg BrowserSessionActiveParams) (bool, error)
 	BumpAddressbookCtag(ctx context.Context, id pgtype.UUID) error
 	BumpBookmarkGCSeq(ctx context.Context, arg BumpBookmarkGCSeqParams) error
 	BumpCalendarCtag(ctx context.Context, id pgtype.UUID) error
 	BumpNodeVersion(ctx context.Context, id pgtype.UUID) (int64, error)
+	// Another object of the collection that carries the iCalendar UID (RFC 4791 no-uid-conflict).
+	// Index: calendar_objects_ical_uid (migration 000023).
+	CalendarObjectWithUID(ctx context.Context, arg CalendarObjectWithUIDParams) (string, error)
 	// A user's access level to a file_node, accounting for inheritance: we check
 	// the node itself AND all its ancestors (recursive CTE), taking active shares for the user.
 	CalendarShareForUser(ctx context.Context, arg CalendarShareForUserParams) (pgtype.UUID, error)
 	ClaimEpisodeForDownload(ctx context.Context, arg ClaimEpisodeForDownloadParams) (int64, error)
+	// bytes_done restarts at 0: 'processing' rows count toward the owner's used space.
 	ClaimSavedItem(ctx context.Context, id pgtype.UUID) (int64, error)
+	// ClaimTOTPStep makes a TOTP code single-use: it succeeds (1 row) only for a step
+	// after the last accepted one. The row lock serializes concurrent uses of one code.
+	ClaimTOTPStep(ctx context.Context, arg ClaimTOTPStepParams) (int64, error)
 	ClearBookAuthors(ctx context.Context, bookID pgtype.UUID) error
 	ClearBookTags(ctx context.Context, bookID pgtype.UUID) error
 	ClearEbookCredentials(ctx context.Context, userID pgtype.UUID) error
@@ -127,6 +143,8 @@ type Querier interface {
 	CreateDesktopDevice(ctx context.Context, arg CreateDesktopDeviceParams) (Device, error)
 	CreateDevice(ctx context.Context, arg CreateDeviceParams) (Device, error)
 	CreateInternetRadioStation(ctx context.Context, arg CreateInternetRadioStationParams) (InternetRadioStation, error)
+	// A public link (feed) share, its password hash written in the same statement.
+	CreateLinkShare(ctx context.Context, arg CreateLinkShareParams) (ResourceShare, error)
 	// modified_at is the content's own modification time when the client supplies one, so a
 	// photo from 2019 uploaded today reads as 2019. NULL falls back to now(), which is what
 	// every client that sends nothing keeps getting.
@@ -142,14 +160,14 @@ type Querier interface {
 	CreateUploadReservation(ctx context.Context, arg CreateUploadReservationParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	CreateWebdavDevice(ctx context.Context, arg CreateWebdavDeviceParams) (Device, error)
-	DeleteAddressbook(ctx context.Context, arg DeleteAddressbookParams) error
+	DeleteAddressbook(ctx context.Context, arg DeleteAddressbookParams) (int64, error)
 	DeleteAddressbookObject(ctx context.Context, arg DeleteAddressbookObjectParams) (int64, error)
 	DeleteBackupCodes(ctx context.Context, userID pgtype.UUID) error
 	DeleteBookByNode(ctx context.Context, nodeID pgtype.UUID) error
 	DeleteBookmark(ctx context.Context, arg DeleteBookmarkParams) error
 	DeleteBooksUnderPath(ctx context.Context, arg DeleteBooksUnderPathParams) ([]pgtype.Text, error)
 	DeleteBrowserSession(ctx context.Context, arg DeleteBrowserSessionParams) error
-	DeleteCalendar(ctx context.Context, arg DeleteCalendarParams) error
+	DeleteCalendar(ctx context.Context, arg DeleteCalendarParams) (int64, error)
 	DeleteCalendarObject(ctx context.Context, arg DeleteCalendarObjectParams) (int64, error)
 	DeleteDevice(ctx context.Context, arg DeleteDeviceParams) error
 	DeleteEmptyUploadReservation(ctx context.Context, id string) error
@@ -165,6 +183,7 @@ type Querier interface {
 	DeleteSavedItemForUser(ctx context.Context, arg DeleteSavedItemForUserParams) (DeleteSavedItemForUserRow, error)
 	DeleteSetting(ctx context.Context, key string) error
 	DeleteShare(ctx context.Context, id pgtype.UUID) error
+	DeleteSharesForResource(ctx context.Context, arg DeleteSharesForResourceParams) error
 	DeleteSongByNode(ctx context.Context, nodeID pgtype.UUID) error
 	// Library rows of every node under a folder path (the folder was trashed or left the
 	// library folder; the change log records only the folder itself).
@@ -239,7 +258,6 @@ type Querier interface {
 	// TOTP 2FA (A.3). Secret is AES-GCM ciphertext.
 	GetUserTOTP(ctx context.Context, userID pgtype.UUID) (UserTotp, error)
 	HardDeleteNode(ctx context.Context, id pgtype.UUID) error
-	HardDeleteSubtree(ctx context.Context, arg HardDeleteSubtreeParams) error
 	// Audit log (A.7).
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	// Backup codes (A.3). One-time, argon2id-hashed.
@@ -268,6 +286,10 @@ type Querier interface {
 	// row lock on users serializes a user's mutations, so per-user commit order
 	// equals seq order and a committed bookmark_seq is always a safe cursor.
 	ListBrowserBookmarks(ctx context.Context, userID pgtype.UUID) ([]BrowserBookmark, error)
+	// Every row of one change group. A bulk import or a folder delete stamps all its rows
+	// with a single seq, so a page cut inside a group must be completed from here — a
+	// cursor at that seq would otherwise skip the rest of the group.
+	ListBrowserBookmarksAtSeq(ctx context.Context, arg ListBrowserBookmarksAtSeqParams) ([]BrowserBookmark, error)
 	ListBrowserBookmarksNeedingFavicon(ctx context.Context, limit int32) ([]BrowserBookmark, error)
 	ListCalendarObjects(ctx context.Context, calendarID pgtype.UUID) ([]CalendarObject, error)
 	ListCalendars(ctx context.Context, userID pgtype.UUID) ([]Calendar, error)
@@ -277,6 +299,12 @@ type Querier interface {
 	// LIMIT — pagination: large deltas aren't returned in a single chunk (3.1).
 	// content_hash — lets the client tell a real change from a touch.
 	ListChangesSince(ctx context.Context, arg ListChangesSinceParams) ([]ListChangesSinceRow, error)
+	// The scoped feed: changes of nodes under the sync folder, plus moves whose previous
+	// path was under it (prev_path). A row whose node is now outside the folder is such a
+	// move out, and the caller reports it to the scoped client as a delete. Two branches
+	// rather than one OR: with the OR a full pull (since=0) hashed every node of the table;
+	// this way each branch filters before the join (EXPLAIN on 60k nodes: 0.5 MB vs 11 MB),
+	// and an incremental pull stays on change_log_user_seq + nodes_pkey either way.
 	ListChangesSinceUnderPrefix(ctx context.Context, arg ListChangesSinceUnderPrefixParams) ([]ListChangesSinceUnderPrefixRow, error)
 	ListChildren(ctx context.Context, arg ListChildrenParams) ([]Node, error)
 	ListCompletedEpisodesByChannelDesc(ctx context.Context, channelID pgtype.UUID) ([]ListCompletedEpisodesByChannelDescRow, error)
@@ -327,32 +355,51 @@ type Querier interface {
 	ListStarredArtists(ctx context.Context, userID pgtype.UUID) ([]Artist, error)
 	// Returns accessible starred songs for a user, ordered by starred_at desc.
 	ListStarredSongs(ctx context.Context, userID pgtype.UUID) ([]Song, error)
-	// Names of trashed children of one folder: reconciliation must not re-import them.
+	// Trash operations address a tombstone subtree by node id, walking parent_id: paths
+	// cannot tell apart two trashed trees with the same path (a folder deleted, created
+	// again and deleted again). together limits the walk to the rows deleted by the same
+	// operation as the root (same deleted_at); without it the walk takes every tombstone
+	// below the root, including ones deleted earlier on their own. UNION (not UNION ALL)
+	// ends the walk even if parent links were ever corrupted into a cycle.
+	ListTombstoneSubtree(ctx context.Context, arg ListTombstoneSubtreeParams) ([]ListTombstoneSubtreeRow, error)
+	// Names of trashed children of one folder whose bytes may still sit at their old path
+	// (tombstones from before deletes moved bytes to .trash): reconciliation must not
+	// re-import them. A tombstone with a trash_path left its name free on disk.
 	ListTombstonedChildren(ctx context.Context, parentID pgtype.UUID) ([]string, error)
 	// Paths of trashed (soft-deleted) nodes — so a rescan doesn't re-import their files.
 	ListTombstonedNodePaths(ctx context.Context, userID pgtype.UUID) ([]pgtype.Text, error)
 	ListTombstonedRootChildren(ctx context.Context, userID pgtype.UUID) ([]string, error)
 	ListTrashNodes(ctx context.Context, userID pgtype.UUID) ([]Node, error)
-	ListTrashedSubtree(ctx context.Context, arg ListTrashedSubtreeParams) ([]ListTrashedSubtreeRow, error)
 	ListUnusedBackupCodes(ctx context.Context, userID pgtype.UUID) ([]BackupCode, error)
 	ListUserIDs(ctx context.Context) ([]pgtype.UUID, error)
 	// Users with used space — for the admin dashboard, and the definition the quota check
 	// runs against (kept identical in UserStorageUsage, TotalStorageUsage and
 	// RefreshStorageUsed). "Used" is what the user actually occupies on disk: live files,
 	// files still in the trash (they are deleted for real only after TRASH_DAYS), version
-	// snapshots, and downloaded podcast episodes (which live outside the file tree, in
-	// podcasts/<user>/). Anything narrower would let a user park unlimited data past their
+	// snapshots, downloaded podcast episodes (which live outside the file tree, in
+	// podcasts/<user>/), and Saved downloads still in flight (bytes_done of 'processing'
+	// rows; a finished download is a node). Anything narrower would let a user park unlimited data past their
 	// quota in the trash, in .versions, or in a podcast subscription.
 	ListUsersWithUsage(ctx context.Context) ([]ListUsersWithUsageRow, error)
 	ListWebAuthnCredentials(ctx context.Context, userID pgtype.UUID) ([]WebauthnCredential, error)
 	ListWebdavDevicesByEmail(ctx context.Context, email string) ([]Device, error)
+	// LockAdmins serializes changes that could leave the server without an admin
+	// (demotion, deletion): callers count the locked rows inside their transaction.
+	LockAdmins(ctx context.Context) ([]pgtype.UUID, error)
 	LockBootstrap(ctx context.Context) (ServerBootstrap, error)
+	// Serializes writers of one tree path until the transaction ends: two pushes to the
+	// same file must not both read the old row and then overwrite each other's bytes.
+	// The two-key form keeps these locks apart from the single-key upload/quota locks;
+	// a hash collision only makes two unrelated paths wait for each other.
+	LockTreePath(ctx context.Context, path string) error
 	LockUploadQuota(ctx context.Context) error
 	MarkBackupCodeUsed(ctx context.Context, id pgtype.UUID) (int64, error)
 	MarkQuotaNotified(ctx context.Context, id pgtype.UUID) error
 	MaxPlaylistPosition(ctx context.Context, playlistID pgtype.UUID) (interface{}, error)
 	// MoveBookmark re-parents a node. The NOT EXISTS guard rejects a move that
 	// would create a cycle (the target parent must not be inside the moved subtree).
+	// UNION (not UNION ALL) in the walks below is the cycle guard: a node already
+	// visited adds no new row, so even a corrupted, cyclic tree ends the recursion.
 	MoveBrowserBookmark(ctx context.Context, arg MoveBrowserBookmarkParams) (BrowserBookmark, error)
 	NextBookmarkSeq(ctx context.Context, id pgtype.UUID) (int64, error)
 	NextChangeSeq(ctx context.Context, id pgtype.UUID) (int64, error)
@@ -368,7 +415,9 @@ type Querier interface {
 	// Append change_log rows for every live strict descendant of prefix. Needed after
 	// a subtree path rewrite (move/rename): cursor-based clients (and the scoped feed,
 	// which filters on current disk_path) only see rows recorded after their cursor,
-	// so without these rows a folder moved into the sync scope arrives empty.
+	// so without these rows a folder moved into the sync scope arrives empty. prev_path is
+	// where each descendant was under old_prefix, so a scoped feed also learns about a
+	// folder moved OUT of its scope.
 	RecordSubtreeChanges(ctx context.Context, arg RecordSubtreeChangesParams) error
 	RefreshAlbumSongCount(ctx context.Context, id pgtype.UUID) error
 	// Refreshes the users.storage_used cache from the live totals. The column feeds the
@@ -378,11 +427,15 @@ type Querier interface {
 	RenameWebAuthnCredential(ctx context.Context, arg RenameWebAuthnCredentialParams) error
 	ResetStaleSavedItems(ctx context.Context) (int64, error)
 	RetrySavedItem(ctx context.Context, arg RetrySavedItemParams) (int64, error)
-	// Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree).
+	// Subtree queries match "prefix or anything under prefix/" as a bytewise range,
+	//   disk_path ~>=~ prefix || '/' AND disk_path ~<~ prefix || '0'   ('0' follows '/'),
+	// which is exactly starts_with(disk_path, prefix || '/') but can use the
+	// text_pattern_ops path indexes (migration 000021); starts_with cannot, and every
+	// folder rename, move or delete read the whole table.
+	// Rewrite disk_path of a node and its whole subtree on rename/move (mirrors the tree),
+	// trashed rows included. Two branches, one per partial index: as a single condition
+	// the planner merges them and scans the table.
 	RewriteSubtreePaths(ctx context.Context, arg RewriteSubtreePathsParams) error
-	// Like RewriteSubtreePaths, but only for trashed nodes — so restoring doesn't
-	// touch a LIVE node sharing the same disk_path (the name was reused after deletion).
-	RewriteTombstonedSubtreePaths(ctx context.Context, arg RewriteTombstonedSubtreePathsParams) error
 	// Returns accessible books matching a case-insensitive substring in title, author, or series.
 	SearchAccessibleBooks(ctx context.Context, arg SearchAccessibleBooksParams) ([]Book, error)
 	// Returns accessible albums whose name matches a case-insensitive substring.
@@ -426,12 +479,18 @@ type Querier interface {
 	SetSavedItemError(ctx context.Context, arg SetSavedItemErrorParams) error
 	SetSharePasswordHash(ctx context.Context, arg SetSharePasswordHashParams) error
 	SetUserLanguage(ctx context.Context, arg SetUserLanguageParams) error
+	SetUserQuota(ctx context.Context, arg SetUserQuotaParams) (User, error)
+	SetUserRole(ctx context.Context, arg SetUserRoleParams) (User, error)
 	SetUserSessionTTL(ctx context.Context, arg SetUserSessionTTLParams) error
 	SharedAccessForUser(ctx context.Context, arg SharedAccessForUserParams) (SharedAccessForUserRow, error)
 	// Returns accessible songs of a given genre excluding a specific artist, in random order.
 	SimilarSongsByGenre(ctx context.Context, arg SimilarSongsByGenreParams) ([]SimilarSongsByGenreRow, error)
 	SoftDeleteNode(ctx context.Context, id pgtype.UUID) error
-	// Soft-delete a node and its whole subtree (disk is cleaned up by GC, step 0.6).
+	// Soft-delete a node and its whole subtree. trash_root is where the node's bytes are
+	// moved (.trash/<user>/<node id>); every row records its own place under it, so a
+	// descendant can be restored or purged on its own. NULL trash_root keeps the old
+	// behaviour (bytes stay at disk_path). All rows get the same deleted_at (now() is the
+	// transaction's time): that is what marks them as trashed together.
 	SoftDeleteSubtree(ctx context.Context, arg SoftDeleteSubtreeParams) error
 	// Returns accessible songs for a specific genre with pagination.
 	SongsByGenre(ctx context.Context, arg SongsByGenreParams) ([]SongsByGenreRow, error)
@@ -464,7 +523,10 @@ type Querier interface {
 	// Delete versions beyond the keep newest; return snapshot paths for disk cleanup.
 	TrimNodeVersions(ctx context.Context, arg TrimNodeVersionsParams) ([]pgtype.Text, error)
 	TrimUploadReservation(ctx context.Context, arg TrimUploadReservationParams) error
-	UndeleteSubtree(ctx context.Context, arg UndeleteSubtreeParams) error
+	// Restore the rows trashed together with the root: clear the tombstone and move each
+	// row's path from old_prefix to new_prefix (where the root is restored to). The
+	// partial unique indexes fire here if a live node already holds a restored name.
+	UndeleteTombstoneSubtree(ctx context.Context, arg UndeleteTombstoneSubtreeParams) error
 	Unstar(ctx context.Context, arg UnstarParams) error
 	UpdateBookMetadata(ctx context.Context, arg UpdateBookMetadataParams) error
 	UpdateBrowserBookmark(ctx context.Context, arg UpdateBrowserBookmarkParams) (BrowserBookmark, error)
@@ -472,6 +534,10 @@ type Querier interface {
 	UpdateNodeContent(ctx context.Context, arg UpdateNodeContentParams) (Node, error)
 	UpdateNodeName(ctx context.Context, arg UpdateNodeNameParams) (Node, error)
 	UpdateNodeParent(ctx context.Context, arg UpdateNodeParentParams) (Node, error)
+	// Parent and name in one statement: the unique name indexes are checked per statement,
+	// so two updates could collide in the state between them (a.txt moving to another
+	// folder as b.txt, where an a.txt already exists).
+	UpdateNodePlace(ctx context.Context, arg UpdateNodePlaceParams) (Node, error)
 	// Password change: new hash + bump token_version (invalidates all active sessions)
 	// + clear the forced-change flag (A.2).
 	UpdatePassword(ctx context.Context, arg UpdatePasswordParams) (User, error)
@@ -487,9 +553,14 @@ type Querier interface {
 	UpsertBook(ctx context.Context, arg UpsertBookParams) (Book, error)
 	// UpsertBookmarkAt is the bulk-import step (tx, seq passed in). LWW: an
 	// existing row (including a tombstone) is overwritten and revived.
-	UpsertBrowserBookmarkAt(ctx context.Context, arg UpsertBrowserBookmarkAtParams) error
+	// Returns 0 rows when the id belongs to another user (the conflict WHERE fails).
+	UpsertBrowserBookmarkAt(ctx context.Context, arg UpsertBrowserBookmarkAtParams) (int64, error)
 	// == calendar_objects ==
 	UpsertCalendarObject(ctx context.Context, arg UpsertCalendarObjectParams) (CalendarObject, error)
+	// CalDAV/CardDAV collections: sharing and integrity checks.
+	// Share a calendar or address book with a user; sharing it again with the same user
+	// updates the existing share (see migration 000019).
+	UpsertCollectionShare(ctx context.Context, arg UpsertCollectionShareParams) (ResourceShare, error)
 	UpsertEbookSettings(ctx context.Context, arg UpsertEbookSettingsParams) (EbookSetting, error)
 	UpsertKnownLogin(ctx context.Context, arg UpsertKnownLoginParams) (bool, error)
 	UpsertMusicSettings(ctx context.Context, arg UpsertMusicSettingsParams) (MusicSetting, error)

@@ -241,6 +241,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("POST /me/saved/{id}/retry", prot(http.HandlerFunc(s.handleSavedRetry)))
 	mux.Handle("DELETE /me/saved/{id}", prot(http.HandlerFunc(s.handleSavedDelete)))
 	mux.Handle("GET /me/saved/{id}/content", prot(http.HandlerFunc(s.handleSavedContent)))
+	mux.Handle("GET /me/saved/{id}/image", prot(http.HandlerFunc(s.handleSavedImage)))
 	mux.Handle("GET /me/bookmarks", prot(http.HandlerFunc(s.handleBookmarksList)))
 	mux.Handle("POST /me/bookmarks", prot(http.HandlerFunc(s.handleBookmarkCreate)))
 	mux.Handle("GET /me/bookmarks/changes", prot(http.HandlerFunc(s.handleBookmarksChanges)))
@@ -312,8 +313,8 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 
 	// Apple accounts re-discover from the bare host (see dav_root.go).
 	if caldavHandler != nil || carddavHandler != nil {
-		mux.Handle("OPTIONS /{$}", davRoot(caldavHandler, carddavHandler))
-		mux.Handle("PROPFIND /{$}", davRoot(caldavHandler, carddavHandler))
+		mux.Handle("OPTIONS /{$}", davRoot(caldavHandler, carddavHandler, s.settingOn))
+		mux.Handle("PROPFIND /{$}", davRoot(caldavHandler, carddavHandler, s.settingOn))
 	}
 
 	if subsonicHandler != nil {

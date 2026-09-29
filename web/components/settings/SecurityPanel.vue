@@ -29,6 +29,7 @@ async function changePassword() {
   pwBusy.value = true
   try {
     await request('/me/password', {
+      keepSessionOn401: true, // 401 = wrong current password, not a dead session
       method: 'PUT',
       body: { current_password: pwCurrent.value, new_password: pwNew.value },
     })
@@ -156,6 +157,7 @@ async function disableTotp() {
   totpBusy.value = true
   try {
     await request('/me/totp', {
+      keepSessionOn401: true, // 401 = wrong password
       method: 'DELETE',
       body: { password: totpDisablePassword.value, code: totpDisableCode.value },
     })
@@ -224,6 +226,7 @@ const approvalError = ref('')
 const approvalBusy = ref(false)
 let resolveApproval: ((token: string | null) => void) | undefined
 function authorizeIdentityAction(action: string): Promise<string | null> {
+  resolveApproval?.(null) // a request that is replaced counts as cancelled, never left pending
   approvalPassword.value = ''; approvalCode.value = ''; approvalError.value = ''
   approvalAction.value = action
   return new Promise(resolve => { resolveApproval = resolve })
@@ -238,16 +241,22 @@ async function confirmIdentity(withPasskey: boolean) {
   approvalBusy.value = true; approvalError.value = ''
   try {
     let result: { approval_token: string }
+    // A 401 here means the password, code or passkey did not confirm the identity;
+    // the dialog stays open with the error and the session is kept.
     if (withPasskey) {
       const begin = await request<{ options: any; session_token: string }>('/me/identity/approval/begin', { method: 'POST', body: { action: approvalAction.value } })
       const { get } = await import('@github/webauthn-json')
       const assertion = await get(begin.options)
-      result = await request('/me/identity/approval/finish', { method: 'POST', body: { session_token: begin.session_token, assertion } })
+      result = await request('/me/identity/approval/finish', { method: 'POST', keepSessionOn401: true, body: { session_token: begin.session_token, assertion } })
     } else {
-      result = await request('/me/identity/approval/password', { method: 'POST', body: { action: approvalAction.value, password: approvalPassword.value, code: approvalCode.value } })
+      result = await request('/me/identity/approval/password', { method: 'POST', keepSessionOn401: true, body: { action: approvalAction.value, password: approvalPassword.value, code: approvalCode.value } })
     }
     closeApproval(result.approval_token)
-  } catch { approvalError.value = t('passkey.approval_error') }
+  } catch {
+    // The dialog may have been closed (Escape, unmount) while the request was in flight;
+    // its promise has already settled then, so there is nothing left to report.
+    if (approvalAction.value) approvalError.value = t('passkey.approval_error')
+  }
   finally { approvalBusy.value = false }
 }
 

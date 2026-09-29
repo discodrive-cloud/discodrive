@@ -3,6 +3,7 @@ package ebook
 import (
 	"encoding/binary"
 	"os"
+	"runtime"
 	"testing"
 )
 
@@ -231,5 +232,26 @@ func TestParseMOBI_ViaReadMeta(t *testing.T) {
 	}
 	if m.ContentType != "application/x-mobipocket-ebook" {
 		t.Errorf("ReadMeta ContentType = %q", m.ContentType)
+	}
+}
+
+// A large MOBI must not be read into memory: only the record table, record 0 and the
+// cover record are, each bounded. The file here is 256 MiB (sparse) with its single
+// record spanning all of it; parsing may refuse it, but must not allocate it.
+func TestParseMOBIDoesNotReadWholeFile(t *testing.T) {
+	p := t.TempDir() + "/big.mobi"
+	if err := os.WriteFile(p, buildMOBI(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(p, 256<<20); err != nil {
+		t.Fatal(err)
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, _ = parseMOBI(p)
+	runtime.ReadMemStats(&after)
+	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 16<<20 {
+		t.Fatalf("parsing a 256 MiB MOBI allocated %d MiB", alloc>>20)
 	}
 }

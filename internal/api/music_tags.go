@@ -104,6 +104,8 @@ func mapTagErr(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "format is read-only")
 	case errors.Is(err, music.ErrNotInMusicFolder), errors.Is(err, music.ErrNotAudio):
 		writeError(w, http.StatusNotFound, "not found")
+	case errors.Is(err, music.ErrTagConflict):
+		writeError(w, http.StatusConflict, "file changed while editing, reload and try again")
 	default:
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}

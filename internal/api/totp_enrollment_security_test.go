@@ -184,7 +184,9 @@ func TestTOTPEnrollmentProofBindingAndRaces(t *testing.T) {
 		if _, err := svc.ConfirmTOTP(ctx, uid, code, p); err != nil {
 			t.Fatal(err)
 		}
-		if err := svc.DisableTOTP(ctx, uid, "password12", code); err != nil {
+		// Codes are single-use: disabling takes the next step's code.
+		next, _ := totp.GenerateCode(key, time.Now().Add(30*time.Second))
+		if err := svc.DisableTOTP(ctx, uid, "password12", next); err != nil {
 			t.Fatal(err)
 		}
 		if _, _, err := svc.SetupTOTP(ctx, uid, p); err == nil {

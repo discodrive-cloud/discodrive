@@ -18,7 +18,7 @@ import (
 var streamClient = &http.Client{
 	CheckRedirect: func(req *http.Request, via []*http.Request) error { return ValidateURL(req.URL.String()) },
 	Transport: &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 nil, // an env proxy would bypass safeDialer's IP check
 		DialContext:           safeDialer.DialContext,
 		ResponseHeaderTimeout: 30 * time.Second,
 	},
@@ -58,7 +58,13 @@ func ProxyStreamUnsafe(ctx context.Context, client *http.Client, w http.Response
 		return false, fmt.Errorf("podcast: proxy %s: status %d", srcURL, resp.StatusCode)
 	}
 
-	ct, ok := safecontent.Media(resp.Header.Get("Content-Type"))
+	upstreamCT := resp.Header.Get("Content-Type")
+	ct, ok := safecontent.Media(upstreamCT)
+	if !ok && safecontent.IsGeneric(upstreamCT) {
+		// Many hosts send octet-stream for audio: trust the URL's extension, and
+		// only when it names an allowlisted format.
+		ct, ok = safecontent.MediaByExt(resp.Request.URL.Path)
+	}
 	if !ok {
 		return false, fmt.Errorf("podcast: unsupported media type")
 	}

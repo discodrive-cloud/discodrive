@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { dateToUtcIso, formatAllDay, isoToUtcDate, localDateKey } from '~/lib/calendarDates'
+
 interface Task {
   uid: string
   summary: string
@@ -45,10 +47,10 @@ onMounted(loadList)
 
 function dueLabel(task: Task): string {
   if (!task.due) return ''
-  const d = new Date(task.due)
+  // an all-day due date is a date (sent as UTC midnight): read it in UTC, not locally
   return task.due_all_day
-    ? d.toLocaleDateString()
-    : d.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+    ? formatAllDay(task.due)
+    : new Date(task.due).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
 
 async function toggleDone(task: Task) {
@@ -77,13 +79,7 @@ function isoToLocal(iso: string): string {
   const d = new Date(iso)
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
-function isoToDate(iso: string): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
 function localToIso(v: string): string { return v ? new Date(v).toISOString() : '' }
-function dateToIso(v: string): string { return v ? new Date(v + 'T00:00:00').toISOString() : '' }
 
 function resetForm() {
   form.uid = ''; form.summary = ''; form.notes = ''; form.due = ''
@@ -100,14 +96,17 @@ async function openTask(uid: string) {
     form.uid = d.uid; form.summary = d.summary; form.notes = d.notes || ''
     form.due = d.due || ''; form.due_all_day = d.due_all_day
     form.priority = d.priority || 0; form.completed = d.completed
-    dueDateTime.value = d.due ? isoToLocal(d.due) : ''
-    dueDate.value = d.due ? isoToDate(d.due) : ''
+    if (!d.due) { dueDateTime.value = ''; dueDate.value = '' }
+    else if (d.due_all_day) { dueDate.value = isoToUtcDate(d.due); dueDateTime.value = `${dueDate.value}T09:00` }
+    else { dueDateTime.value = isoToLocal(d.due); dueDate.value = localDateKey(new Date(d.due)) }
     modalOpen.value = true
   } catch (e: any) { error.value = e?.data?.error || t('tasks.error_load_task') }
 }
 
 function buildBody() {
-  const due = form.due_all_day ? dateToIso(dueDate.value) : localToIso(dueDateTime.value)
+  // all-day: the picked date at UTC midnight — local midnight east of UTC is the previous
+  // day in UTC, and the task was saved a day early
+  const due = form.due_all_day ? dateToUtcIso(dueDate.value) : localToIso(dueDateTime.value)
   return { summary: form.summary, notes: form.notes, due, due_all_day: form.due_all_day, priority: form.priority, completed: form.completed }
 }
 

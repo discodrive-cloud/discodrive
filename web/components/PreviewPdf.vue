@@ -19,11 +19,19 @@ let doc: import('pdfjs-dist').PDFDocumentProxy | null = null
 let observer: IntersectionObserver | null = null
 let baseScale = 1 // fit-width scale at zoom=1
 let renderEpoch = 0 // bump on zoom change: pages with an older epoch re-render
+// Unmounting mid-load (fast paging through a gallery) must still free the document
+// and its worker: the loading task owns both until the document promise resolves.
+let destroyed = false
+let loadingTask: import('pdfjs-dist').PDFDocumentLoadingTask | null = null
 
 onMounted(load)
 onBeforeUnmount(() => {
+  destroyed = true
   observer?.disconnect()
-  doc?.destroy()
+  if (loadingTask) void loadingTask.destroy() // also destroys doc once it exists
+  else void doc?.destroy()
+  loadingTask = null
+  doc = null
 })
 
 async function load() {
@@ -31,11 +39,18 @@ async function load() {
     pdfjs = await import('pdfjs-dist')
     const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default
     pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
-    doc = await pdfjs.getDocument({ data: await props.blob.arrayBuffer() }).promise
+    const data = await props.blob.arrayBuffer()
+    if (destroyed) return
+    const task = pdfjs.getDocument({ data })
+    loadingTask = task
+    const loaded = await task.promise
+    if (destroyed) { void loaded.destroy(); return }
+    doc = loaded
     numPages.value = doc.numPages
 
     // fit-width from page 1; pages of other sizes still get per-page viewports
     const first = await doc.getPage(1)
+    if (destroyed) return
     const w = first.getViewport({ scale: 1 }).width
     const avail = (scroller.value?.clientWidth ?? 800) - 32
     baseScale = Math.min(2, Math.max(0.3, avail / w))
@@ -44,6 +59,7 @@ async function load() {
     await nextTick()
     observePages()
   } catch {
+    if (destroyed) return // the task was destroyed on unmount; nothing to report
     busy.value = false
     error.value = true
   }

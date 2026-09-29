@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { browserTimeZone, dateToUtcIso, isoToUtcDate, localDateKey, occursOnDay, startsOnDay } from '~/lib/calendarDates'
+
 interface EventOccurrence {
   uid: string; recurrence_id?: string; summary: string; location?: string
   start: string; end: string; all_day: boolean; recurring: boolean; calendar_id: string
@@ -7,7 +9,7 @@ interface EventDetail {
   uid: string; summary: string; location: string; description: string
   start: string; end: string; all_day: boolean; freq: string; until: string; alarm: string; calendar_id: string
 }
-interface CalendarMeta { id: string; name: string; color: string; is_default: boolean; is_owner: boolean; owner_email?: string }
+interface CalendarMeta { id: string; name: string; color: string; is_default: boolean; is_owner: boolean; owner_email?: string; share_id?: string }
 
 const PALETTE = ['#22d3ee', '#34d399', '#f59e0b', '#f43f5e', '#a78bfa', '#3b82f6', '#fb923c', '#e879f9']
 
@@ -96,12 +98,6 @@ function isoToLocal(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 function localToIso(v: string): string { return v ? new Date(v).toISOString() : '' }
-function isoToDate(iso: string): string {
-  if (!iso) return ''; const d = new Date(iso)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`
-}
-function dateToIso(v: string): string { return v ? `${v}T00:00:00.000Z` : '' }
 function formatEventTime(iso: string): string {
   const d = new Date(iso); const pad = (n: number) => String(n).padStart(2, '0')
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`
@@ -146,7 +142,7 @@ async function loadEvents() {
   error.value = ''; loading.value = true
   try {
     const { start, end } = range.value
-    events.value = await request<EventOccurrence[]>(`/me/calendar/events?start=${start.toISOString()}&end=${end.toISOString()}`)
+    events.value = await request<EventOccurrence[]>(`/me/calendar/events?start=${start.toISOString()}&end=${end.toISOString()}&tz=${encodeURIComponent(browserTimeZone())}`)
     if (!Array.isArray(events.value)) events.value = []
   } catch (e: any) { error.value = e?.data?.error || t('calendar.error_load'); events.value = [] }
   finally { loading.value = false }
@@ -180,8 +176,9 @@ const monthCells = computed<Date[]>(() => {
 function eventsForDay(day: Date): EventOccurrence[] {
   return (events.value ?? []).filter((ev) => {
     if (hidden.value.has(ev.calendar_id)) return false
-    return isSameDay(startOfDay(new Date(ev.start)), day)
-  })
+    // all-day by calendar date, timed by overlap: a multi-day event shows on each of its days
+    return occursOnDay(ev, day)
+  }).sort((a, b) => Number(b.all_day) - Number(a.all_day) || new Date(a.start).getTime() - new Date(b.start).getTime())
 }
 function isCurrentMonth(day: Date): boolean { return day.getMonth() === cursor.value.getMonth() }
 const weekDays = computed<Date[]>(() => {
@@ -215,7 +212,7 @@ function openNewEvent(day?: Date) {
     const base = new Date(day); base.setHours(10, 0, 0, 0)
     const baseEnd = new Date(day); baseEnd.setHours(11, 0, 0, 0)
     formStartLocal.value = isoToLocal(base.toISOString()); formEndLocal.value = isoToLocal(baseEnd.toISOString())
-    formStartDate.value = isoToDate(base.toISOString()); formEndDate.value = isoToDate(baseEnd.toISOString())
+    formStartDate.value = localDateKey(day); formEndDate.value = localDateKey(day)
   }
   modalOpen.value = true
 }
@@ -231,18 +228,20 @@ async function openEvent(uid: string) {
     form.alarm = d.alarm || ''; form.calendar_id = d.calendar_id || calId
     form.recurring = occ?.recurring ?? false
     formStartLocal.value = isoToLocal(d.start); formEndLocal.value = isoToLocal(d.end)
-    formStartDate.value = isoToDate(d.start); formEndDate.value = isoToDate(d.end)
-    formUntilDate.value = d.until ? isoToDate(d.until) : ''
+    formStartDate.value = isoToUtcDate(d.start); formEndDate.value = isoToUtcDate(d.end)
+    formUntilDate.value = d.until ? isoToUtcDate(d.until) : ''
     modalOpen.value = true
   } catch (e: any) { error.value = e?.data?.error || t('calendar.error_load') }
 }
 function buildBody() {
-  const startIso = form.all_day ? dateToIso(formStartDate.value) : localToIso(formStartLocal.value)
-  const endIso = form.all_day ? dateToIso(formEndDate.value) : localToIso(formEndLocal.value)
-  const untilIso = form.freq && formUntilDate.value ? dateToIso(formUntilDate.value) : ''
+  const startIso = form.all_day ? dateToUtcIso(formStartDate.value) : localToIso(formStartLocal.value)
+  const endIso = form.all_day ? dateToUtcIso(formEndDate.value) : localToIso(formEndLocal.value)
+  const untilIso = form.freq && formUntilDate.value ? dateToUtcIso(formUntilDate.value) : ''
+  // freq 'keep' leaves a rule the presets cannot show (every 2 weeks on Mon and Wed, ...) as
+  // it is; tz lets the server write a series in this zone so it keeps its time across DST
   return { summary: form.summary, location: form.location, description: form.description,
     start: startIso, end: endIso, all_day: form.all_day, freq: form.freq, until: untilIso,
-    alarm: form.alarm, calendar_id: form.calendar_id }
+    alarm: form.alarm, calendar_id: form.calendar_id, tz: browserTimeZone() }
 }
 async function saveEvent() {
   if (!form.summary.trim()) { error.value = t('calendar.error_name_required'); return }
@@ -288,6 +287,13 @@ async function deleteCalendar(c: CalendarMeta) {
   if (!(await confirm(t('calendar.delete_calendar'), { message: t('calendar.delete_calendar_msg', { name: c.name }), confirmText: t('calendar.delete_calendar_btn'), danger: true }))) return
   try { await request(`/me/calendars/${c.id}`, { method: 'DELETE' }); await loadCalendars(); await loadEvents() }
   catch (e: any) { error.value = e?.data?.error || t('calendar.error_delete_calendar') }
+}
+
+async function leaveCalendar(c: CalendarMeta) {
+  if (!c.share_id) return
+  if (!(await confirm(t('calendar.leave_calendar'), { message: t('calendar.leave_calendar_msg', { name: c.name }), confirmText: t('calendar.leave_calendar_btn'), danger: true }))) return
+  try { await request(`/me/calendars/${c.id}/shares/${c.share_id}`, { method: 'DELETE' }); await loadCalendars(); await loadEvents() }
+  catch (e: any) { error.value = e?.data?.error || t('calendar.error_leave_calendar') }
 }
 
 useModalEscape(modalOpen, () => { modalOpen.value = false })
@@ -353,7 +359,7 @@ useModalEscape(computed(() => share.open), () => { share.open = false })
               :title="c.owner_email ? `${t('calendar.shared_calendar')} · ${c.owner_email}` : t('calendar.shared_calendar')" />
           </button>
           <div class="relative shrink-0 opacity-0 group-hover:opacity-100">
-            <button v-if="c.is_owner" class="btn-ghost px-1 py-0.5" @click="colorMenuFor = colorMenuFor === c.id ? '' : c.id">
+            <button v-if="c.is_owner || c.share_id" class="btn-ghost px-1 py-0.5" @click="colorMenuFor = colorMenuFor === c.id ? '' : c.id">
               <Icon name="lucide:more-horizontal" size="14" />
             </button>
             <div v-if="colorMenuFor === c.id" class="absolute right-0 z-10 mt-1 w-40 rounded-lg border border-line bg-panel p-2 shadow-xl">
@@ -368,6 +374,9 @@ useModalEscape(computed(() => share.open), () => { share.open = false })
               </button>
               <button v-if="c.is_owner" class="btn-ghost w-full justify-start px-2 py-1 text-xs" @click="openShare(c); colorMenuFor = ''">
                 <Icon name="lucide:share-2" size="13" /> {{ t('calendar.color_share') }}
+              </button>
+              <button v-if="!c.is_owner && c.share_id" class="btn-ghost w-full justify-start px-2 py-1 text-xs text-danger" @click="leaveCalendar(c); colorMenuFor = ''">
+                <Icon name="lucide:log-out" size="13" /> {{ t('calendar.leave_calendar_btn') }}
               </button>
             </div>
           </div>
@@ -420,7 +429,7 @@ useModalEscape(computed(() => share.open), () => { share.open = false })
               <div class="mb-0.5 truncate rounded px-1 text-[11px] leading-4 cursor-pointer transition"
                 :style="{ backgroundColor: calColor(ev.calendar_id) + '33', color: calColor(ev.calendar_id) }"
                 @click.stop="openEvent(ev.uid)">
-                <span v-if="!ev.all_day" class="opacity-70">{{ formatEventTime(ev.start) }} </span>{{ ev.summary }}
+                <span v-if="startsOnDay(ev, day)" class="opacity-70">{{ formatEventTime(ev.start) }} </span>{{ ev.summary }}
               </div>
             </template>
             <div v-if="eventsForDay(day).length > 3" class="text-[10px] text-muted pl-1">+{{ eventsForDay(day).length - 3 }}</div>
@@ -441,7 +450,7 @@ useModalEscape(computed(() => share.open), () => { share.open = false })
               class="mb-1 truncate rounded px-1.5 py-0.5 text-xs cursor-pointer transition"
               :style="{ backgroundColor: calColor(ev.calendar_id) + '33', color: calColor(ev.calendar_id) }"
               @click="openEvent(ev.uid)">
-              <span v-if="!ev.all_day" class="opacity-70">{{ formatEventTime(ev.start) }} </span>{{ ev.summary }}
+              <span v-if="startsOnDay(ev, day)" class="opacity-70">{{ formatEventTime(ev.start) }} </span>{{ ev.summary }}
             </div>
             <div v-if="!eventsForDay(day).length" class="text-[10px] text-muted/40 mt-1 text-center cursor-pointer" @click="openNewEvent(day)">+</div>
           </div>
@@ -460,14 +469,15 @@ useModalEscape(computed(() => share.open), () => { share.open = false })
             </button>
           </div>
           <div v-else class="space-y-2">
-            <div v-for="ev in [...eventsForDay(cursor)].sort((a, b) => a.start.localeCompare(b.start))"
+            <div v-for="ev in eventsForDay(cursor)"
               :key="ev.uid + (ev.recurrence_id || '')"
               class="flex items-start gap-3 rounded-lg border border-line/50 px-4 py-3 cursor-pointer hover:bg-ink/5 transition"
               @click="openEvent(ev.uid)">
               <span class="mt-1 h-2.5 w-2.5 shrink-0 rounded-full" :style="{ backgroundColor: calColor(ev.calendar_id) }" />
               <div class="mt-0.5 shrink-0 text-sm text-muted font-mono">
                 <span v-if="ev.all_day">{{ t('calendar.all_day') }}</span>
-                <span v-else>{{ formatEventTime(ev.start) }}</span>
+                <span v-else-if="startsOnDay(ev, cursor)">{{ formatEventTime(ev.start) }}</span>
+                <span v-else>…</span>
               </div>
               <div class="min-w-0">
                 <div class="font-medium text-sm">{{ ev.summary }}</div>
@@ -576,6 +586,7 @@ useModalEscape(computed(() => share.open), () => { share.open = false })
           <div class="mb-3">
             <label class="mb-1 block text-xs font-medium text-muted">{{ t('calendar.field_recurrence') }}</label>
             <select v-model="form.freq" class="input">
+              <option v-if="form.freq === 'keep'" value="keep">{{ t('calendar.freq_keep') }}</option>
               <option v-for="opt in FREQ_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
             </select>
           </div>
