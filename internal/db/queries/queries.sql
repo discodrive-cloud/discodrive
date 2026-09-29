@@ -258,6 +258,15 @@ SET parent_id = $2, version = version + 1, modified_at = now(), modified_by = $3
 WHERE id = $1
 RETURNING *;
 
+-- Parent and name in one statement: the unique name indexes are checked per statement,
+-- so two updates could collide in the state between them (a.txt moving to another
+-- folder as b.txt, where an a.txt already exists).
+-- name: UpdateNodePlace :one
+UPDATE nodes
+SET parent_id = $2, name = $3, version = version + 1, modified_at = now(), modified_by = $4
+WHERE id = $1
+RETURNING *;
+
 -- name: UpdateNodeContent :one
 UPDATE nodes
 SET size = $2, content_hash = $3, mime = $4, version = version + 1,

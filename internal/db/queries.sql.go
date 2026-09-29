@@ -3604,6 +3604,54 @@ func (q *Queries) UpdateNodeParent(ctx context.Context, arg UpdateNodeParentPara
 	return i, err
 }
 
+const updateNodePlace = `-- name: UpdateNodePlace :one
+UPDATE nodes
+SET parent_id = $2, name = $3, version = version + 1, modified_at = now(), modified_by = $4
+WHERE id = $1
+RETURNING id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path
+`
+
+type UpdateNodePlaceParams struct {
+	ID         pgtype.UUID `json:"id"`
+	ParentID   pgtype.UUID `json:"parent_id"`
+	Name       string      `json:"name"`
+	ModifiedBy pgtype.UUID `json:"modified_by"`
+}
+
+// Parent and name in one statement: the unique name indexes are checked per statement,
+// so two updates could collide in the state between them (a.txt moving to another
+// folder as b.txt, where an a.txt already exists).
+func (q *Queries) UpdateNodePlace(ctx context.Context, arg UpdateNodePlaceParams) (Node, error) {
+	row := q.db.QueryRow(ctx, updateNodePlace,
+		arg.ID,
+		arg.ParentID,
+		arg.Name,
+		arg.ModifiedBy,
+	)
+	var i Node
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ParentID,
+		&i.Name,
+		&i.IsDir,
+		&i.Size,
+		&i.ContentHash,
+		&i.DiskPath,
+		&i.Mime,
+		&i.IsVault,
+		&i.Version,
+		&i.ModifiedAt,
+		&i.ModifiedBy,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.IsConflictLoser,
+		&i.ConflictOf,
+		&i.TrashPath,
+	)
+	return i, err
+}
+
 const updatePassword = `-- name: UpdatePassword :one
 UPDATE users SET password_hash = $2, token_version = token_version + 1, must_change_password = false
 WHERE id = $1 AND password_hash = $3 RETURNING id, tenant_id, email, password_hash, storage_quota, storage_used, created_at, role, change_seq, quota_notified_at, token_version, language, must_change_password, bookmark_seq, bookmark_gc_seq, session_ttl_minutes

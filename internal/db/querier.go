@@ -504,6 +504,10 @@ type Querier interface {
 	UpdateNodeContent(ctx context.Context, arg UpdateNodeContentParams) (Node, error)
 	UpdateNodeName(ctx context.Context, arg UpdateNodeNameParams) (Node, error)
 	UpdateNodeParent(ctx context.Context, arg UpdateNodeParentParams) (Node, error)
+	// Parent and name in one statement: the unique name indexes are checked per statement,
+	// so two updates could collide in the state between them (a.txt moving to another
+	// folder as b.txt, where an a.txt already exists).
+	UpdateNodePlace(ctx context.Context, arg UpdateNodePlaceParams) (Node, error)
 	// Password change: new hash + bump token_version (invalidates all active sessions)
 	// + clear the forced-change flag (A.2).
 	UpdatePassword(ctx context.Context, arg UpdatePasswordParams) (User, error)

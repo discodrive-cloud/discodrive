@@ -323,6 +323,118 @@ func (s *FileService) Move(ctx context.Context, userID, nodeID string, parentID 
 	return updated, nil
 }
 
+// Relocate moves and renames a node in one transaction (parentID nil → root). With
+// replaceID set it first trashes that node, which must be the one at the destination:
+// this is WebDAV MOVE with "Overwrite: T". Either everything happens or nothing does —
+// the destination is never trashed unless the source takes its place, and a move to
+// another folder is never left without its rename.
+func (s *FileService) Relocate(ctx context.Context, userID, nodeID string, parentID *string, newName, replaceID string) (db.Node, error) {
+	if err := validateName(newName); err != nil {
+		return db.Node{}, err
+	}
+	node, err := s.ownerNode(ctx, userID, nodeID)
+	if err != nil {
+		return db.Node{}, err
+	}
+	prefix, parentUUID, ownerUUID, err := s.resolveParent(ctx, userID, parentID)
+	if err != nil {
+		return db.Node{}, err
+	}
+	if db.UUIDString(ownerUUID) != db.UUIDString(node.UserID) {
+		return db.Node{}, ErrNotFound
+	}
+	owner := node.UserID
+	oldRel := node.DiskPath.String
+	if prefix == oldRel || strings.HasPrefix(prefix, oldRel+"/") {
+		return db.Node{}, ErrCycle
+	}
+	newRel := prefix + "/" + newName
+	var victim db.Node
+	if replaceID != "" {
+		if victim, err = s.ownerNode(ctx, userID, replaceID); err != nil {
+			return db.Node{}, err
+		}
+		if victim.DiskPath.String != newRel {
+			return db.Node{}, ErrNotFound // no longer at the destination
+		}
+		// Replacing a node's own ancestor (or the node itself) would trash the source
+		// along with the destination.
+		if victim.ID == node.ID || strings.HasPrefix(oldRel, newRel+"/") {
+			return db.Node{}, ErrCycle
+		}
+	}
+	if newRel == oldRel {
+		return node, nil
+	}
+	trash := ""
+	if victim.ID.Valid {
+		trash = trashRoot(owner, victim.ID)
+	}
+	defer s.busy.hold(oldRel, newRel)()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return db.Node{}, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+
+	if victim.ID.Valid {
+		if err := qtx.SoftDeleteSubtree(ctx, db.SoftDeleteSubtreeParams{UserID: owner, Prefix: newRel, TrashRoot: text(trash)}); err != nil {
+			return db.Node{}, err
+		}
+		ver, err := qtx.BumpNodeVersion(ctx, victim.ID)
+		if err != nil {
+			return db.Node{}, err
+		}
+		if err := recordChange(ctx, qtx, owner, victim.ID, "delete", ver); err != nil {
+			return db.Node{}, err
+		}
+	}
+	if err := qtx.RewriteSubtreePaths(ctx, db.RewriteSubtreePathsParams{UserID: owner, OldPrefix: oldRel, NewPrefix: newRel}); err != nil {
+		return db.Node{}, err
+	}
+	updated, err := qtx.UpdateNodePlace(ctx, db.UpdateNodePlaceParams{ID: node.ID, ParentID: parentUUID, Name: newName})
+	if err != nil {
+		return db.Node{}, mapInsertErr(err)
+	}
+	op := "update" // a rename, as Rename records it
+	if node.ParentID != parentUUID {
+		op = "move"
+	}
+	if err := recordPathChange(ctx, qtx, owner, node.ID, op, updated.Version, oldRel); err != nil {
+		return db.Node{}, err
+	}
+	if err := qtx.RecordSubtreeChanges(ctx, db.RecordSubtreeChangesParams{UserID: owner, Prefix: newRel, OldPrefix: oldRel}); err != nil {
+		return db.Node{}, err
+	}
+	// Disk last: the destination's bytes to the trash, then the source into place.
+	// Every failure puts back what was already moved.
+	victimMoved := false
+	if victim.ID.Valid {
+		if err := s.st.Move(newRel, trash); err == nil {
+			victimMoved = true
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return db.Node{}, err
+		}
+	}
+	undoVictim := func() {
+		if victimMoved {
+			_ = s.st.Move(trash, newRel)
+		}
+	}
+	if err := s.st.Move(oldRel, newRel); err != nil {
+		undoVictim()
+		return db.Node{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		_ = s.st.Move(newRel, oldRel)
+		undoVictim()
+		return db.Node{}, err
+	}
+	return updated, nil
+}
+
 // Delete soft-deletes a node and its subtree. The bytes move out of the tree to
 // .trash/<owner>/<node id>, so the name is free again at once and a later upload under
 // it cannot overwrite what the trash holds; GC or Purge removes them for good.

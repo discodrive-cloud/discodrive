@@ -21,7 +21,28 @@ const (
 	ctxUserKey ctxKey = iota
 	ctxDeviceKey
 	ctxPutLenKey
+	ctxMoveKey
 )
+
+// moveReplace carries a MOVE's "Overwrite: T" from RemoveAll to Rename. x/net/webdav
+// performs it as two calls — RemoveAll(destination), then Rename(source, destination) —
+// so a rename that failed used to leave the destination in the trash and the source
+// where it was. Within a MOVE, RemoveAll only notes the node at the destination, and
+// Rename trashes it in the same transaction that moves the source into its place.
+type moveReplace struct {
+	name string // cleaned DAV path of the destination
+	id   string // node id found there
+}
+
+// withMove marks ctx as serving a MOVE request (see moveReplace).
+func withMove(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxMoveKey, &moveReplace{})
+}
+
+func moveOf(ctx context.Context) *moveReplace {
+	mv, _ := ctx.Value(ctxMoveKey).(*moveReplace)
+	return mv
+}
 
 // WithDeclaredLength returns a context carrying the declared body length of an upload
 // (the request's Content-Length, or -1 when the client did not state one). Handler
@@ -126,14 +147,18 @@ func (f *fsImpl) RemoveAll(ctx context.Context, name string) error {
 	if err != nil {
 		return mapErr(err)
 	}
+	if mv := moveOf(ctx); mv != nil {
+		// The destination of a MOVE: Rename replaces it atomically (see moveReplace).
+		mv.name, mv.id = name, db.UUIDString(n.ID)
+		return nil
+	}
 	defer memoFrom(ctx).clear()
 	return mapErr(f.svc.Delete(ctx, f.userID, db.UUIDString(n.ID)))
 }
 
-// Rename implements WebDAV MOVE. NOTE: changing both directory and name simultaneously
-// requires two core operations (Move then Rename) — not atomic.
-// A pure move and a pure rename are each atomic; doing both at once is a known
-// limitation of step 1.1 (atomic MoveAndRename in the core is a separate step).
+// Rename implements WebDAV MOVE: the move, the rename and (with "Overwrite: T") the
+// replacement of the destination are one core operation, so a failure leaves both
+// source and destination as they were.
 func (f *fsImpl) Rename(ctx context.Context, oldName, newName string) error {
 	oldName, newName = clean(oldName), clean(newName)
 	if isMacJunk(path.Base(oldName)) || isMacJunk(path.Base(newName)) {
@@ -144,22 +169,16 @@ func (f *fsImpl) Rename(ctx context.Context, oldName, newName string) error {
 		return mapErr(err)
 	}
 	defer memoFrom(ctx).clear()
-	id := db.UUIDString(n.ID)
-	if path.Dir(oldName) != path.Dir(newName) {
-		newParentID, _, err := f.parentOf(ctx, newName)
-		if err != nil {
-			return err
-		}
-		if _, err := f.svc.Move(ctx, f.userID, id, newParentID); err != nil {
-			return mapErr(err)
-		}
+	parentID, leaf, err := f.parentOf(ctx, newName)
+	if err != nil {
+		return err
 	}
-	if path.Base(oldName) != path.Base(newName) {
-		if _, err := f.svc.Rename(ctx, f.userID, id, path.Base(newName)); err != nil {
-			return mapErr(err)
-		}
+	replace := ""
+	if mv := moveOf(ctx); mv != nil && mv.name == newName {
+		replace = mv.id
 	}
-	return nil
+	_, err = f.svc.Relocate(ctx, f.userID, db.UUIDString(n.ID), parentID, leaf, replace)
+	return mapErr(err)
 }
 
 func (f *fsImpl) OpenFile(ctx context.Context, name string, flag int, _ os.FileMode) (webdav.File, error) {

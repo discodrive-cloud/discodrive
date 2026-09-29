@@ -67,6 +67,9 @@ func Handler(svc *storage.FileService, prefix string) http.Handler {
 			}
 			r = r.WithContext(WithDeclaredLength(r.Context(), r.ContentLength))
 		}
+		if r.Method == "MOVE" {
+			r = r.WithContext(withMove(r.Context()))
+		}
 		h := &webdav.Handler{
 			Prefix:     prefix,
 			FileSystem: NewFileSystem(svc, uid),
