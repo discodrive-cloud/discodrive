@@ -81,6 +81,10 @@ type Querier interface {
 	AvailableMFAFactors(ctx context.Context, userID pgtype.UUID) (AvailableMFAFactorsRow, error)
 	BookAuthors(ctx context.Context, bookID pgtype.UUID) ([]BookAuthorsRow, error)
 	BookTags(ctx context.Context, bookID pgtype.UUID) ([]string, error)
+	// BrowserBookmarkAncestors returns the given nodes of the user and all their
+	// ancestors (tombstones included: they still carry the structure), for the bulk
+	// import's parent and cycle checks. UNION ends the walk on an existing cycle.
+	BrowserBookmarkAncestors(ctx context.Context, arg BrowserBookmarkAncestorsParams) ([]BrowserBookmarkAncestorsRow, error)
 	BrowserSessionActive(ctx context.Context, arg BrowserSessionActiveParams) (bool, error)
 	BumpAddressbookCtag(ctx context.Context, id pgtype.UUID) error
 	BumpBookmarkGCSeq(ctx context.Context, arg BumpBookmarkGCSeqParams) error
@@ -365,6 +369,8 @@ type Querier interface {
 	MaxPlaylistPosition(ctx context.Context, playlistID pgtype.UUID) (interface{}, error)
 	// MoveBookmark re-parents a node. The NOT EXISTS guard rejects a move that
 	// would create a cycle (the target parent must not be inside the moved subtree).
+	// UNION (not UNION ALL) in the walks below is the cycle guard: a node already
+	// visited adds no new row, so even a corrupted, cyclic tree ends the recursion.
 	MoveBrowserBookmark(ctx context.Context, arg MoveBrowserBookmarkParams) (BrowserBookmark, error)
 	NextBookmarkSeq(ctx context.Context, id pgtype.UUID) (int64, error)
 	NextChangeSeq(ctx context.Context, id pgtype.UUID) (int64, error)
@@ -501,7 +507,8 @@ type Querier interface {
 	UpsertBook(ctx context.Context, arg UpsertBookParams) (Book, error)
 	// UpsertBookmarkAt is the bulk-import step (tx, seq passed in). LWW: an
 	// existing row (including a tombstone) is overwritten and revived.
-	UpsertBrowserBookmarkAt(ctx context.Context, arg UpsertBrowserBookmarkAtParams) error
+	// Returns 0 rows when the id belongs to another user (the conflict WHERE fails).
+	UpsertBrowserBookmarkAt(ctx context.Context, arg UpsertBrowserBookmarkAtParams) (int64, error)
 	// == calendar_objects ==
 	UpsertCalendarObject(ctx context.Context, arg UpsertCalendarObjectParams) (CalendarObject, error)
 	UpsertEbookSettings(ctx context.Context, arg UpsertEbookSettingsParams) (EbookSetting, error)

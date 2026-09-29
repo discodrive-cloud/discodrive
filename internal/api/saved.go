@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -62,6 +65,18 @@ func toSavedItemDTO(it db.SavedItem) savedItemDTO {
 	return d
 }
 
+// isWebURL reports whether raw is an absolute http(s) URL with a host. Bookmarks and
+// saved items are rendered as clickable links, so javascript:, data: and friends are
+// refused when they are created; rows stored earlier stay readable.
+func isWebURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	return scheme == "http" || scheme == "https"
+}
+
 func validSavedKind(k string) bool {
 	return k == saved.KindArticle || k == saved.KindDownload
 }
@@ -113,12 +128,20 @@ func (s *Server) handleSavedCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "cookie is too large")
 		return
 	}
+	// The URL is shown as a link in the Pocket list and the reader: only web links.
+	if !isWebURL(req.URL) {
+		writeError(w, http.StatusBadRequest, "url must be an http or https link")
+		return
+	}
 	// With client-supplied content the server never fetches the URL, so the
 	// SSRF guard has nothing to protect: addresses behind a paywall or a login
 	// are only ever resolved on the client.
 	if req.ContentHTML == "" {
 		if err := s.saved.Validate(req.URL); err != nil {
-			writeError(w, http.StatusBadRequest, "url is not allowed: "+err.Error())
+			// The guard's error names the addresses the host resolved to (internal DNS
+			// included): log it, answer generically.
+			log.Printf("discodrive: saved: url refused by the SSRF guard: %v", err)
+			writeError(w, http.StatusBadRequest, "url is not allowed")
 			return
 		}
 	}
