@@ -345,7 +345,7 @@ INSERT INTO nodes (
     is_conflict_loser, conflict_of, modified_at
 ) VALUES ($1, $2, $3, false, $4, $5, $6, $7, true, $8,
     COALESCE($9::timestamptz, now()))
-RETURNING id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of
+RETURNING id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path
 `
 
 type CreateConflictNodeParams struct {
@@ -392,6 +392,7 @@ func (q *Queries) CreateConflictNode(ctx context.Context, arg CreateConflictNode
 		&i.CreatedAt,
 		&i.IsConflictLoser,
 		&i.ConflictOf,
+		&i.TrashPath,
 	)
 	return i, err
 }
@@ -465,7 +466,7 @@ INSERT INTO nodes (
     content_hash, disk_path, mime, is_vault, modified_by, modified_at
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
     COALESCE($11::timestamptz, now()))
-RETURNING id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of
+RETURNING id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path
 `
 
 type CreateNodeParams struct {
@@ -518,6 +519,7 @@ func (q *Queries) CreateNode(ctx context.Context, arg CreateNodeParams) (Node, e
 		&i.CreatedAt,
 		&i.IsConflictLoser,
 		&i.ConflictOf,
+		&i.TrashPath,
 	)
 	return i, err
 }
@@ -1074,7 +1076,7 @@ func (q *Queries) GetFileVersion(ctx context.Context, arg GetFileVersionParams) 
 }
 
 const getLiveNodeByPath = `-- name: GetLiveNodeByPath :one
-SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes
+SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path FROM nodes
 WHERE user_id = $1 AND disk_path = $2::text AND deleted_at IS NULL
 `
 
@@ -1104,12 +1106,13 @@ func (q *Queries) GetLiveNodeByPath(ctx context.Context, arg GetLiveNodeByPathPa
 		&i.CreatedAt,
 		&i.IsConflictLoser,
 		&i.ConflictOf,
+		&i.TrashPath,
 	)
 	return i, err
 }
 
 const getNode = `-- name: GetNode :one
-SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes WHERE id = $1 AND deleted_at IS NULL
+SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path FROM nodes WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetNode(ctx context.Context, id pgtype.UUID) (Node, error) {
@@ -1133,12 +1136,13 @@ func (q *Queries) GetNode(ctx context.Context, id pgtype.UUID) (Node, error) {
 		&i.CreatedAt,
 		&i.IsConflictLoser,
 		&i.ConflictOf,
+		&i.TrashPath,
 	)
 	return i, err
 }
 
 const getNodeAnyState = `-- name: GetNodeAnyState :one
-SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes WHERE id = $1
+SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path FROM nodes WHERE id = $1
 `
 
 // A node whether live or trashed: a library whose folder was trashed must still learn
@@ -1164,12 +1168,13 @@ func (q *Queries) GetNodeAnyState(ctx context.Context, id pgtype.UUID) (Node, er
 		&i.CreatedAt,
 		&i.IsConflictLoser,
 		&i.ConflictOf,
+		&i.TrashPath,
 	)
 	return i, err
 }
 
 const getNodeForUpdate = `-- name: GetNodeForUpdate :one
-SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
+SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path FROM nodes WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
 `
 
 // The live node, locked for the rest of the transaction: a writer that re-checks and
@@ -1195,12 +1200,13 @@ func (q *Queries) GetNodeForUpdate(ctx context.Context, id pgtype.UUID) (Node, e
 		&i.CreatedAt,
 		&i.IsConflictLoser,
 		&i.ConflictOf,
+		&i.TrashPath,
 	)
 	return i, err
 }
 
 const getNodeForUser = `-- name: GetNodeForUser :one
-SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path FROM nodes WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
 `
 
 type GetNodeForUserParams struct {
@@ -1229,6 +1235,7 @@ func (q *Queries) GetNodeForUser(ctx context.Context, arg GetNodeForUserParams) 
 		&i.CreatedAt,
 		&i.IsConflictLoser,
 		&i.ConflictOf,
+		&i.TrashPath,
 	)
 	return i, err
 }
@@ -1317,7 +1324,7 @@ func (q *Queries) GetShare(ctx context.Context, id pgtype.UUID) (ResourceShare, 
 }
 
 const getTrashedNodeForUser = `-- name: GetTrashedNodeForUser :one
-SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
+SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path FROM nodes WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
 `
 
 type GetTrashedNodeForUserParams struct {
@@ -1346,6 +1353,7 @@ func (q *Queries) GetTrashedNodeForUser(ctx context.Context, arg GetTrashedNodeF
 		&i.CreatedAt,
 		&i.IsConflictLoser,
 		&i.ConflictOf,
+		&i.TrashPath,
 	)
 	return i, err
 }
@@ -1493,23 +1501,6 @@ DELETE FROM nodes WHERE id = $1
 
 func (q *Queries) HardDeleteNode(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, hardDeleteNode, id)
-	return err
-}
-
-const hardDeleteSubtree = `-- name: HardDeleteSubtree :exec
-DELETE FROM nodes
-WHERE user_id = $1
-  AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
-  AND deleted_at IS NOT NULL
-`
-
-type HardDeleteSubtreeParams struct {
-	UserID pgtype.UUID `json:"user_id"`
-	Prefix string      `json:"prefix"`
-}
-
-func (q *Queries) HardDeleteSubtree(ctx context.Context, arg HardDeleteSubtreeParams) error {
-	_, err := q.db.Exec(ctx, hardDeleteSubtree, arg.UserID, arg.Prefix)
 	return err
 }
 
@@ -2005,7 +1996,7 @@ func (q *Queries) ListChangesSinceUnderPrefix(ctx context.Context, arg ListChang
 }
 
 const listChildren = `-- name: ListChildren :many
-SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes
+SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path FROM nodes
 WHERE user_id = $1 AND parent_id = $2 AND deleted_at IS NULL
 ORDER BY is_dir DESC, name
 `
@@ -2042,6 +2033,7 @@ func (q *Queries) ListChildren(ctx context.Context, arg ListChildrenParams) ([]N
 			&i.CreatedAt,
 			&i.IsConflictLoser,
 			&i.ConflictOf,
+			&i.TrashPath,
 		); err != nil {
 			return nil, err
 		}
@@ -2088,15 +2080,16 @@ func (q *Queries) ListDevicesForUser(ctx context.Context, userID pgtype.UUID) ([
 }
 
 const listExpiredTombstones = `-- name: ListExpiredTombstones :many
-SELECT id, user_id, disk_path, is_dir FROM nodes
+SELECT id, user_id, disk_path, is_dir, trash_path FROM nodes
 WHERE deleted_at IS NOT NULL AND deleted_at < $1
 `
 
 type ListExpiredTombstonesRow struct {
-	ID       pgtype.UUID `json:"id"`
-	UserID   pgtype.UUID `json:"user_id"`
-	DiskPath pgtype.Text `json:"disk_path"`
-	IsDir    bool        `json:"is_dir"`
+	ID        pgtype.UUID `json:"id"`
+	UserID    pgtype.UUID `json:"user_id"`
+	DiskPath  pgtype.Text `json:"disk_path"`
+	IsDir     bool        `json:"is_dir"`
+	TrashPath pgtype.Text `json:"trash_path"`
 }
 
 func (q *Queries) ListExpiredTombstones(ctx context.Context, deletedAt pgtype.Timestamptz) ([]ListExpiredTombstonesRow, error) {
@@ -2113,6 +2106,7 @@ func (q *Queries) ListExpiredTombstones(ctx context.Context, deletedAt pgtype.Ti
 			&i.UserID,
 			&i.DiskPath,
 			&i.IsDir,
+			&i.TrashPath,
 		); err != nil {
 			return nil, err
 		}
@@ -2159,7 +2153,7 @@ func (q *Queries) ListFileVersions(ctx context.Context, nodeID pgtype.UUID) ([]F
 }
 
 const listLiveNodes = `-- name: ListLiveNodes :many
-SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes WHERE user_id = $1 AND deleted_at IS NULL
+SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path FROM nodes WHERE user_id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) ListLiveNodes(ctx context.Context, userID pgtype.UUID) ([]Node, error) {
@@ -2189,6 +2183,7 @@ func (q *Queries) ListLiveNodes(ctx context.Context, userID pgtype.UUID) ([]Node
 			&i.CreatedAt,
 			&i.IsConflictLoser,
 			&i.ConflictOf,
+			&i.TrashPath,
 		); err != nil {
 			return nil, err
 		}
@@ -2201,7 +2196,7 @@ func (q *Queries) ListLiveNodes(ctx context.Context, userID pgtype.UUID) ([]Node
 }
 
 const listNodeChildren = `-- name: ListNodeChildren :many
-SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes
+SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path FROM nodes
 WHERE parent_id = $1 AND deleted_at IS NULL
 ORDER BY is_dir DESC, name
 `
@@ -2234,6 +2229,7 @@ func (q *Queries) ListNodeChildren(ctx context.Context, parentID pgtype.UUID) ([
 			&i.CreatedAt,
 			&i.IsConflictLoser,
 			&i.ConflictOf,
+			&i.TrashPath,
 		); err != nil {
 			return nil, err
 		}
@@ -2404,7 +2400,7 @@ func (q *Queries) ListRedundantVersionSnapshots(ctx context.Context, modifiedBef
 }
 
 const listRootNodes = `-- name: ListRootNodes :many
-SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of FROM nodes
+SELECT id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path FROM nodes
 WHERE user_id = $1 AND parent_id IS NULL AND deleted_at IS NULL
 ORDER BY is_dir DESC, name
 `
@@ -2436,6 +2432,7 @@ func (q *Queries) ListRootNodes(ctx context.Context, userID pgtype.UUID) ([]Node
 			&i.CreatedAt,
 			&i.IsConflictLoser,
 			&i.ConflictOf,
+			&i.TrashPath,
 		); err != nil {
 			return nil, err
 		}
@@ -2548,11 +2545,70 @@ func (q *Queries) ListSharesForUser(ctx context.Context, sharedWithUser pgtype.U
 	return items, nil
 }
 
-const listTombstonedChildren = `-- name: ListTombstonedChildren :many
-SELECT name FROM nodes WHERE parent_id = $1 AND deleted_at IS NOT NULL
+const listTombstoneSubtree = `-- name: ListTombstoneSubtree :many
+WITH RECURSIVE t AS (
+    SELECT r.id, r.deleted_at FROM nodes r
+    WHERE r.id = $1 AND r.deleted_at IS NOT NULL
+  UNION
+    SELECT c.id, c.deleted_at FROM nodes c JOIN t ON c.parent_id = t.id
+    WHERE c.deleted_at IS NOT NULL
+      AND (NOT $2::bool OR c.deleted_at = t.deleted_at)
+)
+SELECT n.id, n.disk_path, n.trash_path, n.is_dir, n.size FROM nodes n JOIN t ON n.id = t.id
 `
 
-// Names of trashed children of one folder: reconciliation must not re-import them.
+type ListTombstoneSubtreeParams struct {
+	ID       pgtype.UUID `json:"id"`
+	Together bool        `json:"together"`
+}
+
+type ListTombstoneSubtreeRow struct {
+	ID        pgtype.UUID `json:"id"`
+	DiskPath  pgtype.Text `json:"disk_path"`
+	TrashPath pgtype.Text `json:"trash_path"`
+	IsDir     bool        `json:"is_dir"`
+	Size      pgtype.Int8 `json:"size"`
+}
+
+// Trash operations address a tombstone subtree by node id, walking parent_id: paths
+// cannot tell apart two trashed trees with the same path (a folder deleted, created
+// again and deleted again). together limits the walk to the rows deleted by the same
+// operation as the root (same deleted_at); without it the walk takes every tombstone
+// below the root, including ones deleted earlier on their own. UNION (not UNION ALL)
+// ends the walk even if parent links were ever corrupted into a cycle.
+func (q *Queries) ListTombstoneSubtree(ctx context.Context, arg ListTombstoneSubtreeParams) ([]ListTombstoneSubtreeRow, error) {
+	rows, err := q.db.Query(ctx, listTombstoneSubtree, arg.ID, arg.Together)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTombstoneSubtreeRow{}
+	for rows.Next() {
+		var i ListTombstoneSubtreeRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DiskPath,
+			&i.TrashPath,
+			&i.IsDir,
+			&i.Size,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTombstonedChildren = `-- name: ListTombstonedChildren :many
+SELECT name FROM nodes WHERE parent_id = $1 AND deleted_at IS NOT NULL AND trash_path IS NULL
+`
+
+// Names of trashed children of one folder whose bytes may still sit at their old path
+// (tombstones from before deletes moved bytes to .trash): reconciliation must not
+// re-import them. A tombstone with a trash_path left its name free on disk.
 func (q *Queries) ListTombstonedChildren(ctx context.Context, parentID pgtype.UUID) ([]string, error) {
 	rows, err := q.db.Query(ctx, listTombstonedChildren, parentID)
 	if err != nil {
@@ -2600,7 +2656,7 @@ func (q *Queries) ListTombstonedNodePaths(ctx context.Context, userID pgtype.UUI
 }
 
 const listTombstonedRootChildren = `-- name: ListTombstonedRootChildren :many
-SELECT name FROM nodes WHERE user_id = $1 AND parent_id IS NULL AND deleted_at IS NOT NULL
+SELECT name FROM nodes WHERE user_id = $1 AND parent_id IS NULL AND deleted_at IS NOT NULL AND trash_path IS NULL
 `
 
 func (q *Queries) ListTombstonedRootChildren(ctx context.Context, userID pgtype.UUID) ([]string, error) {
@@ -2624,7 +2680,7 @@ func (q *Queries) ListTombstonedRootChildren(ctx context.Context, userID pgtype.
 }
 
 const listTrashNodes = `-- name: ListTrashNodes :many
-SELECT n.id, n.user_id, n.parent_id, n.name, n.is_dir, n.size, n.content_hash, n.disk_path, n.mime, n.is_vault, n.version, n.modified_at, n.modified_by, n.deleted_at, n.created_at, n.is_conflict_loser, n.conflict_of FROM nodes n
+SELECT n.id, n.user_id, n.parent_id, n.name, n.is_dir, n.size, n.content_hash, n.disk_path, n.mime, n.is_vault, n.version, n.modified_at, n.modified_by, n.deleted_at, n.created_at, n.is_conflict_loser, n.conflict_of, n.trash_path FROM nodes n
 WHERE n.user_id = $1 AND n.deleted_at IS NOT NULL
   AND (n.parent_id IS NULL OR EXISTS (
         SELECT 1 FROM nodes p WHERE p.id = n.parent_id AND p.user_id = n.user_id AND p.deleted_at IS NULL))
@@ -2658,45 +2714,8 @@ func (q *Queries) ListTrashNodes(ctx context.Context, userID pgtype.UUID) ([]Nod
 			&i.CreatedAt,
 			&i.IsConflictLoser,
 			&i.ConflictOf,
+			&i.TrashPath,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listTrashedSubtree = `-- name: ListTrashedSubtree :many
-SELECT id, disk_path, is_dir FROM nodes
-WHERE user_id = $1
-  AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
-  AND deleted_at IS NOT NULL
-`
-
-type ListTrashedSubtreeParams struct {
-	UserID pgtype.UUID `json:"user_id"`
-	Prefix string      `json:"prefix"`
-}
-
-type ListTrashedSubtreeRow struct {
-	ID       pgtype.UUID `json:"id"`
-	DiskPath pgtype.Text `json:"disk_path"`
-	IsDir    bool        `json:"is_dir"`
-}
-
-func (q *Queries) ListTrashedSubtree(ctx context.Context, arg ListTrashedSubtreeParams) ([]ListTrashedSubtreeRow, error) {
-	rows, err := q.db.Query(ctx, listTrashedSubtree, arg.UserID, arg.Prefix)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListTrashedSubtreeRow{}
-	for rows.Next() {
-		var i ListTrashedSubtreeRow
-		if err := rows.Scan(&i.ID, &i.DiskPath, &i.IsDir); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -3067,27 +3086,6 @@ func (q *Queries) RewriteSubtreePaths(ctx context.Context, arg RewriteSubtreePat
 	return err
 }
 
-const rewriteTombstonedSubtreePaths = `-- name: RewriteTombstonedSubtreePaths :exec
-UPDATE nodes
-SET disk_path = $1::text || substring(disk_path FROM char_length($2::text) + 1)
-WHERE user_id = $3
-  AND deleted_at IS NOT NULL
-  AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
-`
-
-type RewriteTombstonedSubtreePathsParams struct {
-	NewPrefix string      `json:"new_prefix"`
-	OldPrefix string      `json:"old_prefix"`
-	UserID    pgtype.UUID `json:"user_id"`
-}
-
-// Like RewriteSubtreePaths, but only for trashed nodes — so restoring doesn't
-// touch a LIVE node sharing the same disk_path (the name was reused after deletion).
-func (q *Queries) RewriteTombstonedSubtreePaths(ctx context.Context, arg RewriteTombstonedSubtreePathsParams) error {
-	_, err := q.db.Exec(ctx, rewriteTombstonedSubtreePaths, arg.NewPrefix, arg.OldPrefix, arg.UserID)
-	return err
-}
-
 const setAddressbookName = `-- name: SetAddressbookName :exec
 UPDATE addressbooks SET name = $2 WHERE id = $1 AND user_id = $3
 `
@@ -3248,20 +3246,26 @@ func (q *Queries) SoftDeleteNode(ctx context.Context, id pgtype.UUID) error {
 
 const softDeleteSubtree = `-- name: SoftDeleteSubtree :exec
 UPDATE nodes
-SET deleted_at = now()
-WHERE user_id = $1
+SET deleted_at = now(),
+    trash_path = $1::text || substring(disk_path FROM char_length($2::text) + 1)
+WHERE user_id = $3
   AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
   AND deleted_at IS NULL
 `
 
 type SoftDeleteSubtreeParams struct {
-	UserID pgtype.UUID `json:"user_id"`
-	Prefix string      `json:"prefix"`
+	TrashRoot pgtype.Text `json:"trash_root"`
+	Prefix    string      `json:"prefix"`
+	UserID    pgtype.UUID `json:"user_id"`
 }
 
-// Soft-delete a node and its whole subtree (disk is cleaned up by GC, step 0.6).
+// Soft-delete a node and its whole subtree. trash_root is where the node's bytes are
+// moved (.trash/<user>/<node id>); every row records its own place under it, so a
+// descendant can be restored or purged on its own. NULL trash_root keeps the old
+// behaviour (bytes stay at disk_path). All rows get the same deleted_at (now() is the
+// transaction's time): that is what marks them as trashed together.
 func (q *Queries) SoftDeleteSubtree(ctx context.Context, arg SoftDeleteSubtreeParams) error {
-	_, err := q.db.Exec(ctx, softDeleteSubtree, arg.UserID, arg.Prefix)
+	_, err := q.db.Exec(ctx, softDeleteSubtree, arg.TrashRoot, arg.Prefix, arg.UserID)
 	return err
 }
 
@@ -3388,20 +3392,37 @@ func (q *Queries) TrimNodeVersions(ctx context.Context, arg TrimNodeVersionsPara
 	return items, nil
 }
 
-const undeleteSubtree = `-- name: UndeleteSubtree :exec
-UPDATE nodes SET deleted_at = NULL
-WHERE user_id = $1
-  AND (disk_path = $2::text OR starts_with(disk_path, $2::text || '/'))
-  AND deleted_at IS NOT NULL
+const undeleteTombstoneSubtree = `-- name: UndeleteTombstoneSubtree :exec
+WITH RECURSIVE t AS (
+    SELECT r.id, r.deleted_at FROM nodes r
+    WHERE r.id = $3 AND r.deleted_at IS NOT NULL
+  UNION
+    SELECT c.id, c.deleted_at FROM nodes c JOIN t ON c.parent_id = t.id
+    WHERE c.deleted_at IS NOT NULL AND c.deleted_at = t.deleted_at
+)
+UPDATE nodes n
+SET deleted_at = NULL,
+    trash_path = NULL,
+    disk_path = CASE
+        WHEN n.disk_path = $1::text OR starts_with(n.disk_path, $1::text || '/')
+        THEN $2::text || substring(n.disk_path FROM char_length($1::text) + 1)
+        ELSE n.disk_path
+    END
+FROM t
+WHERE n.id = t.id
 `
 
-type UndeleteSubtreeParams struct {
-	UserID pgtype.UUID `json:"user_id"`
-	Prefix string      `json:"prefix"`
+type UndeleteTombstoneSubtreeParams struct {
+	OldPrefix string      `json:"old_prefix"`
+	NewPrefix string      `json:"new_prefix"`
+	ID        pgtype.UUID `json:"id"`
 }
 
-func (q *Queries) UndeleteSubtree(ctx context.Context, arg UndeleteSubtreeParams) error {
-	_, err := q.db.Exec(ctx, undeleteSubtree, arg.UserID, arg.Prefix)
+// Restore the rows trashed together with the root: clear the tombstone and move each
+// row's path from old_prefix to new_prefix (where the root is restored to). The
+// partial unique indexes fire here if a live node already holds a restored name.
+func (q *Queries) UndeleteTombstoneSubtree(ctx context.Context, arg UndeleteTombstoneSubtreeParams) error {
+	_, err := q.db.Exec(ctx, undeleteTombstoneSubtree, arg.OldPrefix, arg.NewPrefix, arg.ID)
 	return err
 }
 
@@ -3410,7 +3431,7 @@ UPDATE nodes
 SET size = $2, content_hash = $3, mime = $4, version = version + 1,
     modified_at = COALESCE($6::timestamptz, now()), modified_by = $5
 WHERE id = $1
-RETURNING id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of
+RETURNING id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path
 `
 
 type UpdateNodeContentParams struct {
@@ -3450,6 +3471,7 @@ func (q *Queries) UpdateNodeContent(ctx context.Context, arg UpdateNodeContentPa
 		&i.CreatedAt,
 		&i.IsConflictLoser,
 		&i.ConflictOf,
+		&i.TrashPath,
 	)
 	return i, err
 }
@@ -3458,7 +3480,7 @@ const updateNodeName = `-- name: UpdateNodeName :one
 UPDATE nodes
 SET name = $2, version = version + 1, modified_at = now(), modified_by = $3
 WHERE id = $1
-RETURNING id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of
+RETURNING id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path
 `
 
 type UpdateNodeNameParams struct {
@@ -3488,6 +3510,7 @@ func (q *Queries) UpdateNodeName(ctx context.Context, arg UpdateNodeNameParams) 
 		&i.CreatedAt,
 		&i.IsConflictLoser,
 		&i.ConflictOf,
+		&i.TrashPath,
 	)
 	return i, err
 }
@@ -3496,7 +3519,7 @@ const updateNodeParent = `-- name: UpdateNodeParent :one
 UPDATE nodes
 SET parent_id = $2, version = version + 1, modified_at = now(), modified_by = $3
 WHERE id = $1
-RETURNING id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of
+RETURNING id, user_id, parent_id, name, is_dir, size, content_hash, disk_path, mime, is_vault, version, modified_at, modified_by, deleted_at, created_at, is_conflict_loser, conflict_of, trash_path
 `
 
 type UpdateNodeParentParams struct {
@@ -3526,6 +3549,7 @@ func (q *Queries) UpdateNodeParent(ctx context.Context, arg UpdateNodeParentPara
 		&i.CreatedAt,
 		&i.IsConflictLoser,
 		&i.ConflictOf,
+		&i.TrashPath,
 	)
 	return i, err
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"mime"
 	"os"
@@ -322,7 +323,9 @@ func (s *FileService) Move(ctx context.Context, userID, nodeID string, parentID 
 	return updated, nil
 }
 
-// Delete soft-deletes a node and its subtree (disk cleanup is done by GC, step 0.6).
+// Delete soft-deletes a node and its subtree. The bytes move out of the tree to
+// .trash/<owner>/<node id>, so the name is free again at once and a later upload under
+// it cannot overwrite what the trash holds; GC or Purge removes them for good.
 // The tombstone of the top node is written to change_log — the client deletes the entire subtree locally.
 func (s *FileService) Delete(ctx context.Context, userID, nodeID string) error {
 	node, err := s.ownerNode(ctx, userID, nodeID)
@@ -330,6 +333,10 @@ func (s *FileService) Delete(ctx context.Context, userID, nodeID string) error {
 		return err
 	}
 	owner := node.UserID
+	rel := node.DiskPath.String
+	trash := trashRoot(owner, node.ID)
+	defer s.busy.hold(rel)()
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -337,7 +344,7 @@ func (s *FileService) Delete(ctx context.Context, userID, nodeID string) error {
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
 
-	if err := qtx.SoftDeleteSubtree(ctx, db.SoftDeleteSubtreeParams{UserID: owner, Prefix: node.DiskPath.String}); err != nil {
+	if err := qtx.SoftDeleteSubtree(ctx, db.SoftDeleteSubtreeParams{UserID: owner, Prefix: rel, TrashRoot: text(trash)}); err != nil {
 		return err
 	}
 	ver, err := qtx.BumpNodeVersion(ctx, node.ID)
@@ -347,7 +354,28 @@ func (s *FileService) Delete(ctx context.Context, userID, nodeID string) error {
 	if err := recordChange(ctx, qtx, owner, node.ID, "delete", ver); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	// Last fallible step before the commit. A node whose bytes are already gone from
+	// disk is still trashed; restoring it then restores the row alone, as before.
+	moved := true
+	if err := s.st.Move(rel, trash); errors.Is(err, fs.ErrNotExist) {
+		moved = false
+	} else if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		if moved {
+			_ = s.st.Move(trash, rel) // put the bytes back under the node that stays live
+		}
+		return err
+	}
+	return nil
+}
+
+// trashRoot is where Delete moves a node's bytes: outside every user tree (rescan never
+// walks it, nginx never serves it) and unique per node, so trashing the same path twice
+// keeps both.
+func trashRoot(owner, nodeID pgtype.UUID) string {
+	return ".trash/" + db.UUIDString(owner) + "/" + db.UUIDString(nodeID)
 }
 
 // Restore rolls back a file's content to the given version, creating a new version.
@@ -794,8 +822,13 @@ func (s *FileService) TrashGC(ctx context.Context, olderThan time.Duration) erro
 		return err
 	}
 	for _, r := range rows {
-		if r.DiskPath.Valid {
-			// Soft delete leaves the bytes in place, so a name taken again after deletion
+		if r.TrashPath.Valid {
+			// The bytes were moved to the trash; nothing live can be there. A row inside
+			// a trashed folder finds its path gone once the folder's row went first.
+			_ = s.st.Remove(r.TrashPath.String)
+		} else if r.DiskPath.Valid {
+			// A tombstone from before deletes moved bytes to the trash (or one rescan
+			// found missing): soft delete left the bytes in place, so a name taken again after deletion
 			// puts a live file (or a live folder with contents) at the tombstone's path.
 			// Removing the path then would destroy live data; Purge guards the same way.
 			// An exact-path lookup covers folders too: a live node always sits under a
@@ -1051,8 +1084,10 @@ func (s *FileService) Trash(ctx context.Context, userID string) ([]db.Node, erro
 	return s.q.ListTrashNodes(ctx, uid)
 }
 
-// Purge permanently removes a node from the trash: subtree files and version snapshots
-// from disk, subtree nodes rows (change_log/file_versions cascade). Owner only.
+// Purge permanently removes a node from the trash: its tombstone subtree's bytes and
+// version snapshots from disk, then the rows (change_log/file_versions cascade).
+// The subtree is found by node id, never by path: two trashed trees can share a path.
+// Owner only.
 func (s *FileService) Purge(ctx context.Context, userID, nodeID string) error {
 	uid, err := db.ParseUUID(userID)
 	if err != nil {
@@ -1070,26 +1105,33 @@ func (s *FileService) Purge(ctx context.Context, userID, nodeID string) error {
 		return err
 	}
 	owner := node.UserID
-	prefix := node.DiskPath.String
 
-	subtree, err := s.q.ListTrashedSubtree(ctx, db.ListTrashedSubtreeParams{UserID: owner, Prefix: prefix})
+	subtree, err := s.q.ListTombstoneSubtree(ctx, db.ListTombstoneSubtreeParams{ID: node.ID, Together: false})
 	if err != nil {
 		return err
 	}
-	// remove version snapshots for every trashed node from disk
 	for _, r := range subtree {
 		_ = s.st.Remove(versionDir(db.UUIDString(owner), db.UUIDString(r.ID)))
+		// The root's bytes, plus those of tombstones below it that were trashed on
+		// their own earlier (they have a trash directory of their own). Rows trashed
+		// with the root live inside the root's directory and go with it.
+		if r.TrashPath.Valid && (r.ID == node.ID || r.TrashPath.String == trashRoot(owner, r.ID)) {
+			_ = s.st.Remove(r.TrashPath.String)
+		}
 	}
-	// remove files from disk: if a LIVE node exists at this path (the name was reused
-	// after deletion) the physical content belongs to the live node — do not touch the disk.
-	// Otherwise it is safe to remove the entire subtree.
-	if _, lerr := s.q.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: owner, Path: prefix}); errors.Is(lerr, pgx.ErrNoRows) {
-		_ = s.st.Remove(prefix)
-	} else if lerr != nil {
-		return lerr
+	if !node.TrashPath.Valid {
+		// Trashed before deletes moved bytes out of the tree: they may still be at
+		// disk_path. If a LIVE node now holds that path (the name was reused), the bytes
+		// there are its own — leave the disk alone.
+		prefix := node.DiskPath.String
+		if _, lerr := s.q.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: owner, Path: prefix}); errors.Is(lerr, pgx.ErrNoRows) {
+			_ = s.st.Remove(prefix)
+		} else if lerr != nil {
+			return lerr
+		}
 	}
-	// else: path collision with a live node — leave disk untouched
-	return s.q.HardDeleteSubtree(ctx, db.HardDeleteSubtreeParams{UserID: owner, Prefix: prefix})
+	// Deleting the root takes its descendants with it (parent_id cascades).
+	return s.q.HardDeleteNode(ctx, node.ID)
 }
 
 // PurgeAll permanently empties the user's trash (irreversible).
@@ -1106,8 +1148,9 @@ func (s *FileService) PurgeAll(ctx context.Context, userID string) error {
 	return nil
 }
 
-// Undelete restores a node and its subtree from the trash. If the parent is also deleted
-// → restore to root; if the name is taken by a live node → append " (restored)". Owner only.
+// Undelete restores a node from the trash, with everything that was trashed together
+// with it. If the parent is also deleted → restore to root; if the name is taken by a
+// live node → append " (restored)". Owner only.
 func (s *FileService) Undelete(ctx context.Context, userID, nodeID string) (db.Node, error) {
 	uid, err := db.ParseUUID(userID)
 	if err != nil {
@@ -1152,6 +1195,38 @@ func (s *FileService) Undelete(ctx context.Context, userID, nodeID string) (db.N
 	} else if !errors.Is(gerr, pgx.ErrNoRows) {
 		return db.Node{}, gerr
 	}
+
+	// Where the bytes come from. Trashed by the current Delete: its trash directory,
+	// moved back in one rename. Trashed before that: they are still at the old path —
+	// and if a live node holds that path now (the name was reused), they belong to it
+	// and can only be copied, which writes new bytes and so needs room.
+	src, copyOld := oldRel, false
+	if node.TrashPath.Valid {
+		src = node.TrashPath.String
+	} else if newRel != oldRel {
+		_, lerr := s.q.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: owner, Path: oldRel})
+		switch {
+		case lerr == nil:
+			copyOld = true
+		case !errors.Is(lerr, pgx.ErrNoRows):
+			return db.Node{}, lerr
+		}
+	}
+	if copyOld {
+		rows, err := s.q.ListTombstoneSubtree(ctx, db.ListTombstoneSubtreeParams{ID: node.ID, Together: true})
+		if err != nil {
+			return db.Node{}, err
+		}
+		var size int64
+		for _, r := range rows {
+			if !r.IsDir {
+				size += r.Size.Int64
+			}
+		}
+		if err := s.CheckQuota(ctx, db.UUIDString(owner), size); err != nil {
+			return db.Node{}, err
+		}
+	}
 	defer s.busy.hold(oldRel, newRel)()
 
 	tx, err := s.pool.Begin(ctx)
@@ -1161,14 +1236,8 @@ func (s *FileService) Undelete(ctx context.Context, userID, nodeID string) (db.N
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
 
-	// While the subtree is "deleted", the partial unique index is inactive — update path/parent/name in DB.
-	// IMPORTANT: rewrite only tombstoned nodes; otherwise we'd clobber a LIVE node
-	// sharing the same disk_path (name reused after deletion).
-	if newRel != oldRel {
-		if err := qtx.RewriteTombstonedSubtreePaths(ctx, db.RewriteTombstonedSubtreePathsParams{UserID: owner, OldPrefix: oldRel, NewPrefix: newRel}); err != nil {
-			return db.Node{}, err
-		}
-	}
+	// While the rows are still tombstones the partial unique indexes ignore them, so the
+	// new parent and name go in first.
 	if toRoot {
 		if _, err := qtx.UpdateNodeParent(ctx, db.UpdateNodeParentParams{ID: node.ID, ParentID: parentID}); err != nil {
 			return db.Node{}, err
@@ -1179,8 +1248,10 @@ func (s *FileService) Undelete(ctx context.Context, userID, nodeID string) (db.N
 			return db.Node{}, err
 		}
 	}
-	// Clear deleted_at — this is where the unique index fires on a name collision.
-	if err := qtx.UndeleteSubtree(ctx, db.UndeleteSubtreeParams{UserID: owner, Prefix: newRel}); err != nil {
+	// Clear deleted_at and rewrite the paths of the rows trashed together with this one
+	// (by id: a LIVE node or another trashed tree may share these paths). This is where
+	// the unique index fires on a name collision.
+	if err := qtx.UndeleteTombstoneSubtree(ctx, db.UndeleteTombstoneSubtreeParams{ID: node.ID, OldPrefix: oldRel, NewPrefix: newRel}); err != nil {
 		return db.Node{}, mapInsertErr(err)
 	}
 	ver, err := qtx.BumpNodeVersion(ctx, node.ID)
@@ -1190,25 +1261,25 @@ func (s *FileService) Undelete(ctx context.Context, userID, nodeID string) (db.N
 	if err := recordChange(ctx, qtx, owner, node.ID, "create", ver); err != nil {
 		return db.Node{}, err
 	}
-	// Move the disk AFTER all DB checks (last fallible step before commit).
-	// If the original physical path is shared by a LIVE node (name was reused) —
-	// copy (don't steal its file); otherwise move.
-	if newRel != oldRel {
-		_, lerr := s.q.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: owner, Path: oldRel})
-		switch {
-		case errors.Is(lerr, pgx.ErrNoRows):
-			if err := s.st.Move(oldRel, newRel); err != nil {
-				return db.Node{}, err
-			}
-		case lerr != nil:
-			return db.Node{}, lerr
-		default:
-			if err := s.st.Copy(oldRel, newRel); err != nil {
-				return db.Node{}, err
-			}
+	// Move the disk AFTER all DB checks (last fallible step before commit). Bytes that
+	// are gone (rescan found the file missing before it was trashed) restore nothing.
+	moved := false
+	if src != newRel {
+		var derr error
+		if copyOld {
+			derr = s.st.Copy(src, newRel)
+		} else {
+			derr = s.st.Move(src, newRel)
+			moved = derr == nil
+		}
+		if derr != nil && !errors.Is(derr, fs.ErrNotExist) {
+			return db.Node{}, derr
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
+		if moved {
+			_ = s.st.Move(newRel, src)
+		}
 		return db.Node{}, err
 	}
 	return s.q.GetNode(ctx, node.ID)

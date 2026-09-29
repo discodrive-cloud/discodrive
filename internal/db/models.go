@@ -267,6 +267,7 @@ type Node struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	IsConflictLoser bool               `json:"is_conflict_loser"`
 	ConflictOf      pgtype.UUID        `json:"conflict_of"`
+	TrashPath       pgtype.Text        `json:"trash_path"`
 }
 
 type NotificationPref struct {

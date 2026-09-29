@@ -227,15 +227,17 @@ SELECT * FROM nodes WHERE user_id = $1 AND deleted_at IS NULL;
 SELECT disk_path FROM nodes
 WHERE user_id = $1 AND deleted_at IS NOT NULL AND disk_path IS NOT NULL;
 
--- Names of trashed children of one folder: reconciliation must not re-import them.
+-- Names of trashed children of one folder whose bytes may still sit at their old path
+-- (tombstones from before deletes moved bytes to .trash): reconciliation must not
+-- re-import them. A tombstone with a trash_path left its name free on disk.
 -- name: ListTombstonedChildren :many
-SELECT name FROM nodes WHERE parent_id = $1 AND deleted_at IS NOT NULL;
+SELECT name FROM nodes WHERE parent_id = $1 AND deleted_at IS NOT NULL AND trash_path IS NULL;
 
 -- name: ListTombstonedRootChildren :many
-SELECT name FROM nodes WHERE user_id = $1 AND parent_id IS NULL AND deleted_at IS NOT NULL;
+SELECT name FROM nodes WHERE user_id = $1 AND parent_id IS NULL AND deleted_at IS NOT NULL AND trash_path IS NULL;
 
 -- name: ListExpiredTombstones :many
-SELECT id, user_id, disk_path, is_dir FROM nodes
+SELECT id, user_id, disk_path, is_dir, trash_path FROM nodes
 WHERE deleted_at IS NOT NULL AND deleted_at < $1;
 
 -- name: HardDeleteNode :exec
@@ -307,19 +309,15 @@ SELECT sqlc.arg(user_id), d.id,
        'move', d.version
 FROM descendants d;
 
--- Like RewriteSubtreePaths, but only for trashed nodes — so restoring doesn't
--- touch a LIVE node sharing the same disk_path (the name was reused after deletion).
--- name: RewriteTombstonedSubtreePaths :exec
-UPDATE nodes
-SET disk_path = sqlc.arg(new_prefix)::text || substring(disk_path FROM char_length(sqlc.arg(old_prefix)::text) + 1)
-WHERE user_id = sqlc.arg(user_id)
-  AND deleted_at IS NOT NULL
-  AND (disk_path = sqlc.arg(old_prefix)::text OR starts_with(disk_path, sqlc.arg(old_prefix)::text || '/'));
-
--- Soft-delete a node and its whole subtree (disk is cleaned up by GC, step 0.6).
+-- Soft-delete a node and its whole subtree. trash_root is where the node's bytes are
+-- moved (.trash/<user>/<node id>); every row records its own place under it, so a
+-- descendant can be restored or purged on its own. NULL trash_root keeps the old
+-- behaviour (bytes stay at disk_path). All rows get the same deleted_at (now() is the
+-- transaction's time): that is what marks them as trashed together.
 -- name: SoftDeleteSubtree :exec
 UPDATE nodes
-SET deleted_at = now()
+SET deleted_at = now(),
+    trash_path = sqlc.narg(trash_root)::text || substring(disk_path FROM char_length(sqlc.arg(prefix)::text) + 1)
 WHERE user_id = sqlc.arg(user_id)
   AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
   AND deleted_at IS NULL;
@@ -481,23 +479,44 @@ WHERE n.user_id = $1 AND n.deleted_at IS NOT NULL
         SELECT 1 FROM nodes p WHERE p.id = n.parent_id AND p.user_id = n.user_id AND p.deleted_at IS NULL))
 ORDER BY n.deleted_at DESC;
 
--- name: UndeleteSubtree :exec
-UPDATE nodes SET deleted_at = NULL
-WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
-  AND deleted_at IS NOT NULL;
+-- Trash operations address a tombstone subtree by node id, walking parent_id: paths
+-- cannot tell apart two trashed trees with the same path (a folder deleted, created
+-- again and deleted again). together limits the walk to the rows deleted by the same
+-- operation as the root (same deleted_at); without it the walk takes every tombstone
+-- below the root, including ones deleted earlier on their own. UNION (not UNION ALL)
+-- ends the walk even if parent links were ever corrupted into a cycle.
+-- name: ListTombstoneSubtree :many
+WITH RECURSIVE t AS (
+    SELECT r.id, r.deleted_at FROM nodes r
+    WHERE r.id = sqlc.arg(id) AND r.deleted_at IS NOT NULL
+  UNION
+    SELECT c.id, c.deleted_at FROM nodes c JOIN t ON c.parent_id = t.id
+    WHERE c.deleted_at IS NOT NULL
+      AND (NOT sqlc.arg(together)::bool OR c.deleted_at = t.deleted_at)
+)
+SELECT n.id, n.disk_path, n.trash_path, n.is_dir, n.size FROM nodes n JOIN t ON n.id = t.id;
 
--- name: ListTrashedSubtree :many
-SELECT id, disk_path, is_dir FROM nodes
-WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
-  AND deleted_at IS NOT NULL;
-
--- name: HardDeleteSubtree :exec
-DELETE FROM nodes
-WHERE user_id = sqlc.arg(user_id)
-  AND (disk_path = sqlc.arg(prefix)::text OR starts_with(disk_path, sqlc.arg(prefix)::text || '/'))
-  AND deleted_at IS NOT NULL;
+-- Restore the rows trashed together with the root: clear the tombstone and move each
+-- row's path from old_prefix to new_prefix (where the root is restored to). The
+-- partial unique indexes fire here if a live node already holds a restored name.
+-- name: UndeleteTombstoneSubtree :exec
+WITH RECURSIVE t AS (
+    SELECT r.id, r.deleted_at FROM nodes r
+    WHERE r.id = sqlc.arg(id) AND r.deleted_at IS NOT NULL
+  UNION
+    SELECT c.id, c.deleted_at FROM nodes c JOIN t ON c.parent_id = t.id
+    WHERE c.deleted_at IS NOT NULL AND c.deleted_at = t.deleted_at
+)
+UPDATE nodes n
+SET deleted_at = NULL,
+    trash_path = NULL,
+    disk_path = CASE
+        WHEN n.disk_path = sqlc.arg(old_prefix)::text OR starts_with(n.disk_path, sqlc.arg(old_prefix)::text || '/')
+        THEN sqlc.arg(new_prefix)::text || substring(n.disk_path FROM char_length(sqlc.arg(old_prefix)::text) + 1)
+        ELSE n.disk_path
+    END
+FROM t
+WHERE n.id = t.id;
 
 -- name: ListSecretKeys :many
 SELECT key FROM settings WHERE is_secret = true ORDER BY key;
