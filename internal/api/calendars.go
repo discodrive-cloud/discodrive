@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -17,6 +18,9 @@ type calendarDTO struct {
 	IsDefault  bool   `json:"is_default"`
 	IsOwner    bool   `json:"is_owner"`
 	OwnerEmail string `json:"owner_email,omitempty"`
+	// ShareID — for a calendar shared with the user: DELETE /me/calendars/{id}/shares/{share_id}
+	// leaves it.
+	ShareID string `json:"share_id,omitempty"`
 }
 
 // GET /me/calendars — VEVENT-capable calendars for the current user.
@@ -56,6 +60,7 @@ func (s *Server) handleListCalendars(w http.ResponseWriter, r *http.Request) {
 				Color:      sc.Calendar.Color,
 				IsOwner:    false,
 				OwnerEmail: sc.OwnerEmail,
+				ShareID:    sc.ShareID,
 			})
 		}
 	}
@@ -123,9 +128,14 @@ func (s *Server) handleUpdateCalendar(w http.ResponseWriter, r *http.Request) {
 // DELETE /me/calendars/{id}
 func (s *Server) handleDeleteCalendar(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserID(r.Context())
-	if err := s.dav.DeleteCalendar(r.Context(), userID, r.PathValue("id")); err != nil {
+	switch err := s.dav.DeleteCalendar(r.Context(), userID, r.PathValue("id")); {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, dav.ErrBadID):
+		writeError(w, http.StatusBadRequest, "invalid calendar id")
+	case errors.Is(err, dav.ErrNotFound):
+		writeError(w, http.StatusNotFound, "calendar not found")
+	default:
 		writeError(w, http.StatusInternalServerError, "failed to delete")
-		return
 	}
-	w.WriteHeader(http.StatusNoContent)
 }

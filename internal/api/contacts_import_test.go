@@ -58,3 +58,11 @@ func TestImportVCardsFlow(t *testing.T) {
 		t.Fatalf("export is incomplete:\n%s", out)
 	}
 }
+
+// A UTF-8 byte order mark (Windows/Outlook exports) used to hide the first card.
+func TestSplitVCardsSkipsBOM(t *testing.T) {
+	raw := "\uFEFFBEGIN:VCARD\r\nVERSION:3.0\r\nFN:A\r\nEND:VCARD\r\nBEGIN:VCARD\r\nVERSION:3.0\r\nFN:B\r\nEND:VCARD\r\n"
+	if got := splitVCards(raw); len(got) != 2 {
+		t.Fatalf("cards from a file with a BOM: %d, want 2", len(got))
+	}
+}

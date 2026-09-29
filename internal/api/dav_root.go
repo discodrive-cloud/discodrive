@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -12,11 +13,25 @@ import (
 // up as "… is not a location that supports this request" in Calendar. The request is passed to
 // the CalDAV handler (or the CardDAV one when the body asks for CardDAV properties), which after
 // auth answers "/" as the user's principal: Apple reads calendar-home-set straight from it.
-func davRoot(caldavH, carddavH http.Handler) http.Handler {
+//
+// enabled reports the admin's caldav.enabled / carddav.enabled flags: a protocol switched off
+// answers 403 "disabled", so "/" goes to the one that is on (a CardDAV-only server used to send
+// every root request to the disabled CalDAV handler).
+func davRoot(caldavH, carddavH http.Handler, enabled func(ctx context.Context, key string) bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		target := caldavH
-		if caldavH == nil || bytes.Contains(body, []byte("urn:ietf:params:xml:ns:carddav")) {
+		calOn := caldavH != nil && enabled(r.Context(), "caldav.enabled")
+		cardOn := carddavH != nil && enabled(r.Context(), "carddav.enabled")
+		wantsCard := bytes.Contains(body, []byte("urn:ietf:params:xml:ns:carddav"))
+		var target http.Handler
+		switch {
+		case wantsCard && cardOn, !calOn && cardOn:
+			target = carddavH
+		case calOn:
+			target = caldavH
+		case caldavH != nil:
+			target = caldavH // both off: the handler answers "disabled"
+		default:
 			target = carddavH
 		}
 		if target == nil {
@@ -25,11 +40,16 @@ func davRoot(caldavH, carddavH http.Handler) http.Handler {
 		}
 		r2 := r.Clone(r.Context())
 		r2.Body = io.NopCloser(bytes.NewReader(body))
-		if r.Method == http.MethodOptions && caldavH != nil && carddavH != nil {
+		if r.Method == http.MethodOptions && calOn && cardOn {
 			w = &davHeaderWriter{ResponseWriter: w}
 		}
 		target.ServeHTTP(w, r2)
 	})
+}
+
+// settingOn reports whether a boolean admin setting is "true".
+func (s *Server) settingOn(ctx context.Context, key string) bool {
+	return s.getSettingValue(ctx, key) == "true"
 }
 
 // davHeaderWriter makes OPTIONS on "/" advertise both calendar-access and addressbook, since
