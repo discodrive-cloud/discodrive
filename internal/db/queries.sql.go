@@ -909,6 +909,19 @@ func (q *Queries) DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAut
 	return err
 }
 
+const fileVersionPathInUse = `-- name: FileVersionPathInUse :one
+SELECT EXISTS (SELECT 1 FROM file_versions WHERE disk_path = $1)::bool
+`
+
+// A snapshot file whose transaction reported failure is removed unless a row uses it
+// (the commit went through after all).
+func (q *Queries) FileVersionPathInUse(ctx context.Context, diskPath pgtype.Text) (bool, error) {
+	row := q.db.QueryRow(ctx, fileVersionPathInUse, diskPath)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const getActiveShareByToken = `-- name: GetActiveShareByToken :one
 SELECT id, resource_type, resource_id, owner_id, shared_with_user, share_link_token, access, expires_at, created_at, share_password_hash FROM resource_shares
 WHERE share_link_token = $1::text
@@ -1551,13 +1564,100 @@ func (q *Queries) GetUserTOTP(ctx context.Context, userID pgtype.UUID) (UserTotp
 	return i, err
 }
 
-const hardDeleteNode = `-- name: HardDeleteNode :exec
-DELETE FROM nodes WHERE id = $1
+const hardDeleteNode = `-- name: HardDeleteNode :many
+WITH RECURSIVE subtree AS (
+    SELECT r.id, r.user_id, ARRAY[r.id] AS chain
+    FROM nodes r WHERE r.id = $1 AND r.deleted_at IS NOT NULL
+  UNION ALL
+    SELECT c.id, c.user_id, s.chain || c.id
+    FROM nodes c JOIN subtree s ON c.parent_id = s.id
+    WHERE c.user_id = s.user_id AND c.deleted_at IS NOT NULL AND c.id <> ALL (s.chain)
+),
+kept AS (
+    SELECT DISTINCT k.id
+    FROM subtree s CROSS JOIN LATERAL unnest(s.chain) AS k(id)
+    WHERE EXISTS (SELECT 1 FROM nodes l
+                  WHERE l.user_id = s.user_id AND l.parent_id = s.id AND l.deleted_at IS NULL)
+),
+past AS (
+    SELECT cl.node_id, array_agg(DISTINCT cl.prev_path) AS paths
+    FROM change_log cl
+    WHERE cl.node_id IN (SELECT st.id FROM subtree st) AND cl.prev_path IS NOT NULL
+    GROUP BY cl.node_id
+),
+del AS (
+    DELETE FROM nodes d
+    WHERE d.id IN (SELECT st.id FROM subtree st)
+      AND d.id NOT IN (SELECT kp.id FROM kept kp)
+      AND d.deleted_at IS NOT NULL
+    RETURNING d.id, d.user_id, d.name, d.parent_id, d.is_dir, d.disk_path, d.trash_path, d.version
+),
+numbered AS (
+    SELECT dl.id, dl.user_id, dl.name, dl.parent_id, dl.is_dir, dl.disk_path, dl.version,
+           row_number() OVER (ORDER BY dl.disk_path, dl.id) AS rn
+    FROM del dl
+),
+bump AS (
+    UPDATE users u SET change_seq = u.change_seq + (SELECT count(*) FROM del)
+    WHERE u.id IN (SELECT dl.user_id FROM del dl)
+    RETURNING u.id, u.change_seq
+),
+recorded AS (
+    INSERT INTO purged_nodes (user_id, seq, node_id, name, parent_id, is_dir, disk_path, version, past_paths)
+    SELECT b.id, b.change_seq - (SELECT count(*) FROM del) + n.rn,
+           n.id, n.name, n.parent_id, n.is_dir, n.disk_path, n.version,
+           COALESCE((SELECT pa.paths FROM past pa WHERE pa.node_id = n.id), '{}')
+    FROM numbered n JOIN bump b ON b.id = n.user_id
+)
+SELECT dl.id, dl.disk_path, dl.trash_path, dl.is_dir FROM del dl ORDER BY dl.disk_path, dl.id
 `
 
-func (q *Queries) HardDeleteNode(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, hardDeleteNode, id)
-	return err
+type HardDeleteNodeRow struct {
+	ID        pgtype.UUID `json:"id"`
+	DiskPath  pgtype.Text `json:"disk_path"`
+	TrashPath pgtype.Text `json:"trash_path"`
+	IsDir     bool        `json:"is_dir"`
+}
+
+// Remove a trashed node and the trashed rows under it for good. Every removed row leaves
+// a purged_nodes row under a fresh seq (one bump, consecutive numbers, parents before
+// children), which the sync feed serves as a delete: without it a client whose cursor
+// predates the soft delete never learns the node is gone.
+// The recorded set is exactly what the DELETE removed (its RETURNING), not what the walk
+// saw: the walk reads the statement's snapshot, and a restore committing meanwhile makes
+// a row live again. The DELETE re-checks deleted_at on such a row and skips it, so it
+// is neither removed nor reported.
+// Rows are deleted explicitly rather than through the parent_id cascade, which would also
+// take a LIVE row still under a trashed one, unrecorded. So a trashed row that holds a
+// live child (kept, with its trashed ancestors) stays in the trash instead. A restore
+// moves its node to the root when the parent is trashed, so this is only a safety net.
+// node_id cascades delete each removed node's change_log rows; the paths the node had
+// before its moves (their prev_path) are read before, into past_paths.
+// Returns the removed rows: the caller deletes their bytes only after this statement, so
+// a row that stayed never loses its bytes (a crash in between leaks bytes, loses none).
+func (q *Queries) HardDeleteNode(ctx context.Context, id pgtype.UUID) ([]HardDeleteNodeRow, error) {
+	rows, err := q.db.Query(ctx, hardDeleteNode, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []HardDeleteNodeRow{}
+	for rows.Next() {
+		var i HardDeleteNodeRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DiskPath,
+			&i.TrashPath,
+			&i.IsDir,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const insertAuditLog = `-- name: InsertAuditLog :exec
@@ -1601,7 +1701,7 @@ func (q *Queries) InsertBackupCode(ctx context.Context, arg InsertBackupCodePara
 	return err
 }
 
-const insertFileVersion = `-- name: InsertFileVersion :exec
+const insertFileVersion = `-- name: InsertFileVersion :execrows
 INSERT INTO file_versions (
     node_id, version, content_hash, disk_path, size, device_id, is_conflict_loser
 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1622,8 +1722,9 @@ type InsertFileVersionParams struct {
 // conflict clause covers nodes written under the old scheme, whose current version was
 // already snapshotted: re-snapshotting the same version is the same bytes, so keep the
 // row that is there instead of duplicating it.
-func (q *Queries) InsertFileVersion(ctx context.Context, arg InsertFileVersionParams) error {
-	_, err := q.db.Exec(ctx, insertFileVersion,
+// It reports the rows inserted: 0 means a row was there, and the new copy is unused.
+func (q *Queries) InsertFileVersion(ctx context.Context, arg InsertFileVersionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertFileVersion,
 		arg.NodeID,
 		arg.Version,
 		arg.ContentHash,
@@ -1632,7 +1733,10 @@ func (q *Queries) InsertFileVersion(ctx context.Context, arg InsertFileVersionPa
 		arg.DeviceID,
 		arg.IsConflictLoser,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const insertWebAuthnCredential = `-- name: InsertWebAuthnCredential :one
@@ -1886,6 +1990,8 @@ type ListChangesAfterRow struct {
 }
 
 // Changes after seq with each node's current state, for library indexing.
+// purged_nodes is left out on purpose: songs/books rows cascade with their node, and a
+// purged folder's path may be held again by a live folder that RemoveUnder would empty.
 func (q *Queries) ListChangesAfter(ctx context.Context, arg ListChangesAfterParams) ([]ListChangesAfterRow, error) {
 	rows, err := q.db.Query(ctx, listChangesAfter, arg.UserID, arg.Seq, arg.Limit)
 	if err != nil {
@@ -1918,15 +2024,23 @@ SELECT cl.seq, cl.op, cl.version, cl.created_at,
        (n.deleted_at IS NOT NULL)::bool AS deleted
 FROM change_log cl
 JOIN nodes n ON n.id = cl.node_id
-WHERE cl.user_id = $1 AND cl.seq > $2
-ORDER BY cl.seq
-LIMIT $3
+WHERE cl.user_id = $2 AND cl.seq > $3
+UNION ALL
+SELECT p.seq, 'delete', p.version, p.created_at,
+       p.node_id, p.name, p.parent_id, p.is_dir, NULL::bigint, NULL::text, p.disk_path,
+       true
+FROM purged_nodes p
+WHERE $4::bool
+  AND p.user_id = $2 AND p.seq > $3
+ORDER BY seq
+LIMIT $1
 `
 
 type ListChangesSinceParams struct {
-	UserID pgtype.UUID `json:"user_id"`
-	Seq    int64       `json:"seq"`
-	Lim    int32       `json:"lim"`
+	Lim           int32       `json:"lim"`
+	UserID        pgtype.UUID `json:"user_id"`
+	Seq           int64       `json:"seq"`
+	IncludePurged bool        `json:"include_purged"`
 }
 
 type ListChangesSinceRow struct {
@@ -1947,8 +2061,20 @@ type ListChangesSinceRow struct {
 // Delta sync: changes after seq, with the node's current state.
 // LIMIT — pagination: large deltas aren't returned in a single chunk (3.1).
 // content_hash — lets the client tell a real change from a touch.
+// Nodes removed for good have no change_log rows left; their purged_nodes rows come in
+// as deletes (same seq space, so one ORDER BY seq + LIMIT pages both). Every cursor gets
+// them all, 0 included: a client learns node ids from its own uploads too, while its
+// cursor is still below their create rows (a client pushes before its first pull).
+// include_purged: only for clients that apply deletes by node id and ignore unknown ids
+// (X-Discodrive-Features: delete-by-id). Older clients delete the reported PATH, which a
+// live node may hold again; they get no purged rows, as before purged_nodes existed.
 func (q *Queries) ListChangesSince(ctx context.Context, arg ListChangesSinceParams) ([]ListChangesSinceRow, error) {
-	rows, err := q.db.Query(ctx, listChangesSince, arg.UserID, arg.Seq, arg.Lim)
+	rows, err := q.db.Query(ctx, listChangesSince,
+		arg.Lim,
+		arg.UserID,
+		arg.Seq,
+		arg.IncludePurged,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1997,15 +2123,29 @@ JOIN nodes n ON n.id = cl.node_id
 WHERE cl.user_id = $2 AND cl.seq > $3
   AND cl.prev_path LIKE $4::text ESCAPE '\'
   AND n.disk_path NOT LIKE $4::text ESCAPE '\'
+UNION ALL
+SELECT p.seq, 'delete', p.version, p.created_at,
+       p.node_id, p.name, p.parent_id, p.is_dir, NULL::bigint, NULL::text, p.disk_path,
+       true, pp.path
+FROM purged_nodes p
+LEFT JOIN LATERAL (
+    SELECT x.path FROM unnest(p.past_paths) AS x(path)
+    WHERE x.path LIKE $4::text ESCAPE '\'
+    LIMIT 1
+) pp ON true
+WHERE $5::bool
+  AND p.user_id = $2 AND p.seq > $3
+  AND (p.disk_path LIKE $4::text ESCAPE '\' OR pp.path IS NOT NULL)
 ORDER BY seq
 LIMIT $1
 `
 
 type ListChangesSinceUnderPrefixParams struct {
-	Lim    int32       `json:"lim"`
-	UserID pgtype.UUID `json:"user_id"`
-	Seq    int64       `json:"seq"`
-	Prefix string      `json:"prefix"`
+	Lim           int32       `json:"lim"`
+	UserID        pgtype.UUID `json:"user_id"`
+	Seq           int64       `json:"seq"`
+	Prefix        string      `json:"prefix"`
+	IncludePurged bool        `json:"include_purged"`
 }
 
 type ListChangesSinceUnderPrefixRow struct {
@@ -2025,8 +2165,11 @@ type ListChangesSinceUnderPrefixRow struct {
 }
 
 // The scoped feed: changes of nodes under the sync folder, plus moves whose previous
-// path was under it (prev_path). A row whose node is now outside the folder is such a
-// move out, and the caller reports it to the scoped client as a delete. Two branches
+// path was under it (prev_path), plus nodes removed for good whose last path, or an
+// earlier one (past_paths), was under it (purged_nodes, see ListChangesSince). A row whose
+// node is now outside the folder is such a move out (a purged node is reported with a
+// past path under the folder as prev_path), and the caller reports it to the scoped
+// client as a delete. Two branches
 // rather than one OR: with the OR a full pull (since=0) hashed every node of the table;
 // this way each branch filters before the join (EXPLAIN on 60k nodes: 0.5 MB vs 11 MB),
 // and an incremental pull stays on change_log_user_seq + nodes_pkey either way.
@@ -2036,6 +2179,7 @@ func (q *Queries) ListChangesSinceUnderPrefix(ctx context.Context, arg ListChang
 		arg.UserID,
 		arg.Seq,
 		arg.Prefix,
+		arg.IncludePurged,
 	)
 	if err != nil {
 		return nil, err
@@ -3008,6 +3152,57 @@ func (q *Queries) LockAdmins(ctx context.Context) ([]pgtype.UUID, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockLiveParent = `-- name: LockLiveParent :one
+SELECT id, disk_path FROM nodes WHERE id = $1 AND deleted_at IS NULL FOR SHARE
+`
+
+type LockLiveParentRow struct {
+	ID       pgtype.UUID `json:"id"`
+	DiskPath pgtype.Text `json:"disk_path"`
+}
+
+// A write that puts a node under a folder takes this inside its transaction, before it
+// touches any other row. FOR SHARE conflicts with LockLiveSubtreeDirs (soft delete,
+// rename, move), so a folder is never trashed or moved while a child is going into it.
+// After waiting on a delete the row no longer matches and the write fails (not found);
+// after a rename or move above it disk_path differs from the path the write computed,
+// and it runs again.
+func (q *Queries) LockLiveParent(ctx context.Context, id pgtype.UUID) (LockLiveParentRow, error) {
+	row := q.db.QueryRow(ctx, lockLiveParent, id)
+	var i LockLiveParentRow
+	err := row.Scan(&i.ID, &i.DiskPath)
+	return i, err
+}
+
+const lockLiveSubtreeDirs = `-- name: LockLiveSubtreeDirs :execrows
+SELECT id FROM nodes
+WHERE user_id = $1 AND is_dir AND deleted_at IS NULL
+  AND (disk_path = $2::text
+       OR (disk_path ~>=~ ($2::text || '/') AND disk_path ~<~ ($2::text || '0')))
+FOR UPDATE
+`
+
+type LockLiveSubtreeDirsParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	Prefix string      `json:"prefix"`
+}
+
+// Taken first, as its own statement, by every operation that rewrites or trashes a
+// subtree (delete, rename, move): it locks only folders, so it waits for writes holding
+// LockLiveParent on any of them before this operation has locked a single file row
+// (a push locks its parent, then its file: the other order deadlocked). The next
+// statement's snapshot then sees what those writes did. Folders only: files have no
+// children.
+// A folder created while this statement waited is not in its snapshot and not locked:
+// the caller repeats it until the number of locked folders stops changing.
+func (q *Queries) LockLiveSubtreeDirs(ctx context.Context, arg LockLiveSubtreeDirsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, lockLiveSubtreeDirs, arg.UserID, arg.Prefix)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const lockTreePath = `-- name: LockTreePath :exec

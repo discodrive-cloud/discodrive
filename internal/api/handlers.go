@@ -356,6 +356,11 @@ func writeStorageErr(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "cannot move a folder into itself")
 	case errors.Is(err, storage.ErrNameTaken):
 		writeError(w, http.StatusConflict, "name already taken in this folder")
+	case errors.Is(err, storage.ErrBusy):
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, storage.ErrBusy.Error())
+	case errors.Is(err, storage.ErrKeptInTrash):
+		writeError(w, http.StatusConflict, "folder holds items that are no longer in the trash; it stays in the trash")
 	case errors.Is(err, storage.ErrNotOwner):
 		writeError(w, http.StatusForbidden, "only the owner can manage access")
 	case errors.Is(err, storage.ErrShareInput):
@@ -734,16 +739,18 @@ func (s *Server) handleSyncChanges(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch one extra record beyond the page size: the surplus indicates there are more rows.
+	// Rows of nodes removed for good go only to clients that delete by id (hasFeature).
+	purged := hasFeature(r, featureDeleteByID)
 	var rows []db.ListChangesSinceRow
 	if scope.RelPrefix == "" {
 		rows, err = s.q.ListChangesSince(r.Context(), db.ListChangesSinceParams{
-			UserID: uid, Seq: since, Lim: int32(limit + 1),
+			UserID: uid, Seq: since, Lim: int32(limit + 1), IncludePurged: purged,
 		})
 	} else {
 		prefix := uidStr + "/" + escapeLike(scope.RelPrefix) + "/%"
 		var pr []db.ListChangesSinceUnderPrefixRow
 		pr, err = s.q.ListChangesSinceUnderPrefix(r.Context(), db.ListChangesSinceUnderPrefixParams{
-			UserID: uid, Seq: since, Lim: int32(limit + 1), Prefix: prefix,
+			UserID: uid, Seq: since, Lim: int32(limit + 1), Prefix: prefix, IncludePurged: purged,
 		})
 		rows = scopedChangeRows(pr, uidStr+"/"+scope.RelPrefix+"/")
 	}
@@ -769,6 +776,10 @@ func (s *Server) handleSyncChanges(w http.ResponseWriter, r *http.Request) {
 		})
 		cursor = c.Seq
 	}
+	// The rows depend on X-Discodrive-Features: a cache must never hand a response to a
+	// client that sent a different header (an old client must not get purged rows).
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Add("Vary", featuresHeader)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"changes": changes, "cursor": cursor, "has_more": hasMore, "scope_epoch": scope.Epoch,
 	})

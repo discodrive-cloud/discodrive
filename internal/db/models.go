@@ -344,6 +344,19 @@ type PodcastEpisode struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type PurgedNode struct {
+	UserID    pgtype.UUID        `json:"user_id"`
+	Seq       int64              `json:"seq"`
+	NodeID    pgtype.UUID        `json:"node_id"`
+	Name      string             `json:"name"`
+	ParentID  pgtype.UUID        `json:"parent_id"`
+	IsDir     bool               `json:"is_dir"`
+	DiskPath  pgtype.Text        `json:"disk_path"`
+	Version   int64              `json:"version"`
+	PastPaths []string           `json:"past_paths"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Rating struct {
 	UserID   pgtype.UUID `json:"user_id"`
 	ItemID   pgtype.UUID `json:"item_id"`

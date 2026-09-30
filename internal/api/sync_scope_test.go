@@ -32,10 +32,19 @@ func createNodeAt(t *testing.T, ctx context.Context, q *db.Queries, uid pgtype.U
 // changesReq issues GET /sync/changes; when scoped, it sets the daemon's X-Discodrive-Scope header.
 func changesReq(t *testing.T, handler http.Handler, url, bearer string, scoped bool) map[string]any {
 	t.Helper()
+	return changesReqFeatures(t, handler, url, bearer, scoped, "")
+}
+
+// changesReqFeatures is changesReq with an X-Discodrive-Features header (none when "").
+func changesReqFeatures(t *testing.T, handler http.Handler, url, bearer string, scoped bool, features string) map[string]any {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, url, nil)
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	if scoped {
 		req.Header.Set("X-Discodrive-Scope", "1")
+	}
+	if features != "" {
+		req.Header.Set("X-Discodrive-Features", features)
 	}
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

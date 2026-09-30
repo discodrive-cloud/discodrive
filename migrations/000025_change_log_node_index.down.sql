@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS change_log_node;

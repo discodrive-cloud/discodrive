@@ -196,6 +196,9 @@ type Querier interface {
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) error
 	EnabledEbookUsers(ctx context.Context) ([]EnabledEbookUsersRow, error)
 	EnabledMusicUsers(ctx context.Context) ([]EnabledMusicUsersRow, error)
+	// A snapshot file whose transaction reported failure is removed unless a row uses it
+	// (the commit went through after all).
+	FileVersionPathInUse(ctx context.Context, diskPath pgtype.Text) (bool, error)
 	FinishRescanRequest(ctx context.Context, arg FinishRescanRequestParams) error
 	GCBrowserBookmarkTombstones(ctx context.Context, updatedAt pgtype.Timestamptz) ([]GCBrowserBookmarkTombstonesRow, error)
 	GetActiveShareByToken(ctx context.Context, token string) (ResourceShare, error)
@@ -257,7 +260,23 @@ type Querier interface {
 	GetUserSessionTTL(ctx context.Context, id pgtype.UUID) (int32, error)
 	// TOTP 2FA (A.3). Secret is AES-GCM ciphertext.
 	GetUserTOTP(ctx context.Context, userID pgtype.UUID) (UserTotp, error)
-	HardDeleteNode(ctx context.Context, id pgtype.UUID) error
+	// Remove a trashed node and the trashed rows under it for good. Every removed row leaves
+	// a purged_nodes row under a fresh seq (one bump, consecutive numbers, parents before
+	// children), which the sync feed serves as a delete: without it a client whose cursor
+	// predates the soft delete never learns the node is gone.
+	// The recorded set is exactly what the DELETE removed (its RETURNING), not what the walk
+	// saw: the walk reads the statement's snapshot, and a restore committing meanwhile makes
+	// a row live again. The DELETE re-checks deleted_at on such a row and skips it, so it
+	// is neither removed nor reported.
+	// Rows are deleted explicitly rather than through the parent_id cascade, which would also
+	// take a LIVE row still under a trashed one, unrecorded. So a trashed row that holds a
+	// live child (kept, with its trashed ancestors) stays in the trash instead. A restore
+	// moves its node to the root when the parent is trashed, so this is only a safety net.
+	// node_id cascades delete each removed node's change_log rows; the paths the node had
+	// before its moves (their prev_path) are read before, into past_paths.
+	// Returns the removed rows: the caller deletes their bytes only after this statement, so
+	// a row that stayed never loses its bytes (a crash in between leaks bytes, loses none).
+	HardDeleteNode(ctx context.Context, id pgtype.UUID) ([]HardDeleteNodeRow, error)
 	// Audit log (A.7).
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	// Backup codes (A.3). One-time, argon2id-hashed.
@@ -268,7 +287,8 @@ type Querier interface {
 	// conflict clause covers nodes written under the old scheme, whose current version was
 	// already snapshotted: re-snapshotting the same version is the same bytes, so keep the
 	// row that is there instead of duplicating it.
-	InsertFileVersion(ctx context.Context, arg InsertFileVersionParams) error
+	// It reports the rows inserted: 0 means a row was there, and the new copy is unused.
+	InsertFileVersion(ctx context.Context, arg InsertFileVersionParams) (int64, error)
 	InsertPlayHistory(ctx context.Context, arg InsertPlayHistoryParams) error
 	// WebAuthn credentials (A.4). The full go-webauthn Credential is stored as JSON.
 	InsertWebAuthnCredential(ctx context.Context, arg InsertWebAuthnCredentialParams) (WebauthnCredential, error)
@@ -294,14 +314,26 @@ type Querier interface {
 	ListCalendarObjects(ctx context.Context, calendarID pgtype.UUID) ([]CalendarObject, error)
 	ListCalendars(ctx context.Context, userID pgtype.UUID) ([]Calendar, error)
 	// Changes after seq with each node's current state, for library indexing.
+	// purged_nodes is left out on purpose: songs/books rows cascade with their node, and a
+	// purged folder's path may be held again by a live folder that RemoveUnder would empty.
 	ListChangesAfter(ctx context.Context, arg ListChangesAfterParams) ([]ListChangesAfterRow, error)
 	// Delta sync: changes after seq, with the node's current state.
 	// LIMIT — pagination: large deltas aren't returned in a single chunk (3.1).
 	// content_hash — lets the client tell a real change from a touch.
+	// Nodes removed for good have no change_log rows left; their purged_nodes rows come in
+	// as deletes (same seq space, so one ORDER BY seq + LIMIT pages both). Every cursor gets
+	// them all, 0 included: a client learns node ids from its own uploads too, while its
+	// cursor is still below their create rows (a client pushes before its first pull).
+	// include_purged: only for clients that apply deletes by node id and ignore unknown ids
+	// (X-Discodrive-Features: delete-by-id). Older clients delete the reported PATH, which a
+	// live node may hold again; they get no purged rows, as before purged_nodes existed.
 	ListChangesSince(ctx context.Context, arg ListChangesSinceParams) ([]ListChangesSinceRow, error)
 	// The scoped feed: changes of nodes under the sync folder, plus moves whose previous
-	// path was under it (prev_path). A row whose node is now outside the folder is such a
-	// move out, and the caller reports it to the scoped client as a delete. Two branches
+	// path was under it (prev_path), plus nodes removed for good whose last path, or an
+	// earlier one (past_paths), was under it (purged_nodes, see ListChangesSince). A row whose
+	// node is now outside the folder is such a move out (a purged node is reported with a
+	// past path under the folder as prev_path), and the caller reports it to the scoped
+	// client as a delete. Two branches
 	// rather than one OR: with the OR a full pull (since=0) hashed every node of the table;
 	// this way each branch filters before the join (EXPLAIN on 60k nodes: 0.5 MB vs 11 MB),
 	// and an incremental pull stays on change_log_user_seq + nodes_pkey either way.
@@ -387,6 +419,22 @@ type Querier interface {
 	// (demotion, deletion): callers count the locked rows inside their transaction.
 	LockAdmins(ctx context.Context) ([]pgtype.UUID, error)
 	LockBootstrap(ctx context.Context) (ServerBootstrap, error)
+	// A write that puts a node under a folder takes this inside its transaction, before it
+	// touches any other row. FOR SHARE conflicts with LockLiveSubtreeDirs (soft delete,
+	// rename, move), so a folder is never trashed or moved while a child is going into it.
+	// After waiting on a delete the row no longer matches and the write fails (not found);
+	// after a rename or move above it disk_path differs from the path the write computed,
+	// and it runs again.
+	LockLiveParent(ctx context.Context, id pgtype.UUID) (LockLiveParentRow, error)
+	// Taken first, as its own statement, by every operation that rewrites or trashes a
+	// subtree (delete, rename, move): it locks only folders, so it waits for writes holding
+	// LockLiveParent on any of them before this operation has locked a single file row
+	// (a push locks its parent, then its file: the other order deadlocked). The next
+	// statement's snapshot then sees what those writes did. Folders only: files have no
+	// children.
+	// A folder created while this statement waited is not in its snapshot and not locked:
+	// the caller repeats it until the number of locked folders stops changing.
+	LockLiveSubtreeDirs(ctx context.Context, arg LockLiveSubtreeDirsParams) (int64, error)
 	// Serializes writers of one tree path until the transaction ends: two pushes to the
 	// same file must not both read the old row and then overwrite each other's bytes.
 	// The two-key form keeps these locks apart from the single-key upload/quota locks;

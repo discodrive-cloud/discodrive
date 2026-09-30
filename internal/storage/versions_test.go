@@ -104,7 +104,7 @@ func TestVersions_PruneRemovesSnapshotsOfLiveContent(t *testing.T) {
 	if err := os.WriteFile(livePath, []byte("second"), 0o644); err != nil {
 		t.Fatalf("write snapshot: %v", err)
 	}
-	if err := q.InsertFileVersion(ctx, db.InsertFileVersionParams{
+	if _, err := q.InsertFileVersion(ctx, db.InsertFileVersionParams{
 		NodeID: res.Node.ID, Version: 2, DiskPath: pgtype.Text{String: ".versions/" + userID + "/" + nodeID + "/2", Valid: true},
 	}); err != nil {
 		t.Fatalf("insert live snapshot: %v", err)

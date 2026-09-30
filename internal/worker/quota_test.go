@@ -65,7 +65,7 @@ func TestQuotaCandidatesAndMark(t *testing.T) {
 	if err != nil {
 		t.Fatalf("node: %v", err)
 	}
-	if err := q.InsertFileVersion(ctx, db.InsertFileVersionParams{
+	if _, err := q.InsertFileVersion(ctx, db.InsertFileVersionParams{
 		NodeID: node.ID, Version: 1, Size: pgtype.Int8{Int64: 300, Valid: true},
 	}); err != nil {
 		t.Fatalf("version: %v", err)

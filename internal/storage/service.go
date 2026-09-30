@@ -36,6 +36,9 @@ var (
 	ErrNotDir      = errors.New("parent is not a directory")
 	ErrNameTaken   = errors.New("name already taken in this folder")
 	ErrCycle       = errors.New("cannot move a folder into itself")
+	// ErrKeptInTrash: a purge left the node in the trash because something under it is
+	// live again. Removing it would take the live node with it.
+	ErrKeptInTrash = errors.New("folder holds items that are no longer in the trash")
 )
 
 // FileService links the node tree in the database with its on-disk mirror (Storage).
@@ -183,6 +186,10 @@ func (s *FileService) CreateFolder(ctx context.Context, userID string, parentID 
 	if err := validateName(name); err != nil {
 		return db.Node{}, err
 	}
+	return retryValue(ctx, func() (db.Node, error) { return s.createFolderOnce(ctx, userID, parentID, name) })
+}
+
+func (s *FileService) createFolderOnce(ctx context.Context, userID string, parentID *string, name string) (db.Node, error) {
 	prefix, parentUUID, ownerUUID, err := s.resolveParent(ctx, userID, parentID)
 	if err != nil {
 		return db.Node{}, err
@@ -197,6 +204,9 @@ func (s *FileService) CreateFolder(ctx context.Context, userID string, parentID 
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
 
+	if err := lockParent(ctx, qtx, parentUUID, prefix); err != nil {
+		return db.Node{}, err
+	}
 	node, err := qtx.CreateNode(ctx, db.CreateNodeParams{
 		UserID:   ownerUUID,
 		ParentID: parentUUID,
@@ -207,10 +217,11 @@ func (s *FileService) CreateFolder(ctx context.Context, userID string, parentID 
 	if err != nil {
 		return db.Node{}, mapInsertErr(err)
 	}
-	if err := s.st.Mkdir(rel); err != nil {
+	if err := recordChange(ctx, qtx, ownerUUID, node.ID, "create", node.Version); err != nil {
 		return db.Node{}, err
 	}
-	if err := recordChange(ctx, qtx, ownerUUID, node.ID, "create", node.Version); err != nil {
+	// Disk last: a statement that fails (and is retried) never leaves a directory behind.
+	if err := s.st.Mkdir(rel); err != nil {
 		return db.Node{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -233,6 +244,10 @@ func (s *FileService) Rename(ctx context.Context, userID, nodeID, newName string
 	if err := validateName(newName); err != nil {
 		return db.Node{}, err
 	}
+	return retryValue(ctx, func() (db.Node, error) { return s.renameOnce(ctx, userID, nodeID, newName) })
+}
+
+func (s *FileService) renameOnce(ctx context.Context, userID, nodeID, newName string) (db.Node, error) {
 	node, err := s.ownerNode(ctx, userID, nodeID)
 	if err != nil {
 		return db.Node{}, err
@@ -249,6 +264,9 @@ func (s *FileService) Rename(ctx context.Context, userID, nodeID, newName string
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
 
+	if err := s.lockSubtree(ctx, qtx, node.ID, owner, oldRel, node.IsDir); err != nil {
+		return db.Node{}, err
+	}
 	if err := qtx.RewriteSubtreePaths(ctx, db.RewriteSubtreePathsParams{UserID: owner, OldPrefix: oldRel, NewPrefix: newRel}); err != nil {
 		return db.Node{}, err
 	}
@@ -256,23 +274,68 @@ func (s *FileService) Rename(ctx context.Context, userID, nodeID, newName string
 	if err != nil {
 		return db.Node{}, mapInsertErr(err)
 	}
-	if err := s.st.Move(oldRel, newRel); err != nil {
-		return db.Node{}, err
-	}
 	if err := recordPathChange(ctx, qtx, owner, node.ID, "update", updated.Version, oldRel); err != nil {
 		return db.Node{}, err
 	}
 	if err := qtx.RecordSubtreeChanges(ctx, db.RecordSubtreeChangesParams{UserID: owner, Prefix: newRel, OldPrefix: oldRel}); err != nil {
 		return db.Node{}, err
 	}
+	// Disk last, undone if the commit fails: a failed (retried) statement never leaves
+	// the bytes at a path the database does not have.
+	if err := s.st.Move(oldRel, newRel); err != nil {
+		return db.Node{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
+		_ = s.st.Move(newRel, oldRel)
 		return db.Node{}, err
 	}
 	return updated, nil
 }
 
+// lockSubtree is the first thing a subtree rewrite or trash does in its transaction:
+// lock the subtree's live folders (waiting for writes into them), then the node itself,
+// checking it is still live at path. A file has no subtree: only the node is locked.
+//
+// One statement locks only the folders in its own snapshot. A folder created by a write
+// that held its parent while the statement waited commits unlocked, and a later write
+// into it would not wait for this operation. Each repetition takes a new snapshot and
+// locks what the previous one missed. The count only grows (a locked folder cannot leave
+// the subtree, and one that left before it was locked was never counted), so an equal
+// count means nothing was missed: every live folder is locked, and a new one can only
+// be created under a locked, hence waiting, parent. Bounded, in case writers keep
+// adding folders: the operation then runs again (errStale, ErrBusy in the end).
+func (s *FileService) lockSubtree(ctx context.Context, qtx *db.Queries, id, owner pgtype.UUID, path string, isDir bool) error {
+	if isDir {
+		locked := false
+		prev := int64(-1)
+		for range maxSubtreeLockRounds {
+			n, err := qtx.LockLiveSubtreeDirs(ctx, db.LockLiveSubtreeDirsParams{UserID: owner, Prefix: path})
+			if err != nil {
+				return err
+			}
+			if n == prev {
+				locked = true
+				break
+			}
+			prev = n
+		}
+		if !locked {
+			return errStale
+		}
+	}
+	_, err := lockSelf(ctx, qtx, id, path)
+	return err
+}
+
+// maxSubtreeLockRounds bounds lockSubtree's repetitions.
+const maxSubtreeLockRounds = 16
+
 // Move reparents a node (parentID == nil → root).
 func (s *FileService) Move(ctx context.Context, userID, nodeID string, parentID *string) (db.Node, error) {
+	return retryValue(ctx, func() (db.Node, error) { return s.moveOnce(ctx, userID, nodeID, parentID) })
+}
+
+func (s *FileService) moveOnce(ctx context.Context, userID, nodeID string, parentID *string) (db.Node, error) {
 	node, err := s.ownerNode(ctx, userID, nodeID)
 	if err != nil {
 		return db.Node{}, err
@@ -301,6 +364,12 @@ func (s *FileService) Move(ctx context.Context, userID, nodeID string, parentID 
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
 
+	if err := s.lockSubtree(ctx, qtx, node.ID, owner, oldRel, node.IsDir); err != nil {
+		return db.Node{}, err
+	}
+	if err := lockParent(ctx, qtx, parentUUID, prefix); err != nil {
+		return db.Node{}, err
+	}
 	if err := qtx.RewriteSubtreePaths(ctx, db.RewriteSubtreePathsParams{UserID: owner, OldPrefix: oldRel, NewPrefix: newRel}); err != nil {
 		return db.Node{}, err
 	}
@@ -308,16 +377,18 @@ func (s *FileService) Move(ctx context.Context, userID, nodeID string, parentID 
 	if err != nil {
 		return db.Node{}, mapInsertErr(err)
 	}
-	if err := s.st.Move(oldRel, newRel); err != nil {
-		return db.Node{}, err
-	}
 	if err := recordPathChange(ctx, qtx, owner, node.ID, "move", updated.Version, oldRel); err != nil {
 		return db.Node{}, err
 	}
 	if err := qtx.RecordSubtreeChanges(ctx, db.RecordSubtreeChangesParams{UserID: owner, Prefix: newRel, OldPrefix: oldRel}); err != nil {
 		return db.Node{}, err
 	}
+	// Disk last, undone if the commit fails.
+	if err := s.st.Move(oldRel, newRel); err != nil {
+		return db.Node{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
+		_ = s.st.Move(newRel, oldRel)
 		return db.Node{}, err
 	}
 	return updated, nil
@@ -332,6 +403,12 @@ func (s *FileService) Relocate(ctx context.Context, userID, nodeID string, paren
 	if err := validateName(newName); err != nil {
 		return db.Node{}, err
 	}
+	return retryValue(ctx, func() (db.Node, error) {
+		return s.relocateOnce(ctx, userID, nodeID, parentID, newName, replaceID)
+	})
+}
+
+func (s *FileService) relocateOnce(ctx context.Context, userID, nodeID string, parentID *string, newName, replaceID string) (db.Node, error) {
 	node, err := s.ownerNode(ctx, userID, nodeID)
 	if err != nil {
 		return db.Node{}, err
@@ -379,7 +456,16 @@ func (s *FileService) Relocate(ctx context.Context, userID, nodeID string, paren
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
 
+	if err := s.lockSubtree(ctx, qtx, node.ID, owner, oldRel, node.IsDir); err != nil {
+		return db.Node{}, err
+	}
+	if err := lockParent(ctx, qtx, parentUUID, prefix); err != nil {
+		return db.Node{}, err
+	}
 	if victim.ID.Valid {
+		if err := s.lockSubtree(ctx, qtx, victim.ID, owner, newRel, victim.IsDir); err != nil {
+			return db.Node{}, err
+		}
 		if err := qtx.SoftDeleteSubtree(ctx, db.SoftDeleteSubtreeParams{UserID: owner, Prefix: newRel, TrashRoot: text(trash)}); err != nil {
 			return db.Node{}, err
 		}
@@ -440,6 +526,10 @@ func (s *FileService) Relocate(ctx context.Context, userID, nodeID string, paren
 // it cannot overwrite what the trash holds; GC or Purge removes them for good.
 // The tombstone of the top node is written to change_log — the client deletes the entire subtree locally.
 func (s *FileService) Delete(ctx context.Context, userID, nodeID string) error {
+	return withRetry(ctx, func() error { return s.deleteOnce(ctx, userID, nodeID) })
+}
+
+func (s *FileService) deleteOnce(ctx context.Context, userID, nodeID string) error {
 	node, err := s.ownerNode(ctx, userID, nodeID)
 	if err != nil {
 		return err
@@ -456,6 +546,11 @@ func (s *FileService) Delete(ctx context.Context, userID, nodeID string) error {
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
 
+	// Its own statements first: they wait for writes into any folder of the subtree
+	// (lockParent), so the soft delete's snapshot includes what they created.
+	if err := s.lockSubtree(ctx, qtx, node.ID, owner, rel, node.IsDir); err != nil {
+		return err
+	}
 	if err := qtx.SoftDeleteSubtree(ctx, db.SoftDeleteSubtreeParams{UserID: owner, Prefix: rel, TrashRoot: text(trash)}); err != nil {
 		return err
 	}
@@ -492,6 +587,10 @@ func trashRoot(owner, nodeID pgtype.UUID) string {
 
 // Restore rolls back a file's content to the given version, creating a new version.
 func (s *FileService) Restore(ctx context.Context, userID, nodeID string, version int64) (db.Node, error) {
+	return retryValue(ctx, func() (db.Node, error) { return s.restoreOnce(ctx, userID, nodeID, version) })
+}
+
+func (s *FileService) restoreOnce(ctx context.Context, userID, nodeID string, version int64) (res db.Node, err error) {
 	node, err := s.ownerNode(ctx, userID, nodeID)
 	if err != nil {
 		return db.Node{}, err
@@ -519,6 +618,13 @@ func (s *FileService) Restore(ctx context.Context, userID, nodeID string, versio
 		}
 	}
 
+	var snap string      // the replaced content's snapshot, if any
+	var liveChanged bool // the live file holds bytes no committed row describes
+	defer func() {       // runs after the rollback below
+		if err != nil && snap != "" && !liveChanged {
+			s.dropSnapshot(snap)
+		}
+	}()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return db.Node{}, err
@@ -526,12 +632,13 @@ func (s *FileService) Restore(ctx context.Context, userID, nodeID string, versio
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
 
-	// Preserve the content being rolled back, so the rollback itself can be undone.
-	if err := s.snapshot(ctx, qtx, node); err != nil {
+	// Lock the file and check it is still where it was read: a rename or move above
+	// that committed meanwhile would otherwise have the bytes written to the old path.
+	if node, err = lockSelf(ctx, qtx, node.ID, node.DiskPath.String); err != nil {
 		return db.Node{}, err
 	}
-	// make the target version's content the current content
-	if err := s.st.Copy(fv.DiskPath.String, node.DiskPath.String); err != nil {
+	// Preserve the content being rolled back, so the rollback itself can be undone.
+	if snap, err = s.snapshot(ctx, qtx, node); err != nil {
 		return db.Node{}, err
 	}
 	updated, err := qtx.UpdateNodeContent(ctx, db.UpdateNodeContentParams{
@@ -543,7 +650,16 @@ func (s *FileService) Restore(ctx context.Context, userID, nodeID string, versio
 	if err := recordChange(ctx, qtx, owner, node.ID, "update", updated.Version); err != nil {
 		return db.Node{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	// Disk last. The target version goes to a temporary file first (a copy can take
+	// long, and fail); only a rename then touches the live file, right before the
+	// commit, and a failed commit puts the previous content back from the snapshot.
+	tmp := tmpName()
+	if err := s.st.Copy(fv.DiskPath.String, tmp); err != nil {
+		_ = s.st.Remove(tmp)
+		return db.Node{}, err
+	}
+	if err := s.commitReplacing(ctx, tx, tmp, node.DiskPath.String, snap, &liveChanged); err != nil {
+		_ = s.st.Remove(tmp)
 		return db.Node{}, err
 	}
 	return updated, nil
@@ -655,6 +771,25 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 	if err := validateName(name); err != nil {
 		return PushResult{}, err
 	}
+	_, _, ownerUUID, err := s.resolveParent(ctx, userID, parentID)
+	if err != nil {
+		return PushResult{}, err
+	}
+	// Staged once: the bytes are the same whichever attempt commits them.
+	staged, err := s.stage(ctx, ownerUUID, r)
+	if err != nil {
+		return PushResult{}, err
+	}
+	defer staged.cleanup(s.st)
+	return retryValue(ctx, func() (PushResult, error) {
+		return s.pushOnce(ctx, userID, parentID, name, baseVersion, device, meta, staged)
+	})
+}
+
+// pushOnce is one attempt of PushWithMeta: resolve the parent (again), then the
+// transaction. The staged bytes move into the tree only as its last step before the
+// commit; a version snapshot it copied is removed if it does not commit.
+func (s *FileService) pushOnce(ctx context.Context, userID string, parentID *string, name string, baseVersion *int64, device string, meta PushMeta, staged *stagedFile) (res PushResult, err error) {
 	prefix, parentUUID, ownerUUID, err := s.resolveParent(ctx, userID, parentID)
 	if err != nil {
 		return PushResult{}, err
@@ -662,17 +797,19 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 	rel := prefix + "/" + name
 	defer s.busy.hold(rel)()
 
-	staged, err := s.stage(ctx, ownerUUID, r)
-	if err != nil {
-		return PushResult{}, err
-	}
-	defer staged.cleanup(s.st)
 	tmpRel, size, sha := staged.rel, staged.size, staged.hash
 	q, begin := s.q, s.pool.Begin
 	if staged.reservation != nil {
 		q = staged.reservation.Queries()
 		begin = staged.reservation.Connection().Begin
 	}
+	var snap string      // the replaced content's snapshot, if any
+	var liveChanged bool // the live file holds bytes no committed row describes
+	defer func() {       // runs after the rollback below
+		if err != nil && snap != "" && !liveChanged {
+			s.dropSnapshot(snap)
+		}
+	}()
 	tx, err := begin(ctx)
 	if err != nil {
 		return PushResult{}, err
@@ -687,6 +824,11 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 	if err := qtx.LockTreePath(ctx, rel); err != nil {
 		return PushResult{}, err
 	}
+	// The parent before any file row: a rename above waits for this push, never the
+	// other way round (see LockLiveSubtreeDirs).
+	if err := lockParent(ctx, qtx, parentUUID, prefix); err != nil {
+		return PushResult{}, err
+	}
 	existing, err := qtx.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: ownerUUID, Path: rel})
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -699,7 +841,7 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 		if err != nil {
 			return PushResult{}, mapInsertErr(err)
 		}
-		return s.finishPush(ctx, tx, qtx, ownerUUID, node, "create", false, tmpRel, rel)
+		return s.finishPush(ctx, tx, qtx, ownerUUID, node, "create", false, tmpRel, rel, "", nil)
 
 	case err != nil:
 		return PushResult{}, err
@@ -708,12 +850,18 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 		return PushResult{}, ErrNameTaken
 	}
 
+	// Lock the file and re-read it: the lookup above did not lock, and the row may have
+	// changed (or moved away from rel) since.
+	if existing, err = lockSelf(ctx, qtx, existing.ID, rel); err != nil {
+		return PushResult{}, err
+	}
+
 	// File exists. base_version matches (or was not provided) → accept.
 	if baseVersion == nil || *baseVersion == existing.Version {
 		// Preserve the content about to be overwritten, under the version it belongs to.
 		// The newest version is always the live file itself and is never copied into
 		// .versions — snapshotting it too would store every file twice.
-		if err := s.snapshot(ctx, qtx, existing); err != nil {
+		if snap, err = s.snapshot(ctx, qtx, existing); err != nil {
 			return PushResult{}, err
 		}
 		node, err := qtx.UpdateNodeContent(ctx, db.UpdateNodeContentParams{
@@ -723,7 +871,7 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 		if err != nil {
 			return PushResult{}, err
 		}
-		return s.finishPush(ctx, tx, qtx, ownerUUID, node, "update", false, tmpRel, rel) // overwrites the primary file
+		return s.finishPush(ctx, tx, qtx, ownerUUID, node, "update", false, tmpRel, rel, snap, &liveChanged) // overwrites the primary file
 	}
 
 	// CONFLICT: the server version stays as the primary; the client version becomes
@@ -756,7 +904,7 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 	if err != nil {
 		return PushResult{}, mapInsertErr(err)
 	}
-	return s.finishPush(ctx, tx, qtx, ownerUUID, cnode, "create", true, tmpRel, crel)
+	return s.finishPush(ctx, tx, qtx, ownerUUID, cnode, "create", true, tmpRel, crel, "", nil)
 }
 
 // finishPush appends to change_log, moves the staged bytes to dst and commits. The move
@@ -764,9 +912,22 @@ func (s *FileService) PushWithMeta(ctx context.Context, userID string, parentID 
 // failed change_log insert) never leaves its bytes in the tree. It does not snapshot:
 // the content it publishes IS the newest version, and that version lives in the file
 // itself. Only content a push replaces goes to .versions.
-func (s *FileService) finishPush(ctx context.Context, tx pgx.Tx, qtx *db.Queries, uid pgtype.UUID, node db.Node, op string, conflicted bool, tmpRel, dst string) (PushResult, error) {
+// For an overwrite ("update") the bytes being replaced are put back if the commit fails
+// (commitReplacing); backup is where a copy of them already is (the version snapshot),
+// or "" to have one made. liveChanged reports a live file left changed without a
+// committed row: the caller must then keep the snapshot. It may be nil.
+func (s *FileService) finishPush(ctx context.Context, tx pgx.Tx, qtx *db.Queries, uid pgtype.UUID, node db.Node, op string, conflicted bool, tmpRel, dst, backup string, liveChanged *bool) (PushResult, error) {
 	if err := recordChange(ctx, qtx, uid, node.ID, op, node.Version); err != nil {
 		return PushResult{}, err
+	}
+	if op == "update" {
+		if liveChanged == nil {
+			liveChanged = new(bool)
+		}
+		if err := s.commitReplacing(ctx, tx, tmpRel, dst, backup, liveChanged); err != nil {
+			return PushResult{}, err
+		}
+		return PushResult{Node: node, Conflicted: conflicted}, nil
 	}
 	if err := s.st.Move(tmpRel, dst); err != nil {
 		return PushResult{}, err
@@ -776,6 +937,47 @@ func (s *FileService) finishPush(ctx context.Context, tx pgx.Tx, qtx *db.Queries
 		return PushResult{}, err
 	}
 	return PushResult{Node: node, Conflicted: conflicted}, nil
+}
+
+// commitReplacing moves src over the live file dst and commits, as the transaction's
+// last steps. If the commit fails, dst gets its previous bytes back from backup (a copy
+// of them: the version snapshot), or from a copy made here when backup is "" (versions
+// off). *liveChanged is true while dst holds bytes no committed row describes; a caller
+// must never drop the snapshot then, it is the only copy of what dst held.
+func (s *FileService) commitReplacing(ctx context.Context, tx pgx.Tx, src, dst, backup string, liveChanged *bool) error {
+	own := ""
+	if backup == "" {
+		own = tmpName()
+		switch err := s.st.Copy(dst, own); {
+		case err == nil:
+			backup = own
+			defer func() { _ = s.st.Remove(own) }()
+		case errors.Is(err, fs.ErrNotExist):
+			own = "" // nothing at dst to lose
+		default:
+			return err
+		}
+	}
+	if err := s.st.Move(src, dst); err != nil {
+		return err // a failed rename leaves dst as it was
+	}
+	*liveChanged = true
+	if err := tx.Commit(ctx); err != nil {
+		var perr error
+		if backup != "" {
+			perr = s.st.Copy(backup, dst)
+		} else {
+			perr = s.st.Remove(dst)
+		}
+		if perr == nil {
+			*liveChanged = false
+		} else {
+			own = "" // keep our copy: it is the previous content
+			log.Printf("discodrive: %s: commit failed and the previous content could not be put back (%v); it is kept at %s", dst, perr, backup)
+		}
+		return err
+	}
+	return nil
 }
 
 // ReplaceContentInPlace overwrites the content of an existing file node without
@@ -846,7 +1048,7 @@ func (s *FileService) replaceContentInPlace(ctx context.Context, userID, nodeID 
 	if err != nil {
 		return db.Node{}, err
 	}
-	res, err := s.finishPush(ctx, tx, qtx, node.UserID, updated, "update", false, tmpRel, node.DiskPath.String)
+	res, err := s.finishPush(ctx, tx, qtx, node.UserID, updated, "update", false, tmpRel, node.DiskPath.String, "", nil)
 	if err != nil {
 		return db.Node{}, err
 	}
@@ -883,26 +1085,55 @@ func recordPathChange(ctx context.Context, qtx *db.Queries, userID, nodeID pgtyp
 //
 // Snapshots are a copy of the whole file, so a file that is written once and never
 // touched again costs exactly its own size; only editing it starts a history.
-func (s *FileService) snapshot(ctx context.Context, qtx *db.Queries, node db.Node) error {
+// It returns the snapshot's path ("" when versions are off, or when the version already
+// has a row) so a caller whose transaction then fails can drop the copy (dropSnapshot).
+// The path is new for every attempt: two writes of one node never share a snapshot
+// file, so a failed attempt's cleanup can only remove its own copy.
+func (s *FileService) snapshot(ctx context.Context, qtx *db.Queries, node db.Node) (string, error) {
 	if s.noVersions {
-		return nil
+		return "", nil
 	}
 	vpath := versionPath(db.UUIDString(node.UserID), db.UUIDString(node.ID), node.Version)
 	if err := s.st.Copy(node.DiskPath.String, vpath); err != nil {
-		return err
+		return "", err
 	}
-	return qtx.InsertFileVersion(ctx, db.InsertFileVersionParams{
+	n, err := qtx.InsertFileVersion(ctx, db.InsertFileVersionParams{
 		NodeID:      node.ID,
 		Version:     node.Version,
 		ContentHash: node.ContentHash,
 		DiskPath:    text(vpath),
 		Size:        node.Size,
 	})
+	if err != nil {
+		return vpath, err
+	}
+	if n == 0 {
+		// The version was snapshotted before (the old scheme): that row keeps its file,
+		// and this copy is not referenced by any row.
+		_ = s.st.Remove(vpath)
+		return "", nil
+	}
+	return vpath, nil
 }
 
-// versionPath returns the snapshot path outside the tree mirror (ignored by rescan in 0.6).
+// dropSnapshot removes a snapshot copy whose transaction did not commit. The path is
+// this attempt's own; the check only covers a commit that went through although it
+// reported an error.
+func (s *FileService) dropSnapshot(vpath string) {
+	used, err := s.q.FileVersionPathInUse(context.Background(), text(vpath))
+	if err == nil && !used {
+		_ = s.st.Remove(vpath)
+	}
+}
+
+// versionPath returns a new snapshot path for a version, outside the tree mirror
+// (ignored by rescan), unique per call. Readers always take the path stored in
+// file_versions.disk_path: older rows hold ".versions/<user>/<node>/<version>".
+// Every snapshot of a node lies in versionDir, which a purge removes whole.
 func versionPath(userID, nodeID string, version int64) string {
-	return ".versions/" + userID + "/" + nodeID + "/" + strconv.FormatInt(version, 10)
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return versionDir(userID, nodeID) + "/" + strconv.FormatInt(version, 10) + "-" + hex.EncodeToString(b)
 }
 
 // --- Background jobs (step 0.6) ---
@@ -956,7 +1187,10 @@ func (s *FileService) PruneLiveSnapshots(ctx context.Context, idleFor time.Durat
 }
 
 // TrashGC physically removes nodes that have been tombstoned for longer than olderThan:
-// the file/folder from disk, version snapshots, and the nodes row (change_log/file_versions cascade).
+// the nodes rows first (change_log/file_versions cascade; HardDeleteNode records each
+// removed row in purged_nodes so the sync feed still reports it), then the bytes and
+// version snapshots of exactly the rows removed. A row inside a trashed folder usually
+// went with the folder's statement; its own call then removes nothing.
 func (s *FileService) TrashGC(ctx context.Context, olderThan time.Duration) error {
 	cutoff := pgtype.Timestamptz{Time: time.Now().Add(-olderThan), Valid: true}
 	rows, err := s.q.ListExpiredTombstones(ctx, cutoff)
@@ -964,30 +1198,46 @@ func (s *FileService) TrashGC(ctx context.Context, olderThan time.Duration) erro
 		return err
 	}
 	for _, r := range rows {
+		removed, err := retryValue(ctx, func() ([]db.HardDeleteNodeRow, error) { return s.q.HardDeleteNode(ctx, r.ID) })
+		if err != nil {
+			return err
+		}
+		if err := s.removePurgedBytes(ctx, r.UserID, removed); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removePurgedBytes deletes the bytes and version snapshots of rows HardDeleteNode just
+// removed. It runs after the rows are gone: a crash in between leaves unreferenced bytes
+// behind (a leak), never a row without its bytes.
+func (s *FileService) removePurgedBytes(ctx context.Context, owner pgtype.UUID, removed []db.HardDeleteNodeRow) error {
+	for _, r := range removed {
+		_ = s.st.Remove(versionDir(db.UUIDString(owner), db.UUIDString(r.ID)))
 		if r.TrashPath.Valid {
 			// The bytes were moved to the trash; nothing live can be there. A row inside
-			// a trashed folder finds its path gone once the folder's row went first.
+			// a removed trashed folder finds its path already gone.
 			_ = s.st.Remove(r.TrashPath.String)
-		} else if r.DiskPath.Valid {
-			// A tombstone from before deletes moved bytes to the trash (or one rescan
-			// found missing): soft delete left the bytes in place, so a name taken again after deletion
-			// puts a live file (or a live folder with contents) at the tombstone's path.
-			// Removing the path then would destroy live data; Purge guards the same way.
-			// An exact-path lookup covers folders too: a live node always sits under a
-			// live parent (Undelete falls back to the root), and disk_path mirrors the
-			// tree, so nothing live can exist under this path without a live node at it.
-			// It is an index lookup per tombstone; a subtree match would scan the table.
-			_, lerr := s.q.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: r.UserID, Path: r.DiskPath.String})
-			switch {
-			case errors.Is(lerr, pgx.ErrNoRows):
-				_ = s.st.Remove(r.DiskPath.String)
-			case lerr != nil:
-				return lerr
-			}
+			continue
 		}
-		_ = s.st.Remove(versionDir(db.UUIDString(r.UserID), db.UUIDString(r.ID)))
-		if err := s.q.HardDeleteNode(ctx, r.ID); err != nil {
-			return err
+		if !r.DiskPath.Valid {
+			continue
+		}
+		// A tombstone from before deletes moved bytes to the trash (or one rescan
+		// found missing): soft delete left the bytes in place, so a name taken again after deletion
+		// puts a live file (or a live folder with contents) at the tombstone's path.
+		// Removing the path then would destroy live data.
+		// An exact-path lookup covers folders too: a live node always sits under a
+		// live parent (Undelete falls back to the root), and disk_path mirrors the
+		// tree, so nothing live can exist under this path without a live node at it.
+		// It is an index lookup per row; a subtree match would scan the table.
+		_, lerr := s.q.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: owner, Path: r.DiskPath.String})
+		switch {
+		case errors.Is(lerr, pgx.ErrNoRows):
+			_ = s.st.Remove(r.DiskPath.String)
+		case lerr != nil:
+			return lerr
 		}
 	}
 	return nil
@@ -1029,6 +1279,13 @@ func (s *FileService) createDiscovered(ctx context.Context, uid, parentUUID pgty
 		return db.Node{}, err
 	}
 
+	// A parent moved or trashed since the walk read it: skip, the next rescan sees
+	// the tree as it is then.
+	if err := lockParent(ctx, qtx, parentUUID, parentDir(rel)); errors.Is(err, errStale) {
+		return db.Node{}, ErrNotFound
+	} else if err != nil {
+		return db.Node{}, err
+	}
 	name := baseName(rel)
 	var node db.Node
 	if isDir {
@@ -1226,10 +1483,11 @@ func (s *FileService) Trash(ctx context.Context, userID string) ([]db.Node, erro
 	return s.q.ListTrashNodes(ctx, uid)
 }
 
-// Purge permanently removes a node from the trash: its tombstone subtree's bytes and
-// version snapshots from disk, then the rows (change_log/file_versions cascade).
-// The subtree is found by node id, never by path: two trashed trees can share a path.
-// Owner only.
+// Purge permanently removes a node from the trash: the rows of its tombstone subtree
+// (change_log/file_versions cascade; HardDeleteNode records each removed row in
+// purged_nodes so the sync feed still reports it), then the bytes and version snapshots
+// of exactly the rows removed. The subtree is found by node id, never by path: two
+// trashed trees can share a path. Owner only.
 func (s *FileService) Purge(ctx context.Context, userID, nodeID string) error {
 	uid, err := db.ParseUUID(userID)
 	if err != nil {
@@ -1246,34 +1504,25 @@ func (s *FileService) Purge(ctx context.Context, userID, nodeID string) error {
 	if err != nil {
 		return err
 	}
-	owner := node.UserID
-
-	subtree, err := s.q.ListTombstoneSubtree(ctx, db.ListTombstoneSubtreeParams{ID: node.ID, Together: false})
+	// One statement, retried alone: a failed attempt changed nothing.
+	removed, err := retryValue(ctx, func() ([]db.HardDeleteNodeRow, error) { return s.q.HardDeleteNode(ctx, node.ID) })
 	if err != nil {
 		return err
 	}
-	for _, r := range subtree {
-		_ = s.st.Remove(versionDir(db.UUIDString(owner), db.UUIDString(r.ID)))
-		// The root's bytes, plus those of tombstones below it that were trashed on
-		// their own earlier (they have a trash directory of their own). Rows trashed
-		// with the root live inside the root's directory and go with it.
-		if r.TrashPath.Valid && (r.ID == node.ID || r.TrashPath.String == trashRoot(owner, r.ID)) {
-			_ = s.st.Remove(r.TrashPath.String)
+	if err := s.removePurgedBytes(ctx, node.UserID, removed); err != nil {
+		return err
+	}
+	for _, r := range removed {
+		if r.ID == node.ID {
+			return nil
 		}
 	}
-	if !node.TrashPath.Valid {
-		// Trashed before deletes moved bytes out of the tree: they may still be at
-		// disk_path. If a LIVE node now holds that path (the name was reused), the bytes
-		// there are its own — leave the disk alone.
-		prefix := node.DiskPath.String
-		if _, lerr := s.q.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: owner, Path: prefix}); errors.Is(lerr, pgx.ErrNoRows) {
-			_ = s.st.Remove(prefix)
-		} else if lerr != nil {
-			return lerr
-		}
+	// The root stayed: restored meanwhile (then it is no longer in the trash), or it
+	// still holds a live node, which HardDeleteNode never removes with it.
+	if _, err := s.q.GetTrashedNodeForUser(ctx, db.GetTrashedNodeForUserParams{ID: nid, UserID: uid}); err == nil {
+		return ErrKeptInTrash
 	}
-	// Deleting the root takes its descendants with it (parent_id cascades).
-	return s.q.HardDeleteNode(ctx, node.ID)
+	return ErrNotFound
 }
 
 // PurgeAll permanently empties the user's trash (irreversible).
@@ -1282,18 +1531,28 @@ func (s *FileService) PurgeAll(ctx context.Context, userID string) error {
 	if err != nil {
 		return err
 	}
+	var kept error
 	for _, n := range tops {
-		if err := s.Purge(ctx, userID, db.UUIDString(n.ID)); err != nil {
+		switch err := s.Purge(ctx, userID, db.UUIDString(n.ID)); {
+		case errors.Is(err, ErrKeptInTrash):
+			kept = err // empty the rest of the trash, then say what stayed
+		case errors.Is(err, ErrNotFound):
+			// restored meanwhile
+		case err != nil:
 			return err
 		}
 	}
-	return nil
+	return kept
 }
 
 // Undelete restores a node from the trash, with everything that was trashed together
 // with it. If the parent is also deleted → restore to root; if the name is taken by a
 // live node → append " (restored)". Owner only.
 func (s *FileService) Undelete(ctx context.Context, userID, nodeID string) (db.Node, error) {
+	return retryValue(ctx, func() (db.Node, error) { return s.undeleteOnce(ctx, userID, nodeID) })
+}
+
+func (s *FileService) undeleteOnce(ctx context.Context, userID, nodeID string) (db.Node, error) {
 	uid, err := db.ParseUUID(userID)
 	if err != nil {
 		return db.Node{}, ErrNotFound
@@ -1378,6 +1637,13 @@ func (s *FileService) Undelete(ctx context.Context, userID, nodeID string) (db.N
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
 
+	// The parent seen above must still be live at parentPrefix, and stay so until the
+	// commit. Trashed meanwhile: run again, and the node goes to the root as documented.
+	if err := lockParent(ctx, qtx, parentID, parentPrefix); errors.Is(err, ErrNotFound) {
+		return db.Node{}, errStale
+	} else if err != nil {
+		return db.Node{}, err
+	}
 	// While the rows are still tombstones the partial unique indexes ignore them, so the
 	// new parent and name go in first.
 	if toRoot {
@@ -1475,6 +1741,10 @@ func (s *FileService) Adopt(ctx context.Context, userID, tmpRel, diskRel string,
 	if err := validateName(name); err != nil {
 		return db.Node{}, err
 	}
+	return retryValue(ctx, func() (db.Node, error) { return s.adoptOnce(ctx, userID, tmpRel, diskRel, dir, name, size, hash) })
+}
+
+func (s *FileService) adoptOnce(ctx context.Context, userID, tmpRel, diskRel, dir, name string, size int64, hash string) (db.Node, error) {
 	parentID, err := s.ensureDirChain(ctx, userID, strings.Trim(dir, "/"))
 	if err != nil {
 		return db.Node{}, err
@@ -1500,6 +1770,9 @@ func (s *FileService) Adopt(ctx context.Context, userID, tmpRel, diskRel string,
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return db.Node{}, err
 	}
+	if err := lockParent(ctx, qtx, parentUUID, prefix); err != nil {
+		return db.Node{}, err
+	}
 	// Row first: the unique index decides a name race before any bytes move.
 	node, err := qtx.CreateNode(ctx, db.CreateNodeParams{
 		UserID: ownerUUID, ParentID: parentUUID, Name: name, IsDir: false,
@@ -1508,7 +1781,7 @@ func (s *FileService) Adopt(ctx context.Context, userID, tmpRel, diskRel string,
 	if err != nil {
 		return db.Node{}, mapInsertErr(err)
 	}
-	res, err := s.finishPush(ctx, tx, qtx, ownerUUID, node, "create", false, tmpRel, rel)
+	res, err := s.finishPush(ctx, tx, qtx, ownerUUID, node, "create", false, tmpRel, rel, "", nil)
 	if err != nil {
 		return db.Node{}, err
 	}

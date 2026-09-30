@@ -145,6 +145,27 @@ const scopeHeader = "X-Discodrive-Scope"
 // scopeRequested reports whether the caller opted into sync-scope (i.e. is the daemon).
 func scopeRequested(r *http.Request) bool { return r.Header.Get(scopeHeader) == "1" }
 
+// featuresHeader lists what a sync client can handle: comma-separated tokens, case and
+// surrounding spaces ignored, unknown tokens skipped.
+const featuresHeader = "X-Discodrive-Features"
+
+// featureDeleteByID: the client applies feed deletes by node id and ignores ids it does
+// not know. Only such a client gets the rows of nodes removed for good (purged_nodes): an
+// older one deletes the reported path, which a live node may hold again by now.
+const featureDeleteByID = "delete-by-id"
+
+// hasFeature reports whether the request's features header carries token.
+func hasFeature(r *http.Request, token string) bool {
+	for _, v := range r.Header.Values(featuresHeader) {
+		for _, t := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(t), token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // syncScope is the resolved sync root for a user. RelPrefix is the path under the user's
 // root that scopes the feed (e.g. "sync"); "" means whole-vault (scope disabled).
 type syncScope struct {
