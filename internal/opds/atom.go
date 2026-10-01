@@ -55,7 +55,15 @@ type atomContent struct {
 }
 
 // writeAtomFeed sets Content-Type and writes the XML declaration + marshalled feed to w.
-func writeAtomFeed(w http.ResponseWriter, mediaType string, feed atomFeed) {
+func writeAtomFeed(w http.ResponseWriter, r *http.Request, mediaType string, feed atomFeed) {
+	for i := range feed.Links {
+		feed.Links[i].Href = authenticatedLink(r, feed.Links[i].Href)
+	}
+	for i := range feed.Entries {
+		for j := range feed.Entries[i].Links {
+			feed.Entries[i].Links[j].Href = authenticatedLink(r, feed.Entries[i].Links[j].Href)
+		}
+	}
 	// Ensure both Atom namespace attrs are always populated.
 	feed.Xmlns = "http://www.w3.org/2005/Atom"
 	feed.XmlnsOPDS = "http://opds-spec.org/2010/catalog"

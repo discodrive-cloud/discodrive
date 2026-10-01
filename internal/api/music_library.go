@@ -178,7 +178,7 @@ func (s *Server) handleCreatePodcast(w http.ResponseWriter, r *http.Request) {
 
 	// Already subscribed: refreshed best-effort, never deleted. New: rolled back
 	// when the first fetch fails (bad/unreachable/blocked feed).
-	fresh, created, err := podcast.Subscribe(r.Context(), s.q, s.storageRoot, uid, body.URL)
+	fresh, created, err := podcast.Subscribe(r.Context(), s.q, s.storageRoot, uid, body.URL, s.files.Quota())
 	if errors.Is(err, podcast.ErrFeedUnavailable) {
 		writeError(w, http.StatusBadRequest, "could not fetch feed")
 		return
@@ -205,9 +205,7 @@ func (s *Server) handleDeletePodcast(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	// Best-effort: remove episode files + cover before deleting the row.
-	s.removePodcastFiles(r.Context(), id, uid)
-	n, err := s.q.DeletePodcastChannelForUser(r.Context(), db.DeletePodcastChannelForUserParams{ID: id, UserID: uid})
+	n, err := podcast.DeleteChannel(r.Context(), s.q, s.storageRoot, id, uid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return

@@ -325,6 +325,7 @@ type PodcastChannel struct {
 	CoverPath     pgtype.Text        `json:"cover_path"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	LastFetchedAt pgtype.Timestamptz `json:"last_fetched_at"`
+	CoverSize     int64              `json:"cover_size"`
 }
 
 type PodcastEpisode struct {

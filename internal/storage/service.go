@@ -1328,6 +1328,12 @@ func (s *FileService) markMissing(ctx context.Context, uid pgtype.UUID, n db.Nod
 
 	// The node list was read before the walk: a rename/move/delete may have committed
 	// since. Act only if the node is still live at the path the walk did not find.
+	if err := s.lockSubtree(ctx, qtx, n.ID, uid, n.DiskPath.String, n.IsDir); err != nil {
+		if errors.Is(err, ErrNotFound) || errors.Is(err, errStale) {
+			return nil
+		}
+		return err
+	}
 	cur, err := qtx.GetNode(ctx, n.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
@@ -1341,7 +1347,7 @@ func (s *FileService) markMissing(ctx context.Context, uid pgtype.UUID, n db.Nod
 		return err
 	}
 
-	if err := qtx.SoftDeleteNode(ctx, n.ID); err != nil {
+	if err := qtx.SoftDeleteSubtree(ctx, db.SoftDeleteSubtreeParams{UserID: uid, Prefix: n.DiskPath.String}); err != nil {
 		return err
 	}
 	ver, err := qtx.BumpNodeVersion(ctx, n.ID)
@@ -1659,7 +1665,8 @@ func (s *FileService) undeleteOnce(ctx context.Context, userID, nodeID string) (
 	// Clear deleted_at and rewrite the paths of the rows trashed together with this one
 	// (by id: a LIVE node or another trashed tree may share these paths). This is where
 	// the unique index fires on a name collision.
-	if err := qtx.UndeleteTombstoneSubtree(ctx, db.UndeleteTombstoneSubtreeParams{ID: node.ID, OldPrefix: oldRel, NewPrefix: newRel}); err != nil {
+	restored, err := qtx.UndeleteTombstoneSubtree(ctx, db.UndeleteTombstoneSubtreeParams{ID: node.ID, OldPrefix: oldRel, NewPrefix: newRel})
+	if err != nil {
 		return db.Node{}, mapInsertErr(err)
 	}
 	ver, err := qtx.BumpNodeVersion(ctx, node.ID)
@@ -1668,6 +1675,13 @@ func (s *FileService) undeleteOnce(ctx context.Context, userID, nodeID string) (
 	}
 	if err := recordChange(ctx, qtx, owner, node.ID, "create", ver); err != nil {
 		return db.Node{}, err
+	}
+	for _, child := range restored {
+		if child.ID != node.ID {
+			if err := recordChange(ctx, qtx, owner, child.ID, "create", child.Version); err != nil {
+				return db.Node{}, err
+			}
+		}
 	}
 	// Move the disk AFTER all DB checks (last fallible step before commit). Bytes that
 	// are gone (rescan found the file missing before it was trashed) restore nothing.

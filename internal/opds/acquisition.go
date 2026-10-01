@@ -79,7 +79,7 @@ func (h *Handler) listBooks(w http.ResponseWriter, r *http.Request, books []db.B
 			links = append(links, link2{Rel: "next", Href: appendStart(self, nextOffset), Type: mediaTypeOPDS2})
 		}
 
-		writeJSONFeed(w, feed2{
+		writeJSONFeed(w, r, feed2{
 			Metadata:     metadata2{Title: title},
 			Links:        links,
 			Publications: pubs,
@@ -102,7 +102,7 @@ func (h *Handler) listBooks(w http.ResponseWriter, r *http.Request, books []db.B
 		links = append(links, atomLink{Rel: "next", Href: appendStart(self, nextOffset), Type: mediaTypeAcquisition})
 	}
 
-	writeAtomFeed(w, mediaTypeAcquisition, atomFeed{
+	writeAtomFeed(w, r, mediaTypeAcquisition, atomFeed{
 		ID:      "urn:discodrive:opds:acquisition",
 		Title:   title,
 		Updated: updated,

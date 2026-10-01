@@ -1383,7 +1383,7 @@ const createPodcastChannel = `-- name: CreatePodcastChannel :one
 INSERT INTO podcast_channels (user_id, feed_url, title, description, cover_url)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (user_id, feed_url) DO NOTHING
-RETURNING id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at
+RETURNING id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at, cover_size
 `
 
 type CreatePodcastChannelParams struct {
@@ -1413,6 +1413,7 @@ func (q *Queries) CreatePodcastChannel(ctx context.Context, arg CreatePodcastCha
 		&i.CoverPath,
 		&i.CreatedAt,
 		&i.LastFetchedAt,
+		&i.CoverSize,
 	)
 	return i, err
 }
@@ -1864,7 +1865,7 @@ func (q *Queries) GetPlaylistSongs(ctx context.Context, playlistID pgtype.UUID) 
 }
 
 const getPodcastChannelByFeed = `-- name: GetPodcastChannelByFeed :one
-SELECT id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at FROM podcast_channels WHERE user_id = $1 AND feed_url = $2
+SELECT id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at, cover_size FROM podcast_channels WHERE user_id = $1 AND feed_url = $2
 `
 
 type GetPodcastChannelByFeedParams struct {
@@ -1885,12 +1886,13 @@ func (q *Queries) GetPodcastChannelByFeed(ctx context.Context, arg GetPodcastCha
 		&i.CoverPath,
 		&i.CreatedAt,
 		&i.LastFetchedAt,
+		&i.CoverSize,
 	)
 	return i, err
 }
 
 const getPodcastChannelForUser = `-- name: GetPodcastChannelForUser :one
-SELECT id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at FROM podcast_channels WHERE id = $1 AND user_id = $2
+SELECT id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at, cover_size FROM podcast_channels WHERE id = $1 AND user_id = $2
 `
 
 type GetPodcastChannelForUserParams struct {
@@ -1911,6 +1913,7 @@ func (q *Queries) GetPodcastChannelForUser(ctx context.Context, arg GetPodcastCh
 		&i.CoverPath,
 		&i.CreatedAt,
 		&i.LastFetchedAt,
+		&i.CoverSize,
 	)
 	return i, err
 }
@@ -1959,7 +1962,7 @@ func (q *Queries) InsertPlayHistory(ctx context.Context, arg InsertPlayHistoryPa
 }
 
 const listAllPodcastChannels = `-- name: ListAllPodcastChannels :many
-SELECT id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at FROM podcast_channels
+SELECT id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at, cover_size FROM podcast_channels
 `
 
 func (q *Queries) ListAllPodcastChannels(ctx context.Context) ([]PodcastChannel, error) {
@@ -1981,6 +1984,7 @@ func (q *Queries) ListAllPodcastChannels(ctx context.Context) ([]PodcastChannel,
 			&i.CoverPath,
 			&i.CreatedAt,
 			&i.LastFetchedAt,
+			&i.CoverSize,
 		); err != nil {
 			return nil, err
 		}
@@ -2256,7 +2260,7 @@ func (q *Queries) ListPlaylistsByUser(ctx context.Context, userID pgtype.UUID) (
 }
 
 const listPodcastChannelsForUser = `-- name: ListPodcastChannelsForUser :many
-SELECT id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at FROM podcast_channels WHERE user_id = $1 ORDER BY title
+SELECT id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at, cover_size FROM podcast_channels WHERE user_id = $1 ORDER BY title
 `
 
 func (q *Queries) ListPodcastChannelsForUser(ctx context.Context, userID pgtype.UUID) ([]PodcastChannel, error) {
@@ -2278,6 +2282,7 @@ func (q *Queries) ListPodcastChannelsForUser(ctx context.Context, userID pgtype.
 			&i.CoverPath,
 			&i.CreatedAt,
 			&i.LastFetchedAt,
+			&i.CoverSize,
 		); err != nil {
 			return nil, err
 		}
@@ -2522,6 +2527,33 @@ func (q *Queries) ListStarredSongs(ctx context.Context, userID pgtype.UUID) ([]S
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockPodcastChannel = `-- name: LockPodcastChannel :one
+SELECT id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at, cover_size FROM podcast_channels WHERE id=$1 AND user_id=$2 FOR UPDATE
+`
+
+type LockPodcastChannelParams struct {
+	ID     pgtype.UUID `json:"id"`
+	UserID pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) LockPodcastChannel(ctx context.Context, arg LockPodcastChannelParams) (PodcastChannel, error) {
+	row := q.db.QueryRow(ctx, lockPodcastChannel, arg.ID, arg.UserID)
+	var i PodcastChannel
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.FeedUrl,
+		&i.Title,
+		&i.Description,
+		&i.CoverUrl,
+		&i.CoverPath,
+		&i.CreatedAt,
+		&i.LastFetchedAt,
+		&i.CoverSize,
+	)
+	return i, err
 }
 
 const maxPlaylistPosition = `-- name: MaxPlaylistPosition :one
@@ -3133,17 +3165,23 @@ func (q *Queries) SetMusicIndexedSeq(ctx context.Context, arg SetMusicIndexedSeq
 }
 
 const setPodcastChannelCoverPath = `-- name: SetPodcastChannelCoverPath :exec
-UPDATE podcast_channels SET cover_path = $2 WHERE id = $1 AND user_id = $3
+UPDATE podcast_channels SET cover_path = $2, cover_size = $4 WHERE id = $1 AND user_id = $3
 `
 
 type SetPodcastChannelCoverPathParams struct {
 	ID        pgtype.UUID `json:"id"`
 	CoverPath pgtype.Text `json:"cover_path"`
 	UserID    pgtype.UUID `json:"user_id"`
+	CoverSize int64       `json:"cover_size"`
 }
 
 func (q *Queries) SetPodcastChannelCoverPath(ctx context.Context, arg SetPodcastChannelCoverPathParams) error {
-	_, err := q.db.Exec(ctx, setPodcastChannelCoverPath, arg.ID, arg.CoverPath, arg.UserID)
+	_, err := q.db.Exec(ctx, setPodcastChannelCoverPath,
+		arg.ID,
+		arg.CoverPath,
+		arg.UserID,
+		arg.CoverSize,
+	)
 	return err
 }
 

@@ -268,6 +268,15 @@ func expandEvents(cal *ical.Calendar, rangeStart, rangeEnd time.Time, loc *time.
 		} else if overlaps(dtstart, dur, allDay) {
 			starts = []time.Time{dtstart}
 		}
+		seen := make(map[int64]bool, len(starts))
+		for _, st := range starts {
+			seen[st.Unix()] = true
+		}
+		for original := range overrides[uid] {
+			if !seen[original] {
+				starts = append(starts, time.Unix(original, 0).In(eloc))
+			}
+		}
 		for _, st := range starts {
 			if ov, ok := overrides[uid][st.Unix()]; ok {
 				ovEv := &ical.Event{Component: ov}
@@ -280,6 +289,9 @@ func expandEvents(cal *ical.Calendar, rangeStart, rangeEnd time.Time, loc *time.
 				oe, oerr := ovEv.DateTimeEnd(ovLoc)
 				if oerr != nil || oe.Before(os) {
 					oe = os.Add(dur)
+				}
+				if propRaw(ov, ical.PropStatus) == "CANCELLED" || !overlaps(os, oe.Sub(os), ovAllDay) {
+					continue
 				}
 				out = append(out, occurrence{
 					UID:          uid,

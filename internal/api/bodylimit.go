@@ -24,6 +24,12 @@ func limitAPIBodies(mux *http.ServeMux) http.Handler {
 			return
 		}
 		limit := int64(maxJSONBody)
+		switch pattern {
+		case "POST /me/bookmarks/bulk":
+			limit = 64 << 20 // bounded bulk import, up to 20,000 records
+		case "POST /me/saved":
+			limit = 16 << 20 // 2 MiB HTML plus JSON escaping and metadata
+		}
 		if strings.Contains(pattern, " /auth/") || strings.Contains(pattern, " /setup/") || strings.Contains(pattern, " /pair/") || strings.Contains(pattern, " /me/identity/") || strings.Contains(pattern, " /me/webauthn/") || strings.Contains(pattern, " /me/totp") || pattern == "PUT /me/password" {
 			limit = maxAuthBody
 		}

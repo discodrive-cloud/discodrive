@@ -22,7 +22,7 @@ func selfStartLinks(self string) []atomLink {
 // root handles GET /opds — the top-level OPDS navigation feed.
 func (h *Handler) root(w http.ResponseWriter, r *http.Request) {
 	if wantsJSON(r) {
-		writeJSONFeed(w, feed2{
+		writeJSONFeed(w, r, feed2{
 			Metadata: metadata2{Title: "discodrive Library"},
 			Links: []link2{
 				{Rel: "self", Href: "/opds", Type: mediaTypeOPDS2},
@@ -93,7 +93,7 @@ func (h *Handler) root(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	}
-	writeAtomFeed(w, mediaTypeNavigation, feed)
+	writeAtomFeed(w, r, mediaTypeNavigation, feed)
 }
 
 // navAuthors handles GET /opds/nav/authors — one entry per accessible author.
@@ -120,7 +120,7 @@ func (h *Handler) navAuthors(w http.ResponseWriter, r *http.Request) {
 				Type:  mediaTypeOPDS2,
 			})
 		}
-		writeJSONFeed(w, feed2{
+		writeJSONFeed(w, r, feed2{
 			Metadata:   metadata2{Title: "Authors"},
 			Links:      []link2{{Rel: "self", Href: "/opds/nav/authors", Type: mediaTypeOPDS2}},
 			Navigation: navLinks,
@@ -149,7 +149,7 @@ func (h *Handler) navAuthors(w http.ResponseWriter, r *http.Request) {
 		Links:   selfStartLinks("/opds/nav/authors"),
 		Entries: entries,
 	}
-	writeAtomFeed(w, mediaTypeNavigation, feed)
+	writeAtomFeed(w, r, mediaTypeNavigation, feed)
 }
 
 // navSeries handles GET /opds/nav/series — one entry per accessible series.
@@ -179,7 +179,7 @@ func (h *Handler) navSeries(w http.ResponseWriter, r *http.Request) {
 				Type:  mediaTypeOPDS2,
 			})
 		}
-		writeJSONFeed(w, feed2{
+		writeJSONFeed(w, r, feed2{
 			Metadata:   metadata2{Title: "Series"},
 			Links:      []link2{{Rel: "self", Href: "/opds/nav/series", Type: mediaTypeOPDS2}},
 			Navigation: navLinks,
@@ -211,7 +211,7 @@ func (h *Handler) navSeries(w http.ResponseWriter, r *http.Request) {
 		Links:   selfStartLinks("/opds/nav/series"),
 		Entries: entries,
 	}
-	writeAtomFeed(w, mediaTypeNavigation, feed)
+	writeAtomFeed(w, r, mediaTypeNavigation, feed)
 }
 
 // navGenres handles GET /opds/nav/genres — one entry per accessible genre/tag.
@@ -238,7 +238,7 @@ func (h *Handler) navGenres(w http.ResponseWriter, r *http.Request) {
 				Type:  mediaTypeOPDS2,
 			})
 		}
-		writeJSONFeed(w, feed2{
+		writeJSONFeed(w, r, feed2{
 			Metadata:   metadata2{Title: "Genres"},
 			Links:      []link2{{Rel: "self", Href: "/opds/nav/genres", Type: mediaTypeOPDS2}},
 			Navigation: navLinks,
@@ -267,5 +267,5 @@ func (h *Handler) navGenres(w http.ResponseWriter, r *http.Request) {
 		Links:   selfStartLinks("/opds/nav/genres"),
 		Entries: entries,
 	}
-	writeAtomFeed(w, mediaTypeNavigation, feed)
+	writeAtomFeed(w, r, mediaTypeNavigation, feed)
 }

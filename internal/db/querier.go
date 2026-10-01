@@ -277,6 +277,9 @@ type Querier interface {
 	// Returns the removed rows: the caller deletes their bytes only after this statement, so
 	// a row that stayed never loses its bytes (a crash in between leaks bytes, loses none).
 	HardDeleteNode(ctx context.Context, id pgtype.UUID) ([]HardDeleteNodeRow, error)
+	// Tombstoned folder parents are allowed during chunked imports; changing a
+	// folder into a URL must still never strand its live children.
+	HasInvalidLiveBookmarkParent(ctx context.Context, userID pgtype.UUID) (bool, error)
 	// Audit log (A.7).
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	// Backup codes (A.3). One-time, argon2id-hashed.
@@ -435,6 +438,7 @@ type Querier interface {
 	// A folder created while this statement waited is not in its snapshot and not locked:
 	// the caller repeats it until the number of locked folders stops changing.
 	LockLiveSubtreeDirs(ctx context.Context, arg LockLiveSubtreeDirsParams) (int64, error)
+	LockPodcastChannel(ctx context.Context, arg LockPodcastChannelParams) (PodcastChannel, error)
 	// Serializes writers of one tree path until the transaction ends: two pushes to the
 	// same file must not both read the old row and then overwrite each other's bytes.
 	// The two-key form keeps these locks apart from the single-key upload/quota locks;
@@ -574,7 +578,7 @@ type Querier interface {
 	// Restore the rows trashed together with the root: clear the tombstone and move each
 	// row's path from old_prefix to new_prefix (where the root is restored to). The
 	// partial unique indexes fire here if a live node already holds a restored name.
-	UndeleteTombstoneSubtree(ctx context.Context, arg UndeleteTombstoneSubtreeParams) error
+	UndeleteTombstoneSubtree(ctx context.Context, arg UndeleteTombstoneSubtreeParams) ([]UndeleteTombstoneSubtreeRow, error)
 	Unstar(ctx context.Context, arg UnstarParams) error
 	UpdateBookMetadata(ctx context.Context, arg UpdateBookMetadataParams) error
 	UpdateBrowserBookmark(ctx context.Context, arg UpdateBrowserBookmarkParams) (BrowserBookmark, error)

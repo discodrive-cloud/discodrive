@@ -129,7 +129,7 @@ func (w *Worker) podcastRefresh(ctx context.Context) error {
 		return err
 	}
 	for _, ch := range channels {
-		if err := podcast.RefreshChannel(ctx, w.q, w.root, ch); err != nil {
+		if err := podcast.RefreshChannel(ctx, w.q, w.root, ch, quota.New(w.q, w.cfg.StorageTotal)); err != nil {
 			log.Printf("discodrive: podcast-refresh channel=%s: %v", db.UUIDString(ch.ID), err)
 			continue
 		}

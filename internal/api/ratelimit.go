@@ -114,3 +114,22 @@ func (s *Server) pollLimited(h http.HandlerFunc) http.HandlerFunc {
 		h(w, r)
 	}
 }
+
+// reserve counts in-flight checks too; successful checks return only their own window's slot.
+func (rl *rateLimiter) reserve(key string) (func(), bool) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.roll()
+	if rl.counts[key] >= rl.limit {
+		return nil, false
+	}
+	rl.counts[key]++
+	window := rl.windowStart
+	return func() {
+		rl.mu.Lock()
+		defer rl.mu.Unlock()
+		if rl.windowStart == window && rl.counts[key] > 0 {
+			rl.counts[key]--
+		}
+	}, true
+}

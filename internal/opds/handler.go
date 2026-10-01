@@ -71,6 +71,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cache-Control", "private, no-store")
 	ctx := context.WithValue(r.Context(), ctxUserID, userID)
 	h.mux.ServeHTTP(w, r.WithContext(ctx))
 }

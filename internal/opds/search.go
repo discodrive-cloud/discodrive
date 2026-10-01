@@ -45,6 +45,9 @@ func (h *Handler) searchDescription(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
+	for i := range doc.Urls {
+		doc.Urls[i].Template = authenticatedLink(r, doc.Urls[i].Template)
+	}
 	data, err := xml.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		http.Error(w, "opds: marshal failed", http.StatusInternalServerError)

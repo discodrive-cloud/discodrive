@@ -15,7 +15,9 @@ import (
 // eight parallel 30 MB uploads OOM-killed a 1 GB machine. Large parts must spill to disk.
 func TestMultipartUploadDoesNotBufferFileInMemory(t *testing.T) {
 	_, do := modTimeServer(t)
-	const size = 16 << 20
+	// Keep the bound above fixed multipart/transport allocations, including -race,
+	// but below the upload size: retaining the entire file must still fail.
+	const size = 32 << 20
 
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)

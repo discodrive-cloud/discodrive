@@ -205,6 +205,23 @@ func (q *Queries) GetBrowserBookmarkForUser(ctx context.Context, arg GetBrowserB
 	return i, err
 }
 
+const hasInvalidLiveBookmarkParent = `-- name: HasInvalidLiveBookmarkParent :one
+SELECT EXISTS (
+ SELECT 1 FROM browser_bookmarks c LEFT JOIN browser_bookmarks p ON p.id=c.parent_id
+ WHERE c.user_id=$1 AND NOT c.deleted AND c.parent_id IS NOT NULL
+ AND (p.id IS NULL OR p.user_id<>c.user_id OR NOT p.is_folder)
+)::bool
+`
+
+// Tombstoned folder parents are allowed during chunked imports; changing a
+// folder into a URL must still never strand its live children.
+func (q *Queries) HasInvalidLiveBookmarkParent(ctx context.Context, userID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasInvalidLiveBookmarkParent, userID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const listBrowserBookmarkChanges = `-- name: ListBrowserBookmarkChanges :many
 SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at FROM browser_bookmarks
 WHERE user_id = $1 AND seq > $2

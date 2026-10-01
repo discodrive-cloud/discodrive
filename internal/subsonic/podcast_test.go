@@ -501,7 +501,7 @@ func startRSSServerWithCover(t *testing.T) *httptest.Server {
 func overrideDownloadCover() func() {
 	orig := podcast.CoverDownloadFunc
 	podcast.CoverDownloadFunc = func(ctx context.Context, url, dest string) (int64, string, string, error) {
-		return podcast.DownloadToUnsafe(ctx, http.DefaultClient, url, dest, 0)
+		return podcast.DownloadToUnsafe(ctx, http.DefaultClient, url, dest, podcast.MaxCoverBytes)
 	}
 	return func() { podcast.CoverDownloadFunc = orig }
 }

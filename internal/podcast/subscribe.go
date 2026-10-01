@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"discodrive/internal/db"
+	"discodrive/internal/quota"
 	"discodrive/internal/storage"
 )
 
@@ -21,10 +22,10 @@ var ErrFeedUnavailable = errors.New("podcast: could not fetch feed")
 // a feed that is down for a moment must not take the channel, its episodes and
 // their downloaded files with it. Only a row this call inserted is rolled back
 // when the first fetch fails. created reports which case applied.
-func Subscribe(ctx context.Context, q *db.Queries, storageRoot string, userID pgtype.UUID, feedURL string) (ch db.PodcastChannel, created bool, err error) {
+func Subscribe(ctx context.Context, q *db.Queries, storageRoot string, userID pgtype.UUID, feedURL string, limits ...*quota.Checker) (ch db.PodcastChannel, created bool, err error) {
 	existing, err := q.GetPodcastChannelByFeed(ctx, db.GetPodcastChannelByFeedParams{UserID: userID, FeedUrl: feedURL})
 	if err == nil {
-		return refreshExisting(ctx, q, storageRoot, existing), false, nil
+		return refreshExisting(ctx, q, storageRoot, existing, limits...), false, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return db.PodcastChannel{}, false, err
@@ -38,21 +39,20 @@ func Subscribe(ctx context.Context, q *db.Queries, storageRoot string, userID pg
 		if err != nil {
 			return db.PodcastChannel{}, false, err
 		}
-		return refreshExisting(ctx, q, storageRoot, existing), false, nil
+		return refreshExisting(ctx, q, storageRoot, existing, limits...), false, nil
 	}
 	if err != nil {
 		return db.PodcastChannel{}, false, err
 	}
-	if err := RefreshChannel(ctx, q, storageRoot, ch); err != nil {
-		RemoveChannelFiles(ctx, q, storageRoot, ch)
-		_, _ = q.DeletePodcastChannelForUser(ctx, db.DeletePodcastChannelForUserParams{ID: ch.ID, UserID: userID})
+	if err := RefreshChannel(ctx, q, storageRoot, ch, limits...); err != nil {
+		_, _ = DeleteChannel(ctx, q, storageRoot, ch.ID, userID)
 		return db.PodcastChannel{}, false, fmt.Errorf("%w: %v", ErrFeedUnavailable, err)
 	}
 	return reread(ctx, q, ch), true, nil
 }
 
-func refreshExisting(ctx context.Context, q *db.Queries, storageRoot string, ch db.PodcastChannel) db.PodcastChannel {
-	_ = RefreshChannel(ctx, q, storageRoot, ch)
+func refreshExisting(ctx context.Context, q *db.Queries, storageRoot string, ch db.PodcastChannel, limits ...*quota.Checker) db.PodcastChannel {
+	_ = RefreshChannel(ctx, q, storageRoot, ch, limits...)
 	return reread(ctx, q, ch)
 }
 

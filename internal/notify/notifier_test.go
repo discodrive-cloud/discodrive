@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,12 +13,15 @@ import (
 )
 
 type fakeChannel struct {
+	mu   sync.Mutex
 	name string
 	sent []Message
 }
 
 func (f *fakeChannel) Name() string { return f.name }
 func (f *fakeChannel) Send(_ context.Context, m Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sent = append(f.sent, m)
 	return nil
 }
@@ -52,13 +56,13 @@ func newTestNotifier(st store, ch Channel) *Notifier {
 func waitSent(t *testing.T, ch *fakeChannel, want int) {
 	t.Helper()
 	for i := 0; i < 60; i++ {
-		if len(ch.sent) >= want && (want > 0 || i > 10) {
+		if ch.count() >= want && (want > 0 || i > 10) {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if len(ch.sent) != want {
-		t.Fatalf("sent %d, expected %d", len(ch.sent), want)
+	if ch.count() != want {
+		t.Fatalf("sent %d, expected %d", ch.count(), want)
 	}
 }
 
@@ -85,3 +89,5 @@ func TestEmitKillSwitchSilencesOptional(t *testing.T) {
 	n.Emit(context.Background(), testUID, "share.received", map[string]any{"NodeName": "f", "SharerEmail": "a@b"})
 	waitSent(t, ch, 0)
 }
+
+func (f *fakeChannel) count() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.sent) }

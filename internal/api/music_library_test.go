@@ -244,7 +244,7 @@ func usePodcastTestCover(t *testing.T) {
 	t.Helper()
 	orig := podcast.CoverDownloadFunc
 	podcast.CoverDownloadFunc = func(ctx context.Context, srcURL, destPath string) (int64, string, string, error) {
-		return podcast.DownloadToUnsafe(ctx, http.DefaultClient, srcURL, destPath, 0)
+		return podcast.DownloadToUnsafe(ctx, http.DefaultClient, srcURL, destPath, podcast.MaxCoverBytes)
 	}
 	t.Cleanup(func() { podcast.CoverDownloadFunc = orig })
 }

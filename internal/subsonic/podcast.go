@@ -88,7 +88,7 @@ func episodeChild(ep db.PodcastEpisode) map[string]any {
 // updates channel metadata, and caches the cover. It delegates to
 // podcast.RefreshChannel; userUUID matches ch.UserID for all callers.
 func (h *Handler) refreshOneChannel(ctx context.Context, userUUID pgtype.UUID, ch db.PodcastChannel) error {
-	return podcast.RefreshChannel(ctx, h.q, h.storageRoot, ch)
+	return podcast.RefreshChannel(ctx, h.q, h.storageRoot, ch, h.files.Quota())
 }
 
 func getPodcasts(h *Handler, c *reqCtx) {
@@ -213,7 +213,7 @@ func createPodcastChannel(h *Handler, c *reqCtx) {
 
 	// An existing subscription survives a failed refresh; only a channel created
 	// by this call is rolled back.
-	if _, _, err := podcast.Subscribe(ctx, h.q, h.storageRoot, userUUID, feedURL); err != nil {
+	if _, _, err := podcast.Subscribe(ctx, h.q, h.storageRoot, userUUID, feedURL, h.files.Quota()); err != nil {
 		if errors.Is(err, podcast.ErrFeedUnavailable) {
 			c.fail(ErrGeneric, "could not fetch feed")
 		} else {
@@ -277,7 +277,7 @@ func deletePodcastChannel(h *Handler, c *reqCtx) {
 	}
 
 	// Verify ownership before touching any files on disk.
-	ch, err := h.q.GetPodcastChannelForUser(ctx, db.GetPodcastChannelForUserParams{
+	_, err = h.q.GetPodcastChannelForUser(ctx, db.GetPodcastChannelForUserParams{
 		ID:     chUUID,
 		UserID: userUUID,
 	})
@@ -286,13 +286,7 @@ func deletePodcastChannel(h *Handler, c *reqCtx) {
 		return
 	}
 
-	// Best-effort: remove episode files and the cover on disk.
-	podcast.RemoveChannelFiles(ctx, h.q, h.storageRoot, ch)
-
-	n, err := h.q.DeletePodcastChannelForUser(ctx, db.DeletePodcastChannelForUserParams{
-		ID:     chUUID,
-		UserID: userUUID,
-	})
+	n, err := podcast.DeleteChannel(ctx, h.q, h.storageRoot, chUUID, userUUID)
 	if err != nil {
 		c.fail(ErrGeneric, "database error")
 		return

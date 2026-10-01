@@ -3010,7 +3010,7 @@ SELECT u.id, u.email, u.role, u.storage_quota, u.created_at,
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = u.id AND e.disk_path IS NOT NULL
-       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = u.id), 0)
+       ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = u.id), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = u.id), 0)
          + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = u.id AND si.status = 'processing'), 0))::bigint AS used
 FROM users u
 ORDER BY u.created_at
@@ -3336,7 +3336,7 @@ FROM (
            ), 0) + COALESCE((
                SELECT SUM(e.size) FROM podcast_episodes e
                WHERE e.user_id = usr.id AND e.disk_path IS NOT NULL
-           ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0)
+           ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = usr.id), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0)
              + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = usr.id AND si.status = 'processing'), 0))::bigint AS used
     FROM users usr
 ) AS fresh
@@ -3368,6 +3368,12 @@ func (q *Queries) RenameWebAuthnCredential(ctx context.Context, arg RenameWebAut
 
 const rewriteSubtreePaths = `-- name: RewriteSubtreePaths :exec
 
+WITH scope_reset AS (
+ UPDATE sync_settings ss SET epoch = epoch + 1
+ FROM nodes n WHERE ss.user_id = $3 AND ss.folder_node_id = n.id
+ AND $2::text <> $1::text
+ AND (n.disk_path = $2::text OR starts_with(n.disk_path, $2::text || '/'))
+)
 UPDATE nodes
 SET disk_path = $1::text || substring(disk_path FROM char_length($2::text) + 1)
 WHERE id IN (
@@ -3700,7 +3706,7 @@ SELECT (COALESCE((
            SELECT SUM(size) FROM file_versions
        ), 0) + COALESCE((
            SELECT SUM(size) FROM podcast_episodes WHERE disk_path IS NOT NULL
-       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0)
+       ), 0) + COALESCE((SELECT SUM(cover_size) FROM podcast_channels), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0)
          + COALESCE((SELECT SUM(bytes_done) FROM saved_items WHERE status = 'processing'), 0))::bigint AS used
 `
 
@@ -3778,38 +3784,61 @@ func (q *Queries) TrimNodeVersions(ctx context.Context, arg TrimNodeVersionsPara
 	return items, nil
 }
 
-const undeleteTombstoneSubtree = `-- name: UndeleteTombstoneSubtree :exec
+const undeleteTombstoneSubtree = `-- name: UndeleteTombstoneSubtree :many
 WITH RECURSIVE t AS (
     SELECT r.id, r.deleted_at FROM nodes r
-    WHERE r.id = $3 AND r.deleted_at IS NOT NULL
+    WHERE r.id = $1 AND r.deleted_at IS NOT NULL
   UNION
     SELECT c.id, c.deleted_at FROM nodes c JOIN t ON c.parent_id = t.id
     WHERE c.deleted_at IS NOT NULL AND c.deleted_at = t.deleted_at
-)
+), restored AS (
 UPDATE nodes n
 SET deleted_at = NULL,
     trash_path = NULL,
     disk_path = CASE
-        WHEN n.disk_path = $1::text OR starts_with(n.disk_path, $1::text || '/')
-        THEN $2::text || substring(n.disk_path FROM char_length($1::text) + 1)
+        WHEN n.disk_path = $2::text OR starts_with(n.disk_path, $2::text || '/')
+        THEN $3::text || substring(n.disk_path FROM char_length($2::text) + 1)
         ELSE n.disk_path
     END
 FROM t
 WHERE n.id = t.id
+RETURNING n.id, n.version, n.disk_path
+)
+SELECT id, version FROM restored ORDER BY length(disk_path), disk_path
 `
 
 type UndeleteTombstoneSubtreeParams struct {
+	ID        pgtype.UUID `json:"id"`
 	OldPrefix string      `json:"old_prefix"`
 	NewPrefix string      `json:"new_prefix"`
-	ID        pgtype.UUID `json:"id"`
+}
+
+type UndeleteTombstoneSubtreeRow struct {
+	ID      pgtype.UUID `json:"id"`
+	Version int64       `json:"version"`
 }
 
 // Restore the rows trashed together with the root: clear the tombstone and move each
 // row's path from old_prefix to new_prefix (where the root is restored to). The
 // partial unique indexes fire here if a live node already holds a restored name.
-func (q *Queries) UndeleteTombstoneSubtree(ctx context.Context, arg UndeleteTombstoneSubtreeParams) error {
-	_, err := q.db.Exec(ctx, undeleteTombstoneSubtree, arg.OldPrefix, arg.NewPrefix, arg.ID)
-	return err
+func (q *Queries) UndeleteTombstoneSubtree(ctx context.Context, arg UndeleteTombstoneSubtreeParams) ([]UndeleteTombstoneSubtreeRow, error) {
+	rows, err := q.db.Query(ctx, undeleteTombstoneSubtree, arg.ID, arg.OldPrefix, arg.NewPrefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UndeleteTombstoneSubtreeRow{}
+	for rows.Next() {
+		var i UndeleteTombstoneSubtreeRow
+		if err := rows.Scan(&i.ID, &i.Version); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateNodeContent = `-- name: UpdateNodeContent :one
@@ -4242,7 +4271,7 @@ SELECT (COALESCE((
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = $1 AND e.disk_path IS NOT NULL
-       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = $1), 0)
+       ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = $1), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = $1), 0)
          + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = $1 AND si.status = 'processing'), 0))::bigint AS used
 `
 

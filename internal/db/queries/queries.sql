@@ -54,7 +54,7 @@ SELECT u.id, u.email, u.role, u.storage_quota, u.created_at,
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = u.id AND e.disk_path IS NOT NULL
-       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = u.id), 0)
+       ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = u.id), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = u.id), 0)
          + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = u.id AND si.status = 'processing'), 0))::bigint AS used
 FROM users u
 ORDER BY u.created_at;
@@ -74,7 +74,7 @@ SELECT (COALESCE((
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = sqlc.arg(user_id) AND e.disk_path IS NOT NULL
-       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = sqlc.arg(user_id)), 0)
+       ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = sqlc.arg(user_id)), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = sqlc.arg(user_id)), 0)
          + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = sqlc.arg(user_id) AND si.status = 'processing'), 0))::bigint AS used;
 
 -- The part of a user's occupied space that emptying the trash would release: trashed
@@ -98,7 +98,7 @@ SELECT (COALESCE((
            SELECT SUM(size) FROM file_versions
        ), 0) + COALESCE((
            SELECT SUM(size) FROM podcast_episodes WHERE disk_path IS NOT NULL
-       ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0)
+       ), 0) + COALESCE((SELECT SUM(cover_size) FROM podcast_channels), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0)
          + COALESCE((SELECT SUM(bytes_done) FROM saved_items WHERE status = 'processing'), 0))::bigint AS used;
 
 -- Sum of the quotas handed out to users, optionally excluding one (the user being
@@ -126,7 +126,7 @@ FROM (
            ), 0) + COALESCE((
                SELECT SUM(e.size) FROM podcast_episodes e
                WHERE e.user_id = usr.id AND e.disk_path IS NOT NULL
-           ), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0)
+           ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = usr.id), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0)
              + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = usr.id AND si.status = 'processing'), 0))::bigint AS used
     FROM users usr
 ) AS fresh
@@ -393,6 +393,12 @@ FOR UPDATE;
 -- trashed rows included. Two branches, one per partial index: as a single condition
 -- the planner merges them and scans the table.
 -- name: RewriteSubtreePaths :exec
+WITH scope_reset AS (
+ UPDATE sync_settings ss SET epoch = epoch + 1
+ FROM nodes n WHERE ss.user_id = sqlc.arg(user_id) AND ss.folder_node_id = n.id
+ AND sqlc.arg(old_prefix)::text <> sqlc.arg(new_prefix)::text
+ AND (n.disk_path = sqlc.arg(old_prefix)::text OR starts_with(n.disk_path, sqlc.arg(old_prefix)::text || '/'))
+)
 UPDATE nodes
 SET disk_path = sqlc.arg(new_prefix)::text || substring(disk_path FROM char_length(sqlc.arg(old_prefix)::text) + 1)
 WHERE id IN (
@@ -681,14 +687,14 @@ SELECT n.id, n.disk_path, n.trash_path, n.is_dir, n.size FROM nodes n JOIN t ON 
 -- Restore the rows trashed together with the root: clear the tombstone and move each
 -- row's path from old_prefix to new_prefix (where the root is restored to). The
 -- partial unique indexes fire here if a live node already holds a restored name.
--- name: UndeleteTombstoneSubtree :exec
+-- name: UndeleteTombstoneSubtree :many
 WITH RECURSIVE t AS (
     SELECT r.id, r.deleted_at FROM nodes r
     WHERE r.id = sqlc.arg(id) AND r.deleted_at IS NOT NULL
   UNION
     SELECT c.id, c.deleted_at FROM nodes c JOIN t ON c.parent_id = t.id
     WHERE c.deleted_at IS NOT NULL AND c.deleted_at = t.deleted_at
-)
+), restored AS (
 UPDATE nodes n
 SET deleted_at = NULL,
     trash_path = NULL,
@@ -698,7 +704,10 @@ SET deleted_at = NULL,
         ELSE n.disk_path
     END
 FROM t
-WHERE n.id = t.id;
+WHERE n.id = t.id
+RETURNING n.id, n.version, n.disk_path
+)
+SELECT id, version FROM restored ORDER BY length(disk_path), disk_path;
 
 -- name: ListSecretKeys :many
 SELECT key FROM settings WHERE is_secret = true ORDER BY key;

@@ -120,6 +120,13 @@ func (s *Service) BulkImport(ctx context.Context, userID pgtype.UUID, items []Bu
 			return 0, 0, fmt.Errorf("%w: item %d: id %q is already in use", ErrInvalidImport, i, it.ID)
 		}
 	}
+	badParent, err := qtx.HasInvalidLiveBookmarkParent(ctx, userID)
+	if err != nil {
+		return 0, 0, err
+	}
+	if badParent {
+		return 0, 0, fmt.Errorf("%w: a bookmark parent must be a folder", ErrInvalidImport)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, err
 	}

@@ -61,7 +61,26 @@ type pubAuthor2 struct {
 }
 
 // writeJSONFeed encodes feed as OPDS 2.0 JSON and writes it to w.
-func writeJSONFeed(w http.ResponseWriter, feed feed2) {
+func writeJSONFeed(w http.ResponseWriter, r *http.Request, feed feed2) {
+	links := func(ls []link2) {
+		for i := range ls {
+			ls[i].Href = authenticatedLink(r, ls[i].Href)
+		}
+	}
+	pubs := func(ps []publication2) {
+		for i := range ps {
+			links(ps[i].Links)
+			links(ps[i].Images)
+		}
+	}
+	links(feed.Links)
+	links(feed.Navigation)
+	pubs(feed.Publications)
+	for i := range feed.Groups {
+		links(feed.Groups[i].Links)
+		links(feed.Groups[i].Navigation)
+		pubs(feed.Groups[i].Publications)
+	}
 	w.Header().Set("Content-Type", mediaTypeOPDS2+"; charset=utf-8")
 	if err := json.NewEncoder(w).Encode(feed); err != nil {
 		// Header already written; nothing useful we can do.

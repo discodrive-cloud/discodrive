@@ -21,22 +21,23 @@ func (s *Server) handleCalendarFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if passHash != "" {
+		key := token + "|" + clientIP(r)
+		refund, allowed := s.feedLimiter.reserve(key)
+		if !allowed {
+			http.Error(w, "too many attempts, please try again later", http.StatusTooManyRequests)
+			return
+		}
 		_, pass, has := r.BasicAuth()
 		good := false
 		if has {
 			good, _ = auth.VerifyPassword(pass, passHash)
 		}
 		if !good {
-			// Rate-limit failed attempts per token+IP so a leaked link can't be
-			// brute-forced online. Successful polls never reach this branch.
-			if !s.feedLimiter.allow(token + "|" + clientIP(r)) {
-				http.Error(w, "too many attempts, please try again later", http.StatusTooManyRequests)
-				return
-			}
 			w.Header().Set("WWW-Authenticate", `Basic realm="calendar"`)
 			http.Error(w, "password required", http.StatusUnauthorized)
 			return
 		}
+		refund()
 	}
 	objs, err := s.dav.ListCalendarObjects(r.Context(), calID)
 	if err != nil {

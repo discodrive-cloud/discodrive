@@ -815,7 +815,7 @@ SET title = $3, description = $4, cover_url = $5, last_fetched_at = now()
 WHERE id = $1 AND user_id = $2;
 
 -- name: SetPodcastChannelCoverPath :exec
-UPDATE podcast_channels SET cover_path = $2 WHERE id = $1 AND user_id = $3;
+UPDATE podcast_channels SET cover_path = $2, cover_size = $4 WHERE id = $1 AND user_id = $3;
 
 -- name: DeletePodcastChannelForUser :execrows
 DELETE FROM podcast_channels WHERE id = $1 AND user_id = $2;
@@ -917,3 +917,6 @@ WITH RECURSIVE subtree AS (
 )
 DELETE FROM songs WHERE songs.user_id = sqlc.arg(user_id)
   AND node_id NOT IN (SELECT id FROM subtree);
+
+-- name: LockPodcastChannel :one
+SELECT * FROM podcast_channels WHERE id=$1 AND user_id=$2 FOR UPDATE;

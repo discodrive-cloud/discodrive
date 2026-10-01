@@ -36,6 +36,7 @@ import (
 	"discodrive/internal/music"
 	"discodrive/internal/notify"
 	"discodrive/internal/opds"
+	"discodrive/internal/podcast"
 	"discodrive/internal/quota"
 	"discodrive/internal/rescan"
 	"discodrive/internal/saved"
@@ -220,6 +221,9 @@ func runServer(cfg config.Config) {
 	}
 	authSvc.SetWebAuthn(wa)
 	store := storage.NewLocalDisk(cfg.StorageRoot)
+	if err := podcast.ReconcileCovers(ctx, queries, cfg.StorageRoot); err != nil {
+		log.Fatalf("recover podcast cover accounting: %v", err)
+	}
 	fileSvc := storage.NewFileService(pool, store)
 	uploads := storage.NewUploads(store, fileSvc)
 

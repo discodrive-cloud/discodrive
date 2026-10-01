@@ -143,3 +143,12 @@ RETURNING id, user_id, favicon_ext, seq;
 
 -- name: BumpBookmarkGCSeq :exec
 UPDATE users SET bookmark_gc_seq = GREATEST(bookmark_gc_seq, $2) WHERE id = $1;
+
+-- Tombstoned folder parents are allowed during chunked imports; changing a
+-- folder into a URL must still never strand its live children.
+-- name: HasInvalidLiveBookmarkParent :one
+SELECT EXISTS (
+ SELECT 1 FROM browser_bookmarks c LEFT JOIN browser_bookmarks p ON p.id=c.parent_id
+ WHERE c.user_id=$1 AND NOT c.deleted AND c.parent_id IS NOT NULL
+ AND (p.id IS NULL OR p.user_id<>c.user_id OR NOT p.is_folder)
+)::bool;
