@@ -48,6 +48,8 @@ func (s *Server) routesForTest() http.Handler {
 	mux.HandleFunc("PUT /sync/file", s.handleSyncPutFile)
 	mux.HandleFunc("POST /upload/init", s.handleUploadInit)
 	mux.HandleFunc("GET /files", s.handleListFiles)
+	mux.HandleFunc("POST /files/folder", s.handleCreateFolder)
+	mux.HandleFunc("PATCH /files/{id}/relocate", s.handleRelocate)
 	return mux
 }
 

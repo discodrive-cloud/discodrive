@@ -122,6 +122,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("POST /files/upload", prot(http.HandlerFunc(s.handleUpload)))
 	mux.Handle("PATCH /files/{id}/rename", prot(http.HandlerFunc(s.handleRename)))
 	mux.Handle("PATCH /files/{id}/move", prot(http.HandlerFunc(s.handleMove)))
+	mux.Handle("PATCH /files/{id}/relocate", prot(http.HandlerFunc(s.handleRelocate)))
 	mux.Handle("DELETE /files/{id}", prot(http.HandlerFunc(s.handleDelete)))
 	mux.Handle("GET /files/{id}/versions", prot(http.HandlerFunc(s.handleListVersions)))
 	mux.Handle("POST /files/{id}/restore", prot(http.HandlerFunc(s.handleRestore)))

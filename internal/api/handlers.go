@@ -620,6 +620,28 @@ func (s *Server) handleMove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toNodeDTO(node))
 }
 
+// PATCH /files/{id}/relocate {parent_id, name} moves and renames atomically.
+// Existing destinations are never overwritten.
+func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ParentID *string `json:"parent_id"`
+		Name     string  `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.ParentID != nil && *req.ParentID == "" {
+		req.ParentID = nil
+	}
+	node, err := s.files.Relocate(r.Context(), auth.UserID(r.Context()), r.PathValue("id"), req.ParentID, req.Name, "")
+	if err != nil {
+		writeStorageErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toNodeDTO(node))
+}
+
 // DELETE /files/{id} — soft-delete a node (and its entire subtree)
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if err := s.files.Delete(r.Context(), auth.UserID(r.Context()), r.PathValue("id")); err != nil {
