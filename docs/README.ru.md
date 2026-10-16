@@ -141,7 +141,7 @@ docker compose exec app cat /data/.bootstrap/setup-token
 - Файлы хранятся в `/data`.
 - TLS-сертификаты в `deploy/nginx/certs/` - Необходимо создать и положить **настоящий или самоподписанный сертификат** (как сгенерировать — в Варианте 2) Compose публикует только HTTPS; для стандартного порта задайте `NGINX_HTTPS_PORT=443`.
 
-Чтобы остановить: `docker compose down` (данные сохранятся). Чтобы обновить после `git pull`: `docker compose up -d --build`.
+Чтобы остановить: `docker compose down` (данные сохранятся). Чтобы обновить: `git pull && docker compose pull && docker compose up -d`. Сервер запускается из готового образа `ghcr.io/discodrive-cloud/discodrive` (amd64/arm64); чтобы собрать его из исходников, используйте `docker compose up -d --build`.
 
 ### Вариант 2. Отдельными компонентами (сборка из исходного кода)
 

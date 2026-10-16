@@ -141,7 +141,7 @@ How it works:
 - Files are stored in `/data`.
 - TLS certificates go in `deploy/nginx/certs/` — you need to place a **real or self-signed certificate** there (see Option 2 for how to generate one) The default Compose setup publishes only HTTPS; set `NGINX_HTTPS_PORT=443` for the standard port.
 
-To stop: `docker compose down` (data is preserved). To update after `git pull`: `docker compose up -d --build`.
+To stop: `docker compose down` (data is preserved). To update: `git pull && docker compose pull && docker compose up -d`. The server runs from the prebuilt image `ghcr.io/discodrive-cloud/discodrive` (amd64/arm64); to build it from source instead, use `docker compose up -d --build`.
 
 ### Option 2. Separate components (build from source)
 

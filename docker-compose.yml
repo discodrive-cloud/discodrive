@@ -13,6 +13,9 @@ services:
       retries: 10
 
   app:
+    # Prebuilt multi-arch image; when it can't be pulled (or with --build) Compose
+    # builds it from this checkout instead.
+    image: ghcr.io/discodrive-cloud/discodrive:${DISCODRIVE_VERSION:-latest}
     build: .
     # HTTP backend is reachable only inside the Compose network.
     environment:
