@@ -14,7 +14,7 @@ DiscoDrive — это self-hosted-замена набору подписок и 
 
 Кроссплатформенность заложена в основу: Apple, Windows, Linux и Android.
 
-**Скачать приложения:** сборки для десктопа (macOS/Windows/Linux) и Android — на [странице релизов](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); приложение для iOS собирается из исходников. Все клиенты — в [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
+**Скачать приложения:** сборки для десктопа (macOS/Windows/Linux) и Android — на [странице релизов](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); приложение для iOS — в [бета-версии TestFlight](https://testflight.apple.com/join/Mzy8NRsP). Все клиенты — в [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
 
 ---
 

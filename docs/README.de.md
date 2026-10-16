@@ -14,7 +14,7 @@ Dateien werden als ganz normale Dateien in ganz normalen Ordnern auf der Festpla
 
 Plattformübergreifend von Grund auf: Apple, Windows, Linux und Android.
 
-**Apps herunterladen:** Desktop-Builds (macOS/Windows/Linux) und Android stehen auf der [Releases-Seite](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); die iOS-App wird aus dem Quellcode gebaut. Alle Clients unter [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
+**Apps herunterladen:** Desktop-Builds (macOS/Windows/Linux) und Android stehen auf der [Releases-Seite](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); die iOS-App gibt es als [TestFlight-Beta](https://testflight.apple.com/join/Mzy8NRsP). Alle Clients unter [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
 
 ---
 

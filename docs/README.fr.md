@@ -14,7 +14,7 @@ Vos fichiers sont stockés comme des fichiers ordinaires, dans des dossiers ordi
 
 Multiplateforme par conception : Apple, Windows, Linux et Android.
 
-**Télécharger les applications :** les versions de bureau (macOS/Windows/Linux) et Android sont sur la [page des releases](https://github.com/discodrive-cloud/discodrive-apps/releases/latest) ; l'application iOS se compile depuis les sources. Tous les clients sur [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
+**Télécharger les applications :** les versions de bureau (macOS/Windows/Linux) et Android sont sur la [page des releases](https://github.com/discodrive-cloud/discodrive-apps/releases/latest) ; l'application iOS est disponible en [bêta TestFlight](https://testflight.apple.com/join/Mzy8NRsP). Tous les clients sur [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
 
 ---
 
