@@ -88,6 +88,7 @@ DiscoDrive — це self-hosted заміна набору підписок і з
 - **Кілька користувачів** з персональними квотами.
 - **Паролі для застосунків** — щоб підключати файлові, музичні та книжкові клієнти, не розкриваючи основний пароль.
 - **TLS усюди** за замовчуванням.
+- **Зміна пароля виходить з усіх пристроїв** і відкликає паролі застосунків.
 
 ### 🌍 Твоє, усюди, твоєю мовою
 
@@ -98,120 +99,31 @@ DiscoDrive — це self-hosted заміна набору підписок і з
 
 ## Встановлення
 
-DiscoDrive — це один сервер плюс PostgreSQL. Перед ним можна поставити nginx — для TLS і швидкої роздачі файлів через X-Accel. Нижче два способи розгорнути все це. Більшості підійде **Варіант 1**.
-
-> **Перед запуском потрібно підготувати два секретних ключі.** Сервер не запуститься з тимчасовими значеннями з `.env.example`. Згенеруй їх один раз і більше не змінюй:
->
-> - `JWT_SECRET` — `openssl rand -base64 48`;
-> - `SETTINGS_ENCRYPTION_KEY` — `openssl rand -hex 16`.
->
-> І пам'ятай: застосунки Apple (CalDAV/CardDAV) потребують **HTTPS** — по незашифрованому HTTP вони не працюють.
-
-### Варіант 1. Docker з клонуванням репозиторію (рекомендовано)
-
-Найпростіший шлях: одна команда `docker compose up` піднімає сервер, базу даних і nginx з TLS.
-
-**Потрібно:** git, Docker та Docker Compose.
+Потрібен сервер із Docker і Docker Compose. Образ сервера вже зібраний під amd64 і arm64.
 
 ```sh
 git clone https://github.com/discodrive-cloud/discodrive.git
 cd discodrive
 cp .env.example .env
-# відредагуй .env: задай JWT_SECRET, SETTINGS_ENCRYPTION_KEY, BASE_DOMAIN,
-# POSTGRES_PASSWORD і, за бажанням, решту
+```
+
+У `.env` задай `POSTGRES_PASSWORD` (і той самий пароль у `DATABASE_URL`), `BASE_DOMAIN` і два ключі — зі значеннями-заглушками сервер не запуститься:
+
+```sh
+openssl rand -base64 48   # JWT_SECRET
+openssl rand -hex 16      # SETTINGS_ENCRYPTION_KEY
+```
+
+Запусти й прочитай одноразовий код першого налаштування:
+
+```sh
 docker compose up -d
+sudo cat data/.bootstrap/setup-token
 ```
 
-Відкрийте **https://server_address:8443** та вкажіть одноразовий токен, пошту й пароль. Отримайте токен через консоль сервера командою `docker compose exec app cat /data/.bootstrap/setup-token`. Налаштування потребує HTTPS. Після завершення файл токена видаляється; видалення останнього адміністратора не відкриває налаштування знову.
+Відкрий `https://твій-домен:8443`, введи код і створи обліковий запис адміністратора. Під час першого запуску створюється самопідписаний сертифікат, тож браузери попереджатимуть, доки не заміниш його справжнім.
 
-Як це влаштовано:
-
-- Файли зберігаються в `/data`.
-- TLS-сертифікати лежать у `deploy/nginx/certs/`. Під час першого запуску Compose сам створює там **самопідписаний сертифікат** для `BASE_DOMAIN`; клієнти попереджатимуть про нього, доки ви не заміните `dev.pem` і `dev-key.pem` справжнім сертифікатом (наприклад, Let's Encrypt). Наявні файли ніколи не перезаписуються. Compose публікує лише HTTPS; для стандартного порту задайте `NGINX_HTTPS_PORT=443`.
-
-Щоб зупинити: `docker compose down` (дані збережуться). Щоб оновити: `git pull && docker compose pull && docker compose up -d`. Сервер запускається з готового образу `ghcr.io/discodrive-cloud/discodrive` (amd64/arm64); щоб зібрати його з вихідного коду, використовуйте `docker compose up -d --build`.
-
-### Варіант 2. Окремими компонентами (збірка з вихідного коду)
-
-Якщо Docker тобі не потрібен — збери виконуваний файл самостійно й запусти його поруч зі звичайним PostgreSQL. Виконуваний файл є самодостатнім: у нього вбудовані всі необхідні компоненти.
-
-**Для збірки потрібні:** Go 1.25+, Node.js 22+, PostgreSQL 16+.
-
-**1. Збери веб-інтерфейс** (Nuxt → статичні файли у `web/dist`):
-
-```sh
-cd web
-npm install
-npm run generate
-cd ..
-```
-
-**2. Збери сервер** (виконуваний файл вбере в себе `web/dist` і міграції):
-
-```sh
-CGO_ENABLED=0 go build -trimpath -o discodrive ./cmd/server
-```
-
-**3. Підніми PostgreSQL** і створи базу даних з користувачем:
-
-```sh
-createuser disco --pwprompt
-createdb discodrive --owner disco
-```
-
-**4. Задай змінні оточення** (повний список — у `.env.example`):
-
-```sh
-export DATABASE_URL="postgres://disco:ПАРОЛЬ@localhost:5432/discodrive?sslmode=disable"
-export JWT_SECRET="$(openssl rand -base64 48)"
-export SETTINGS_ENCRYPTION_KEY="$(openssl rand -hex 16)"
-export BASE_DOMAIN="example.com"
-export STORAGE_ROOT="/var/lib/discodrive/data"   # тека має існувати й бути доступна для запису
-export APP_PORT="8080"
-export XACCEL_ENABLED="false"                     # без nginx сервер роздає файли сам
-```
-
-**5. Запусти**:
-
-```sh
-./discodrive
-```
-
-Перед початковим налаштуванням підключіть HTTPS reverse proxy. Прочитайте токен через консоль сервера з `<STORAGE_ROOT>/.bootstrap/setup-token` (або `SETUP_TOKEN_FILE`) та відкрийте HTTPS-адресу.
-
-**nginx (необов'язково).** Потрібен для HTTPS і швидкої роздачі файлів через X-Accel. Візьми за основу `deploy/nginx/default.conf.template`, пропиши свої TLS-сертифікати й встанови `XACCEL_ENABLED=true` — тоді сервер повертає файли заголовком `X-Accel-Redirect`, а тіло файлів роздає nginx (розташування `/data/`, значення параметра `STORAGE_ROOT`).
-
-TLS-сертифікати візьми у Let's Encrypt (`certbot`) або згенеруй самопідписані:
-
-```sh
-openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
-  -keyout deploy/nginx/certs/dev-key.pem \
-  -out deploy/nginx/certs/dev.pem -subj "/CN=localhost"
-```
-
-**Автозапуск через systemd (необов'язково).** Приклад модуля `/etc/systemd/system/discodrive.service`:
-
-```ini
-[Unit]
-Description=DiscoDrive
-After=network.target postgresql.service
-
-[Service]
-ExecStart=/usr/local/bin/discodrive
-EnvironmentFile=/etc/discodrive.env
-Restart=on-failure
-User=discodrive
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Змінні з кроку 4 поклади в `/etc/discodrive.env` (формат `KEY=value`, по одній на рядок), потім виконай:
-
-```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now discodrive
-```
+**[Докладна інструкція зі встановлення (англійською) →](https://discodrive.app/docs/install)** Права на теку даних у Linux, безкоштовний сертифікат Let's Encrypt, встановлення без Docker, оновлення, резервні копії та розв'язання проблем.
 
 ---
 

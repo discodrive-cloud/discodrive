@@ -88,6 +88,7 @@ Eine persönliche Ecke für alles, was du im Netz gefunden hast und nicht verlie
 - **Mehrbenutzer** mit individuellen Speicherkontingenten.
 - **App-Passwörter** zum Verbinden von Datei-, Musik- und Buch-Clients, ohne dein Haupt-Passwort preiszugeben.
 - **TLS überall** standardmäßig.
+- **Eine Passwortänderung meldet alle Geräte ab** und widerruft App-Passwörter.
 
 ### 🌍 Dein, überall, in deiner Sprache
 
@@ -98,120 +99,31 @@ Eine persönliche Ecke für alles, was du im Netz gefunden hast und nicht verlie
 
 ## Installation
 
-DiscoDrive besteht aus einem einzelnen Server plus PostgreSQL. Davor kann nginx gesetzt werden — für TLS und schnelle Dateiauslieferung über X-Accel. Unten sind zwei Wege beschrieben, alles einzurichten. Für die meisten empfiehlt sich **Variante 1**.
-
-> **Vor dem Start müssen zwei geheime Schlüssel vorbereitet werden.** Der Server startet nicht mit den Platzhalterwerten aus `.env.example`. Generiere sie einmalig und lass sie unverändert:
->
-> - `JWT_SECRET` — `openssl rand -base64 48`;
-> - `SETTINGS_ENCRYPTION_KEY` — `openssl rand -hex 16`.
->
-> Außerdem gilt: Apple-Apps (CalDAV/CardDAV) benötigen zwingend **HTTPS** — über unverschlüsseltes HTTP funktionieren sie nicht.
-
-### Variante 1. Docker mit Repository-Klon (empfohlen)
-
-Der einfachste Weg: ein einziges `docker compose up` startet Server, Datenbank und nginx mit TLS.
-
-**Benötigt:** git, Docker und Docker Compose.
+Du brauchst einen Server mit Docker und Docker Compose. Das Server-Image ist fertig gebaut für amd64 und arm64.
 
 ```sh
 git clone https://github.com/discodrive-cloud/discodrive.git
 cd discodrive
 cp .env.example .env
-# .env bearbeiten: JWT_SECRET, SETTINGS_ENCRYPTION_KEY, BASE_DOMAIN,
-# POSTGRES_PASSWORD setzen und bei Bedarf den Rest anpassen
+```
+
+Setze in `.env` `POSTGRES_PASSWORD` (und dasselbe Passwort in `DATABASE_URL`), `BASE_DOMAIN` und zwei Schlüssel — mit den Platzhalterwerten startet der Server nicht:
+
+```sh
+openssl rand -base64 48   # JWT_SECRET
+openssl rand -hex 16      # SETTINGS_ENCRYPTION_KEY
+```
+
+Starte ihn und lies den einmaligen Einrichtungscode:
+
+```sh
 docker compose up -d
+sudo cat data/.bootstrap/setup-token
 ```
 
-Öffnen Sie **https://server_address:8443** und geben Sie das einmalige Einrichtungstoken, die E-Mail-Adresse und das Passwort ein. Lesen Sie das Token über die Serverkonsole mit `docker compose exec app cat /data/.bootstrap/setup-token`. Die Einrichtung erfordert HTTPS. Nach Abschluss wird die Tokendatei gelöscht; das Löschen des letzten Administrators öffnet die Einrichtung nicht erneut.
+Öffne `https://deine-domain:8443`, gib den Code ein und lege das Administratorkonto an. Beim ersten Start wird ein selbstsigniertes Zertifikat erzeugt, daher warnen Browser, bis du es durch ein echtes ersetzt.
 
-So ist es aufgebaut:
-
-- Dateien werden in `/data` gespeichert.
-- TLS-Zertifikate liegen in `deploy/nginx/certs/`. Beim ersten Start erzeugt Compose dort ein **selbstsigniertes Zertifikat** für `BASE_DOMAIN`; Clients warnen davor, bis Sie `dev.pem` und `dev-key.pem` durch ein echtes Zertifikat ersetzen (z. B. Let's Encrypt). Vorhandene Dateien werden nie überschrieben. Compose veröffentlicht nur HTTPS; für den Standardport setzen Sie `NGINX_HTTPS_PORT=443`.
-
-Zum Stoppen: `docker compose down` (Daten bleiben erhalten). Aktualisieren: `git pull && docker compose pull && docker compose up -d`. Der Server läuft aus dem fertigen Image `ghcr.io/discodrive-cloud/discodrive` (amd64/arm64); um es stattdessen aus dem Quellcode zu bauen, verwenden Sie `docker compose up -d --build`.
-
-### Variante 2. Einzelne Komponenten (aus dem Quellcode bauen)
-
-Wer Docker nicht verwenden möchte, baut die ausführbare Datei selbst und betreibt sie neben einem regulären PostgreSQL. Die ausführbare Datei ist vollständig eigenständig — alle Komponenten sind darin enthalten.
-
-**Zum Bauen benötigt:** Go 1.25+, Node.js 22+, PostgreSQL 16+.
-
-**1. Web-Oberfläche bauen** (Nuxt → statische Dateien in `web/dist`):
-
-```sh
-cd web
-npm install
-npm run generate
-cd ..
-```
-
-**2. Server bauen** (die ausführbare Datei bindet `web/dist` und die Migrationen ein):
-
-```sh
-CGO_ENABLED=0 go build -trimpath -o discodrive ./cmd/server
-```
-
-**3. PostgreSQL aufsetzen** und Datenbank mit Benutzer anlegen:
-
-```sh
-createuser disco --pwprompt
-createdb discodrive --owner disco
-```
-
-**4. Umgebungsvariablen setzen** (vollständige Liste in `.env.example`):
-
-```sh
-export DATABASE_URL="postgres://disco:PASSWORT@localhost:5432/discodrive?sslmode=disable"
-export JWT_SECRET="$(openssl rand -base64 48)"
-export SETTINGS_ENCRYPTION_KEY="$(openssl rand -hex 16)"
-export BASE_DOMAIN="example.com"
-export STORAGE_ROOT="/var/lib/discodrive/data"   # Verzeichnis muss existieren und beschreibbar sein
-export APP_PORT="8080"
-export XACCEL_ENABLED="false"                     # ohne nginx liefert der Server Dateien selbst aus
-```
-
-**5. Starten**:
-
-```sh
-./discodrive
-```
-
-Richten Sie vor der Ersteinrichtung einen HTTPS-Reverse-Proxy ein. Lesen Sie das Token über die Serverkonsole aus `<STORAGE_ROOT>/.bootstrap/setup-token` (oder `SETUP_TOKEN_FILE`) und öffnen Sie die HTTPS-Adresse.
-
-**nginx (optional).** Wird für HTTPS und schnelle Dateiauslieferung über X-Accel benötigt. Nimm `deploy/nginx/default.conf.template` als Ausgangspunkt, trage deine TLS-Zertifikate ein und setze `XACCEL_ENABLED=true` — dann antwortet der Server mit dem Header `X-Accel-Redirect`, und nginx liefert die Dateiinhalte selbst aus (Pfad `/data/`, entspricht `STORAGE_ROOT`).
-
-TLS-Zertifikate erhältst du bei Let's Encrypt (`certbot`), oder du generierst selbstsignierte:
-
-```sh
-openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
-  -keyout deploy/nginx/certs/dev-key.pem \
-  -out deploy/nginx/certs/dev.pem -subj "/CN=localhost"
-```
-
-**Autostart via systemd (optional).** Beispiel-Unit `/etc/systemd/system/discodrive.service`:
-
-```ini
-[Unit]
-Description=DiscoDrive
-After=network.target postgresql.service
-
-[Service]
-ExecStart=/usr/local/bin/discodrive
-EnvironmentFile=/etc/discodrive.env
-Restart=on-failure
-User=discodrive
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Lege die Variablen aus Schritt 4 in `/etc/discodrive.env` ab (Format `KEY=value`, eine pro Zeile), dann führe aus:
-
-```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now discodrive
-```
+**[Ausführliche Installationsanleitung (auf Englisch) →](https://discodrive.app/docs/install)** Rechte für den Datenordner unter Linux, ein kostenloses Let's-Encrypt-Zertifikat, Installation ohne Docker, Updates, Backups und Fehlerbehebung.
 
 ---
 

@@ -88,6 +88,7 @@ DiscoDrive је self-hosted замена за гомилу претплата и
 - **Више корисника** са личним квотама складишта.
 - **Лозинке по апликацији** — за повезивање клијената за фајлове, музику и књиге без откривања главне лозинке.
 - **TLS свуда** подразумевано.
+- **Промена лозинке одјављује све уређаје** и опозива лозинке апликација.
 
 ### 🌍 Твоје, свуда, на твом језику
 
@@ -98,120 +99,31 @@ DiscoDrive је self-hosted замена за гомилу претплата и
 
 ## Инсталација
 
-DiscoDrive је један сервер плус PostgreSQL. Испред њега може стати nginx — за TLS и брзо сервирање фајлова преко X-Accel. У наставку су два начина да подигнеш цело окружење. Већини корисника одговара **Варијанта 1**.
-
-> **Пре покретања потребно је припремити два тајна кључа.** Сервер неће старовати са привременим вредностима из `.env.example`. Генериши их једном и не мењај их:
->
-> - `JWT_SECRET` — `openssl rand -base64 48`;
-> - `SETTINGS_ENCRYPTION_KEY` — `openssl rand -hex 16`.
->
-> Запамти и ово: Apple апликације (CalDAV/CardDAV) захтевају **HTTPS** — преко нешифрованог HTTP-а не раде.
-
-### Варијанта 1. Docker, клонирањем репозиторијума (препоручено)
-
-Најједноставнији пут: једна команда `docker compose up` подиже сервер, базу података и nginx са TLS-ом.
-
-**Потребно:** git, Docker и Docker Compose.
+Потребан ти је сервер са Docker-ом и Docker Compose-ом. Слика сервера је већ изграђена за amd64 и arm64.
 
 ```sh
 git clone https://github.com/discodrive-cloud/discodrive.git
 cd discodrive
 cp .env.example .env
-# уреди .env: постави JWT_SECRET, SETTINGS_ENCRYPTION_KEY, BASE_DOMAIN,
-# POSTGRES_PASSWORD и, по жељи, остало
+```
+
+У `.env` постави `POSTGRES_PASSWORD` (и исту лозинку у `DATABASE_URL`), `BASE_DOMAIN` и два кључа — са пример-вредностима сервер се неће покренути:
+
+```sh
+openssl rand -base64 48   # JWT_SECRET
+openssl rand -hex 16      # SETTINGS_ENCRYPTION_KEY
+```
+
+Покрени га и прочитај једнократни код за прво подешавање:
+
+```sh
 docker compose up -d
+sudo cat data/.bootstrap/setup-token
 ```
 
-Отворите **https://server_address:8443** и унесите једнократни токен, адресу е-поште и лозинку. Преузмите токен преко конзоле сервера командом `docker compose exec app cat /data/.bootstrap/setup-token`. Подешавање захтева HTTPS. Датотека токена се брише након подешавања; брисање последњег администратора не отвара подешавање поново.
+Отвори `https://твој-домен:8443`, унеси код и направи администраторски налог. При првом покретању прави се самопотписани сертификат, па ће прегледачи упозоравати док га не замениш правим.
 
-Како је то постављено:
-
-- Фајлови се чувају у `/data`.
-- TLS сертификати се налазе у `deploy/nginx/certs/`. При првом покретању Compose ту сам прави **самопотписани сертификат** за `BASE_DOMAIN`; клијенти ће упозоравати на њега док `dev.pem` и `dev-key.pem` не замените правим сертификатом (нпр. Let's Encrypt). Постојеће датотеке се никада не преписују. Compose објављује само HTTPS; за стандардни порт поставите `NGINX_HTTPS_PORT=443`.
-
-Да зауставиш: `docker compose down` (подаци остају). Да ажурираш: `git pull && docker compose pull && docker compose up -d`. Сервер се покреће из готове слике `ghcr.io/discodrive-cloud/discodrive` (amd64/arm64); да је изградиш из изворног кода, користи `docker compose up -d --build`.
-
-### Варијанта 2. Одвојеним компонентама (компилација из изворног кода)
-
-Ако не желиш да користиш Docker — компилуј извршну датотеку сам и покрени је уз обичан PostgreSQL. Извршна датотека је потпуно самодовољна — у себи носи све компоненте.
-
-**За компилацију је потребно:** Go 1.25+, Node.js 22+, PostgreSQL 16+.
-
-**1. Компилуј веб интерфејс** (Nuxt → статички фајлови у `web/dist`):
-
-```sh
-cd web
-npm install
-npm run generate
-cd ..
-```
-
-**2. Компилуј сервер** (извршна датотека укључује `web/dist` и миграције):
-
-```sh
-CGO_ENABLED=0 go build -trimpath -o discodrive ./cmd/server
-```
-
-**3. Подигни PostgreSQL** и направи базу са корисником:
-
-```sh
-createuser disco --pwprompt
-createdb discodrive --owner disco
-```
-
-**4. Постави променљиве окружења** (потпун списак је у `.env.example`):
-
-```sh
-export DATABASE_URL="postgres://disco:ЛОЗИНКА@localhost:5432/discodrive?sslmode=disable"
-export JWT_SECRET="$(openssl rand -base64 48)"
-export SETTINGS_ENCRYPTION_KEY="$(openssl rand -hex 16)"
-export BASE_DOMAIN="example.com"
-export STORAGE_ROOT="/var/lib/discodrive/data"   # директоријум мора постојати и бити доступан за писање
-export APP_PORT="8080"
-export XACCEL_ENABLED="false"                     # без nginx-а сервер сам сервира фајлове
-```
-
-**5. Покрени**:
-
-```sh
-./discodrive
-```
-
-Пре почетног подешавања конфигуришите HTTPS reverse proxy. Прочитајте токен преко конзоле сервера из `<STORAGE_ROOT>/.bootstrap/setup-token` (или `SETUP_TOKEN_FILE`) и отворите HTTPS адресу.
-
-**nginx (необавезно).** Потребан је за HTTPS и за брзо сервирање фајлова преко X-Accel. Узми за основу `deploy/nginx/default.conf.template`, упиши своје TLS сертификате и постави `XACCEL_ENABLED=true` — тада сервер шаље фајлове заглављем `X-Accel-Redirect`, а само тело фајлова сервира nginx (локација `/data/`, вредност параметра `STORAGE_ROOT`).
-
-TLS сертификате узми од Let's Encrypt (`certbot`) или генериши самопотписане:
-
-```sh
-openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
-  -keyout deploy/nginx/certs/dev-key.pem \
-  -out deploy/nginx/certs/dev.pem -subj "/CN=localhost"
-```
-
-**Аутоматско покретање преко systemd (необавезно).** Пример јединице `/etc/systemd/system/discodrive.service`:
-
-```ini
-[Unit]
-Description=DiscoDrive
-After=network.target postgresql.service
-
-[Service]
-ExecStart=/usr/local/bin/discodrive
-EnvironmentFile=/etc/discodrive.env
-Restart=on-failure
-User=discodrive
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Променљиве из корака 4 стави у `/etc/discodrive.env` (формат `KEY=value`, по једна у реду), а затим изврши:
-
-```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now discodrive
-```
+**[Детаљно упутство за инсталацију (на енглеском) →](https://discodrive.app/docs/install)** Права на фасциклу са подацима на Linux-у, бесплатан Let's Encrypt сертификат, инсталација без Docker-а, ажурирања, резервне копије и решавање проблема.
 
 ---
 
