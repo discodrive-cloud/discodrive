@@ -121,7 +121,7 @@ docker compose up -d
 sudo cat data/.bootstrap/setup-token
 ```
 
-Öffne `https://deine-domain:8443`, gib den Code ein und lege das Administratorkonto an. Beim ersten Start wird ein selbstsigniertes Zertifikat erzeugt, daher warnen Browser, bis du es durch ein echtes ersetzt.
+Öffne `https://deine-domain:8443` (Port 8443 ist `NGINX_HTTPS_PORT` in `.env`; setzt du ihn auf 443 oder stellst DiscoDrive hinter deinen eigenen Proxy, lautet die Adresse einfach `https://deine-domain`), gib den Code ein und lege das Administratorkonto an. Beim ersten Start wird ein selbstsigniertes Zertifikat erzeugt, daher warnen Browser, bis du es durch ein echtes ersetzt.
 
 **[Ausführliche Installationsanleitung (auf Englisch) →](https://discodrive.app/docs/install)** Rechte für den Datenordner unter Linux, ein kostenloses Let's-Encrypt-Zertifikat, Installation ohne Docker, Updates, Backups und Fehlerbehebung.
 
