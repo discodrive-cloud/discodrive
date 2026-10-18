@@ -64,6 +64,10 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "init" {
+		os.Exit(runInit(os.Args[2:], os.Stdout, time.Now()))
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "gen-cert" {
 		os.Exit(runGenCert(os.Args[2:], os.Stdout, time.Now()))
 	}
