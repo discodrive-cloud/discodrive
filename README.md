@@ -139,7 +139,7 @@ Existing installations are marked as configured during migration. Deleting the l
 How it works:
 
 - Files are stored in `/data`.
-- TLS certificates go in `deploy/nginx/certs/` — you need to place a **real or self-signed certificate** there (see Option 2 for how to generate one) The default Compose setup publishes only HTTPS; set `NGINX_HTTPS_PORT=443` for the standard port.
+- TLS certificates live in `deploy/nginx/certs/`. On first start Compose generates a **self-signed certificate** for `BASE_DOMAIN` there; clients will warn about it until you replace `dev.pem` and `dev-key.pem` with a real certificate (e.g. Let's Encrypt). Existing files are never overwritten. The default Compose setup publishes only HTTPS; set `NGINX_HTTPS_PORT=443` for the standard port.
 
 To stop: `docker compose down` (data is preserved). To update: `git pull && docker compose pull && docker compose up -d`. The server runs from the prebuilt image `ghcr.io/discodrive-cloud/discodrive` (amd64/arm64); to build it from source instead, use `docker compose up -d --build`.
 

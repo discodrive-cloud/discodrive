@@ -33,6 +33,15 @@ services:
       postgres:
         condition: service_healthy
 
+  # One-shot: writes a self-signed pair into deploy/nginx/certs unless one is already there.
+  certs:
+    image: ghcr.io/discodrive-cloud/discodrive:${DISCODRIVE_VERSION:-latest}
+    build: .
+    user: "0:0"
+    command: ["gen-cert", "-dir", "/certs", "-host", "${BASE_DOMAIN:-localhost},localhost"]
+    volumes:
+      - ./deploy/nginx/certs:/certs
+
   nginx:
     image: nginx:alpine
     restart: unless-stopped
@@ -47,12 +56,16 @@ services:
       - ./deploy/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
       # data is also mounted into nginx (read-only) for zero-copy X-Accel serving
       - ./data:/data:ro
-      # TLS is required for every client; use trusted production certificates
+      # TLS is required for every client; the certs service fills this with a self-signed
+      # pair on first start — replace it with trusted certificates for production
       - ./deploy/nginx/certs:/etc/nginx/certs:ro
     ports:
       - "${NGINX_HTTPS_PORT:-8443}:443"
     depends_on:
-      - app
+      app:
+        condition: service_started
+      certs:
+        condition: service_completed_successfully
 
 volumes:
   pgdata:

@@ -127,7 +127,7 @@ Abra **https://server_address:8443** e introduzca el token de un solo uso, el co
 Cómo funciona por dentro:
 
 - Los archivos se guardan en `/data`.
-- Los certificados TLS van en `deploy/nginx/certs/` — debes crear y colocar ahí un **certificado real o autofirmado** (cómo generarlo se describe en la Opción 2) Compose publica únicamente HTTPS; para el puerto estándar, configure `NGINX_HTTPS_PORT=443`.
+- Los certificados TLS están en `deploy/nginx/certs/`. En el primer arranque, Compose genera allí un **certificado autofirmado** para `BASE_DOMAIN`; los clientes mostrarán una advertencia hasta que sustituya `dev.pem` y `dev-key.pem` por un certificado real (por ejemplo, Let's Encrypt). Los archivos existentes nunca se sobrescriben. Compose publica únicamente HTTPS; para el puerto estándar, configure `NGINX_HTTPS_PORT=443`.
 
 Para detener: `docker compose down` (los datos se conservan). Para actualizar: `git pull && docker compose pull && docker compose up -d`. El servidor se ejecuta desde la imagen precompilada `ghcr.io/discodrive-cloud/discodrive` (amd64/arm64); para compilarla desde el código fuente, use `docker compose up -d --build`.
 

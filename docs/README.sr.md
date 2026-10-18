@@ -127,7 +127,7 @@ docker compose up -d
 Како је то постављено:
 
 - Фајлови се чувају у `/data`.
-- TLS сертификати у `deploy/nginx/certs/` — потребно је поставити **прави или самопотписани сертификат** (упутство за генерисање је у Варијанти 2) Compose објављује само HTTPS; за стандардни порт поставите `NGINX_HTTPS_PORT=443`.
+- TLS сертификати се налазе у `deploy/nginx/certs/`. При првом покретању Compose ту сам прави **самопотписани сертификат** за `BASE_DOMAIN`; клијенти ће упозоравати на њега док `dev.pem` и `dev-key.pem` не замените правим сертификатом (нпр. Let's Encrypt). Постојеће датотеке се никада не преписују. Compose објављује само HTTPS; за стандардни порт поставите `NGINX_HTTPS_PORT=443`.
 
 Да зауставиш: `docker compose down` (подаци остају). Да ажурираш: `git pull && docker compose pull && docker compose up -d`. Сервер се покреће из готове слике `ghcr.io/discodrive-cloud/discodrive` (amd64/arm64); да је изградиш из изворног кода, користи `docker compose up -d --build`.
 
