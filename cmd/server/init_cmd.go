@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"syscall"
 	"time"
 )
@@ -30,26 +31,22 @@ func runInit(args []string, out io.Writer, now time.Time) int {
 	if code := runGenCert([]string{"-dir", *certs, "-host", *hosts}, out, now); code != 0 {
 		return code
 	}
-	return prepareStorage(*data, serverUID, serverGID, os.Chown, out)
+	return prepareStorage(*data, serverUID, serverGID, writableAs, os.Chown, out)
 }
 
 // prepareStorage makes dir writable for uid:gid. It only ever chowns a directory that is
 // missing or empty (a fresh clone ships data/.gitkeep): anything already in there belongs
 // to someone, and silently re-owning it is not this command's call.
-func prepareStorage(dir string, uid, gid int, chown func(string, int, int) error, out io.Writer) int {
-	fi, err := os.Stat(dir)
+func prepareStorage(dir string, uid, gid int, writable func(string, int, int) bool, chown func(string, int, int) error, out io.Writer) int {
+	_, err := os.Stat(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			fmt.Fprintf(out, "creating %s: %v\n", dir, err)
-			return 1
-		}
-		fi, err = os.Stat(dir)
+		err = os.MkdirAll(dir, 0o755)
 	}
 	if err != nil {
 		fmt.Fprintf(out, "checking %s: %v\n", dir, err)
 		return 1
 	}
-	if writableBy(fi, uid, gid) {
+	if writable(dir, uid, gid) {
 		return 0
 	}
 
@@ -73,20 +70,31 @@ func prepareStorage(dir string, uid, gid int, chown func(string, int, int) error
 	return 0
 }
 
-// writableBy reports whether uid:gid may create entries in the directory, judging by its
-// owner and permission bits the way the kernel would (ACLs aside).
-func writableBy(fi fs.FileInfo, uid, gid int) bool {
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return true
+// probeCmd is the hidden subcommand writableAs re-executes the binary with.
+const probeCmd = "init-write-probe"
+
+// writableAs reports whether uid:gid can create files in dir by actually trying, in a
+// copy of this binary running under those ids. Permission bits can't answer it: Docker
+// Desktop shows bind mounts as root-owned 0755 although any container user may write.
+func writableAs(dir string, uid, gid int) bool {
+	self, err := os.Executable()
+	if err != nil {
+		return false
 	}
-	perm := fi.Mode().Perm()
-	switch {
-	case int(st.Uid) == uid:
-		return perm&0o300 == 0o300
-	case int(st.Gid) == gid:
-		return perm&0o030 == 0o030
-	default:
-		return perm&0o003 == 0o003
+	cmd := exec.Command(self, probeCmd, dir)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}}
+	return cmd.Run() == nil
+}
+
+// runWriteProbe creates and removes a file in dir; the exit code is the answer.
+func runWriteProbe(dir string) int {
+	f, err := os.CreateTemp(dir, ".write-probe-*")
+	if err != nil {
+		return 1
 	}
+	f.Close()
+	if os.Remove(f.Name()) != nil {
+		return 1
+	}
+	return 0
 }

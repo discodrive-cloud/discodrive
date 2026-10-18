@@ -23,30 +23,22 @@ func recordChown(calls *[]chownCall) func(string, int, int) error {
 // foreign is a uid/gid the test process never runs as.
 const foreign = 64999
 
-func TestPrepareStorageLeavesWritableDirAlone(t *testing.T) {
-	dir := t.TempDir()
-	var calls []chownCall
-	var out bytes.Buffer
-	if code := prepareStorage(dir, os.Getuid(), os.Getgid(), recordChown(&calls), &out); code != 0 {
-		t.Fatalf("exit %d: %s", code, out.String())
-	}
-	if len(calls) != 0 {
-		t.Fatalf("chowned a directory the server can already write to: %v", calls)
-	}
+func answer(ok bool) func(string, int, int) bool {
+	return func(string, int, int) bool { return ok }
 }
 
-func TestPrepareStorageLeavesWorldWritableDirAlone(t *testing.T) {
+func TestPrepareStorageLeavesWritableDirAlone(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o777); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "photo.jpg"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var calls []chownCall
 	var out bytes.Buffer
-	if code := prepareStorage(dir, foreign, foreign, recordChown(&calls), &out); code != 0 {
+	if code := prepareStorage(dir, foreign, foreign, answer(true), recordChown(&calls), &out); code != 0 {
 		t.Fatalf("exit %d: %s", code, out.String())
 	}
 	if len(calls) != 0 {
-		t.Fatalf("chowned a world-writable directory: %v", calls)
+		t.Fatalf("chowned a directory the server can already write to: %v", calls)
 	}
 }
 
@@ -57,7 +49,7 @@ func TestPrepareStorageHandsFreshCloneToServer(t *testing.T) {
 	}
 	var calls []chownCall
 	var out bytes.Buffer
-	if code := prepareStorage(dir, foreign, foreign, recordChown(&calls), &out); code != 0 {
+	if code := prepareStorage(dir, foreign, foreign, answer(false), recordChown(&calls), &out); code != 0 {
 		t.Fatalf("exit %d: %s", code, out.String())
 	}
 	if len(calls) != 1 || calls[0] != (chownCall{dir, foreign, foreign}) {
@@ -69,7 +61,7 @@ func TestPrepareStorageCreatesMissingDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
 	var calls []chownCall
 	var out bytes.Buffer
-	if code := prepareStorage(dir, foreign, foreign, recordChown(&calls), &out); code != 0 {
+	if code := prepareStorage(dir, foreign, foreign, answer(false), recordChown(&calls), &out); code != 0 {
 		t.Fatalf("exit %d: %s", code, out.String())
 	}
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
@@ -87,7 +79,7 @@ func TestPrepareStorageRefusesToTouchExistingData(t *testing.T) {
 	}
 	var calls []chownCall
 	var out bytes.Buffer
-	if code := prepareStorage(dir, foreign, foreign, recordChown(&calls), &out); code == 0 {
+	if code := prepareStorage(dir, foreign, foreign, answer(false), recordChown(&calls), &out); code == 0 {
 		t.Fatal("succeeded on a directory the server can't write to")
 	}
 	if len(calls) != 0 {
@@ -95,5 +87,25 @@ func TestPrepareStorageRefusesToTouchExistingData(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "chown") {
 		t.Fatalf("no hint on how to fix it: %s", out.String())
+	}
+}
+
+func TestWriteProbe(t *testing.T) {
+	dir := t.TempDir()
+	if code := runWriteProbe(dir); code != 0 {
+		t.Fatalf("probe failed on a writable directory: exit %d", code)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("probe left files behind: %v", entries)
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root writes anywhere")
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	if code := runWriteProbe(dir); code == 0 {
+		t.Fatal("probe succeeded on a read-only directory")
 	}
 }
