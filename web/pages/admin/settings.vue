@@ -45,6 +45,36 @@ async function load() {
 }
 onMounted(load)
 
+// External access (WebDAV/CalDAV/CardDAV) is a server-wide switch, so it lives here
+// rather than in personal settings. Each change is saved at once, like the language.
+type AccessFlags = { webdav: boolean; caldav: boolean; carddav: boolean }
+const access = reactive<AccessFlags>({ webdav: false, caldav: false, carddav: false })
+const accessKeys = ['webdav', 'caldav', 'carddav'] as const
+const savingAccess = ref(false)
+const accessError = ref('')
+
+async function loadAccess() {
+  try {
+    Object.assign(access, await request<AccessFlags>('/me/access'))
+  } catch (e: any) {
+    accessError.value = e?.data?.error || t('common.error_load')
+  }
+}
+onMounted(loadAccess)
+
+async function saveAccess(key: keyof AccessFlags, on: boolean) {
+  savingAccess.value = true
+  accessError.value = ''
+  try {
+    Object.assign(access, await request<AccessFlags>('/me/access', { method: 'PUT', body: { [key]: on } }))
+  } catch (e: any) {
+    accessError.value = e?.data?.error || t('common.error_save')
+    await loadAccess() // revert the optimistic checkbox state
+  } finally {
+    savingAccess.value = false
+  }
+}
+
 async function putSetting(key: string, value: string) {
   await request('/admin/settings', { method: 'PUT', body: { key, value } })
 }
@@ -90,6 +120,23 @@ async function sendTest() {
     <p v-if="ok" class="mb-4 flex items-center gap-2 text-sm text-accent">
       <Icon name="lucide:check" size="16" /> {{ ok }}
     </p>
+
+    <div class="mb-6 card p-5">
+      <h2 class="mb-1 text-sm font-medium text-muted">{{ t('settings.access_title') }}</h2>
+      <p class="mb-3 text-xs text-muted">{{ t('settings.access_hint') }}</p>
+      <div class="space-y-2">
+        <label v-for="key in accessKeys" :key="key" class="flex items-center gap-3 text-sm">
+          <input
+            type="checkbox" class="h-4 w-4" :checked="access[key]" :disabled="savingAccess"
+            @change="saveAccess(key, ($event.target as HTMLInputElement).checked)"
+          />
+          <span>{{ t(`settings.access_${key}`) }}</span>
+        </label>
+      </div>
+      <p v-if="accessError" class="mt-2 flex items-center gap-2 text-sm text-danger">
+        <Icon name="lucide:triangle-alert" size="14" /> {{ accessError }}
+      </p>
+    </div>
 
     <div class="mb-6 card p-5">
       <h2 class="mb-3 text-sm font-medium text-muted">{{ t('admin.smtp_section') }}</h2>

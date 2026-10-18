@@ -19,28 +19,16 @@ async function loadDevices() {
 }
 onMounted(loadDevices)
 
-// External-access toggles (global webdav/caldav/carddav enable flags).
+// External-access state (global webdav/caldav/carddav flags). Shown read-only here:
+// the switches are server-wide and live in the admin settings.
 type AccessFlags = { webdav: boolean; caldav: boolean; carddav: boolean }
 const access = reactive<AccessFlags>({ webdav: false, caldav: false, carddav: false })
-const savingAccess = ref(false)
+const accessKeys = ['webdav', 'caldav', 'carddav'] as const
 
 async function loadAccess() {
   try { Object.assign(access, await request<AccessFlags>('/me/access')) } catch { /* silent */ }
 }
 onMounted(loadAccess)
-
-async function saveAccess(patch: Partial<AccessFlags>) {
-  savingAccess.value = true
-  error.value = ''
-  try {
-    Object.assign(access, await request<AccessFlags>('/me/access', { method: 'PUT', body: patch }))
-  } catch (e: any) {
-    error.value = e?.data?.error || t('common.error_load')
-    await loadAccess() // revert the optimistic checkbox state
-  } finally {
-    savingAccess.value = false
-  }
-}
 
 const webdavDevices = computed(() => devices.value.filter((d) => d.kind === 'webdav'))
 
@@ -89,29 +77,20 @@ const carddavUrl = computed(() => origin.value + '/carddav/')
     <div class="mb-6 card p-5">
       <h2 class="mb-1 text-sm font-medium text-muted">{{ t('settings.access_title') }}</h2>
       <p class="mb-3 text-xs text-muted">{{ t('settings.access_hint') }}</p>
-      <div class="space-y-2">
-        <label class="flex items-center gap-3 text-sm">
-          <input
-            type="checkbox" class="h-4 w-4" :checked="access.webdav" :disabled="savingAccess || sess.role !== 'admin'"
-            @change="saveAccess({ webdav: ($event.target as HTMLInputElement).checked })"
+      <ul class="space-y-2">
+        <li v-for="key in accessKeys" :key="key" class="flex items-center gap-3 text-sm">
+          <Icon
+            :name="access[key] ? 'lucide:circle-check' : 'lucide:circle-minus'" size="16"
+            :class="access[key] ? 'text-accent' : 'text-muted'"
           />
-          <span>{{ t('settings.access_webdav') }}</span>
-        </label>
-        <label class="flex items-center gap-3 text-sm">
-          <input
-            type="checkbox" class="h-4 w-4" :checked="access.caldav" :disabled="savingAccess || sess.role !== 'admin'"
-            @change="saveAccess({ caldav: ($event.target as HTMLInputElement).checked })"
-          />
-          <span>{{ t('settings.access_caldav') }}</span>
-        </label>
-        <label class="flex items-center gap-3 text-sm">
-          <input
-            type="checkbox" class="h-4 w-4" :checked="access.carddav" :disabled="savingAccess || sess.role !== 'admin'"
-            @change="saveAccess({ carddav: ($event.target as HTMLInputElement).checked })"
-          />
-          <span>{{ t('settings.access_carddav') }}</span>
-        </label>
-      </div>
+          <span>{{ t(`settings.access_${key}`) }}</span>
+          <span class="text-xs text-muted">{{ access[key] ? t('settings.access_on') : t('settings.access_off') }}</span>
+        </li>
+      </ul>
+      <p class="mt-3 text-xs text-muted">
+        {{ t('settings.access_admin_note') }}
+        <NuxtLink v-if="sess.role === 'admin'" to="/admin/settings" class="text-accent hover:underline">{{ t('settings.access_admin_link') }}</NuxtLink>
+      </p>
     </div>
 
     <!-- Headless clients (sync daemon, CLI, browser extension) pair by a code they show -->
