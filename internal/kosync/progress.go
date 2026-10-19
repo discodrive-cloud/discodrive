@@ -33,6 +33,18 @@ func (h *Handler) usersCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"username": email})
 }
 
+// The KOSync routes are exempt from the API body limit (limitAPIBodies), so the handler
+// bounds its own input. KOReader sends a document hash, an xpointer or page number and a
+// device name: all short. The table is not counted toward the storage quota, so the
+// number of documents per user is capped too.
+const (
+	maxProgressBody = 64 << 10
+	maxDocumentLen  = 512
+	maxProgressLen  = 4096
+	maxDeviceLen    = 256
+	maxDocsPerUser  = 10000
+)
+
 // progressBody is the JSON body for PUT /syncs/progress.
 type progressBody struct {
 	Document   string  `json:"document"`
@@ -51,14 +63,40 @@ func (h *Handler) syncsProgressPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxProgressBody)
 	var body progressBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, struct{}{})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, struct{}{})
+		return
+	}
+	if len(body.Document) > maxDocumentLen || len(body.Progress) > maxProgressLen ||
+		len(body.Device) > maxDeviceLen || len(body.DeviceID) > maxDeviceLen {
 		writeJSON(w, http.StatusBadRequest, struct{}{})
 		return
 	}
 
 	uid, err := db.ParseUUID(userID)
 	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, struct{}{})
+		return
+	}
+
+	if _, err := h.q.GetReadingProgress(r.Context(), db.GetReadingProgressParams{UserID: uid, Document: body.Document}); errors.Is(err, pgx.ErrNoRows) {
+		n, cerr := h.q.CountReadingProgress(r.Context(), uid)
+		if cerr != nil {
+			writeJSON(w, http.StatusInternalServerError, struct{}{})
+			return
+		}
+		if n >= maxDocsPerUser {
+			writeJSON(w, http.StatusInsufficientStorage, struct{}{})
+			return
+		}
+	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, struct{}{})
 		return
 	}

@@ -129,6 +129,8 @@ type Querier interface {
 	CountAdmins(ctx context.Context) (int64, error)
 	CountCalendars(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountPlaylistSongs(ctx context.Context, playlistID pgtype.UUID) (int64, error)
+	// Returns how many documents the user has a stored position for.
+	CountReadingProgress(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountUserLogins(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// == addressbooks ==
 	CreateAddressbook(ctx context.Context, arg CreateAddressbookParams) (Addressbook, error)

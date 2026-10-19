@@ -14,3 +14,7 @@ RETURNING *;
 -- name: GetReadingProgress :one
 -- Returns the stored reading position for (user_id, document).
 SELECT * FROM reading_progress WHERE user_id = $1 AND document = $2;
+
+-- name: CountReadingProgress :one
+-- Returns how many documents the user has a stored position for.
+SELECT count(*) FROM reading_progress WHERE user_id = $1;

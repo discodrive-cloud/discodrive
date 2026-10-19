@@ -4,8 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/dhowden/tag"
-
+	"discodrive/internal/music/tagwrite"
 	"discodrive/internal/safecontent"
 	"discodrive/internal/storage"
 )
@@ -41,7 +40,7 @@ func EmbeddedCover(path string) (data []byte, mime string, ok bool) {
 	}
 	defer f.Close()
 
-	m, err := tag.ReadFrom(f)
+	m, err := tagwrite.ReadFrom(f)
 	if err != nil {
 		return nil, "", false
 	}

@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dhowden/tag"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -93,7 +92,7 @@ func readMeta(path, source string) (Meta, error) {
 	if meta.Artist == "" || meta.Album == "" || meta.Genre == "" || meta.Year == 0 || meta.Title == base {
 		if f, ferr := os.Open(source); ferr == nil {
 			defer f.Close()
-			if m, merr := tag.ReadFrom(f); merr == nil {
+			if m, merr := tagwrite.ReadFrom(f); merr == nil {
 				if meta.Artist == "" {
 					meta.Artist = m.Artist()
 				}

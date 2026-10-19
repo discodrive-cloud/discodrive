@@ -22,6 +22,7 @@ const (
 	ctxDeviceKey
 	ctxPutLenKey
 	ctxMoveKey
+	ctxPutQuotaKey
 )
 
 // moveReplace carries a MOVE's "Overwrite: T" from RemoveAll to Rename. x/net/webdav
@@ -58,6 +59,20 @@ func declaredLength(ctx context.Context) int64 {
 		return n
 	}
 	return -1
+}
+
+// putQuota records that a PUT body was cut off at the user's allowance. x/net/webdav
+// answers every failed body copy with 405; Handler reads this to answer 507 instead.
+type putQuota struct{ exceeded bool }
+
+func withPutQuota(ctx context.Context) (context.Context, *putQuota) {
+	pq := &putQuota{}
+	return context.WithValue(ctx, ctxPutQuotaKey, pq), pq
+}
+
+func putQuotaOf(ctx context.Context) *putQuota {
+	pq, _ := ctx.Value(ctxPutQuotaKey).(*putQuota)
+	return pq
 }
 
 // FileSystem is a webdav.FileSystem backed by the sync core, scoped to a single user.
@@ -193,12 +208,18 @@ func (f *fsImpl) OpenFile(ctx context.Context, name string, flag int, _ os.FileM
 		if err != nil {
 			return nil, err
 		}
+		// The body is buffered whole before Push applies the quota, so bound the buffer
+		// here: a body without a declared length skips Handler's up-front check.
+		limit, err := f.svc.Allowance(ctx, f.userID)
+		if err != nil {
+			return nil, mapErr(err)
+		}
 		tmp, err := os.CreateTemp("", "kfdav-*")
 		if err != nil {
 			return nil, err
 		}
 		return &writeFile{ctx: ctx, svc: f.svc, userID: f.userID, deviceID: deviceOf(ctx),
-			parentID: parentID, name: leaf, tmp: tmp, expect: declaredLength(ctx)}, nil
+			parentID: parentID, name: leaf, tmp: tmp, expect: declaredLength(ctx), limit: limit}, nil
 	}
 	if name == "/" {
 		return f.dir(ctx, "/", nodeInfo{name: "/", dir: true}, ""), nil

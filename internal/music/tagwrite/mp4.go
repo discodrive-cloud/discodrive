@@ -7,6 +7,9 @@ import (
 type mp4Writer struct{}
 
 func (mp4Writer) Read(path string) (Tags, bool, error) {
+	if err := CheckMP4File(path); err != nil {
+		return Tags{}, false, err
+	}
 	f, err := mp4tag.Open(path)
 	if err != nil {
 		return Tags{}, false, err
@@ -58,6 +61,9 @@ func (mp4Writer) Read(path string) (Tags, bool, error) {
 }
 
 func (mp4Writer) Apply(path string, t Tags, cc CoverChange, cover *Cover) error {
+	if err := CheckMP4File(path); err != nil {
+		return err
+	}
 	f, err := mp4tag.Open(path)
 	if err != nil {
 		return err
@@ -152,6 +158,9 @@ func (mp4Writer) Apply(path string, t Tags, cc CoverChange, cover *Cover) error 
 }
 
 func (mp4Writer) Cover(path string) ([]byte, string, bool) {
+	if CheckMP4File(path) != nil {
+		return nil, "", false
+	}
 	f, err := mp4tag.Open(path)
 	if err != nil {
 		return nil, "", false

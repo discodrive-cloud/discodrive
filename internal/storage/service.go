@@ -109,6 +109,20 @@ func (s *FileService) CheckQuota(ctx context.Context, userID string, n int64) er
 	return s.quota.Check(ctx, uid, n)
 }
 
+// Allowance reports how many more bytes userID may write (quota.Unlimited when nothing
+// limits it). Callers that must buffer a body of unknown length before Push use it to
+// stop buffering at the limit Push would refuse anyway.
+func (s *FileService) Allowance(ctx context.Context, userID string) (int64, error) {
+	if s.quota == nil {
+		return quota.Unlimited, nil
+	}
+	uid, err := db.ParseUUID(userID)
+	if err != nil {
+		return 0, ErrNotFound
+	}
+	return s.quota.Allowance(ctx, uid)
+}
+
 func validateName(name string) error {
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
 		return ErrInvalidName

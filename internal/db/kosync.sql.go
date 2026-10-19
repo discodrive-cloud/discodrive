@@ -11,6 +11,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countReadingProgress = `-- name: CountReadingProgress :one
+SELECT count(*) FROM reading_progress WHERE user_id = $1
+`
+
+// Returns how many documents the user has a stored position for.
+func (q *Queries) CountReadingProgress(ctx context.Context, userID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countReadingProgress, userID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getReadingProgress = `-- name: GetReadingProgress :one
 SELECT user_id, document, progress, percentage, device, device_id, updated_at FROM reading_progress WHERE user_id = $1 AND document = $2
 `

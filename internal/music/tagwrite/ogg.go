@@ -2,8 +2,6 @@ package tagwrite
 
 import (
 	"os"
-
-	"github.com/dhowden/tag"
 )
 
 // oggWriter is a read-only implementation for OGG files (Vorbis or Opus).
@@ -18,7 +16,7 @@ func (oggWriter) Read(path string) (Tags, bool, error) {
 	}
 	defer f.Close()
 
-	m, err := tag.ReadFrom(f)
+	m, err := ReadFrom(f)
 	if err != nil {
 		return Tags{}, false, err
 	}
@@ -39,7 +37,7 @@ func (oggWriter) Cover(path string) ([]byte, string, bool) {
 	}
 	defer f.Close()
 
-	m, err := tag.ReadFrom(f)
+	m, err := ReadFrom(f)
 	if err != nil {
 		return nil, "", false
 	}

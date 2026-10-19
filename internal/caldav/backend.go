@@ -181,7 +181,23 @@ func (b *Backend) QueryCalendarObjects(ctx context.Context, path string, query *
 	if err != nil {
 		return nil, err
 	}
-	return caldav.Filter(query, objs)
+	// caldav.Filter expands a recurring object's time range with rrule-go's Between,
+	// which materializes every occurrence in the window. An object whose rule cannot be
+	// expanded at a bounded cost skips the filter and is returned as matching: the client
+	// expands it itself, as it does for every object it syncs.
+	var bounded, unbounded []caldav.CalendarObject
+	for _, o := range objs {
+		if dav.CalendarBounded(o.Data) {
+			bounded = append(bounded, o)
+		} else {
+			unbounded = append(unbounded, o)
+		}
+	}
+	out, err := caldav.Filter(query, bounded)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, unbounded...), nil
 }
 
 func (b *Backend) PutCalendarObject(ctx context.Context, path string, calData *ical.Calendar, opts *caldav.PutCalendarObjectOptions) (*caldav.CalendarObject, error) {

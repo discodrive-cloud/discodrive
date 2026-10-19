@@ -143,6 +143,10 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "start and end are required (RFC3339)")
 		return
 	}
+	if !end.After(start) || end.Sub(start) > maxEventWindow {
+		writeError(w, http.StatusBadRequest, "end must be after start, at most 400 days later")
+		return
+	}
 	cals, err := s.dav.ListCalendars(r.Context(), userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -154,6 +158,7 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	out := make([]occurrence, 0)
+	deadline := time.Now().Add(expandBudget)
 	for _, cal := range cals {
 		if !strings.Contains(cal.Components, "VEVENT") {
 			continue
@@ -164,6 +169,13 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, o := range objs {
+			if r.Context().Err() != nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				writeError(w, http.StatusServiceUnavailable, "too many events to expand in one request")
+				return
+			}
 			decoded, derr := ical.NewDecoder(strings.NewReader(o.Data)).Decode()
 			if derr != nil {
 				continue
@@ -175,6 +187,17 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+
+// Bounds on listing events. rrule-go cannot be cancelled, so expansion is bounded by what
+// it is asked for: the window, the rules it is given (dav.BoundedRecurrence) and the number
+// of occurrences taken from each rule, counted from DTSTART since that is where rrule-go
+// starts. A rule that never matches still runs rrule-go to its year 9999 limit (about
+// 0.1 s), so the request as a whole has a time budget too.
+const (
+	maxEventWindow = 400 * 24 * time.Hour
+	maxRuleSteps   = 100000
+	expandBudget   = 10 * time.Second
+)
 
 // allDaySlack widens the window for all-day events. Their dates are floating: the date is
 // the same in every zone, but the window arrives as two instants of the browser's zone,
@@ -253,14 +276,21 @@ func expandEvents(cal *ical.Calendar, rangeStart, rangeEnd time.Time, loc *time.
 			dtend = dtstart
 		}
 		dur := dtend.Sub(dtstart)
-		recurring := m.Props.Get(ical.PropRecurrenceRule) != nil
+		// A rule that cannot be expanded at a bounded cost is shown at its DTSTART only.
+		recurring := m.Props.Get(ical.PropRecurrenceRule) != nil && dav.BoundedRecurrence(m)
 		var starts []time.Time
 		if recurring {
 			if set, serr := m.RecurrenceSet(eloc); serr == nil && set != nil {
 				ws, we := window(allDay)
 				// an occurrence that began up to one duration before the window is still on
-				for _, st := range set.Between(ws.Add(-dur), we, true) {
-					if overlaps(st, dur, allDay) {
+				from := ws.Add(-dur)
+				next := set.Iterator()
+				for i := 0; i < maxRuleSteps; i++ {
+					st, ok := next()
+					if !ok || st.After(we) {
+						break
+					}
+					if !st.Before(from) && overlaps(st, dur, allDay) {
 						starts = append(starts, st)
 					}
 				}

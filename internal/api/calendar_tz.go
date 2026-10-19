@@ -2,12 +2,12 @@ package api
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/emersion/go-ical"
-	"github.com/teambition/rrule-go"
 )
 
 // windowsZones maps the Windows zone names Outlook/Exchange write as TZID to IANA names
@@ -177,18 +177,31 @@ var timeProps = []string{ical.PropDateTimeStart, ical.PropDateTimeEnd, ical.Prop
 // It is meant for a freshly decoded copy that is read, or whose rewritten properties are
 // replaced before it is stored.
 func normalizeTimes(cal *ical.Calendar) {
-	vtz := map[string]*ical.Component{}
+	raw := map[string]*ical.Component{}
 	for _, c := range cal.Children {
 		if c.Name == ical.CompTimezone {
 			if id := c.Props.Get(ical.PropTimezoneID); id != nil {
-				vtz[id.Value] = c
+				raw[id.Value] = c
 			}
 		}
+	}
+	parsed := map[string]*vtimezone{}
+	vtz := func(tzid string) *vtimezone {
+		if v, ok := parsed[tzid]; ok {
+			return v
+		}
+		var v *vtimezone
+		if c := raw[tzid]; c != nil {
+			v = parseVTimezone(c)
+		}
+		parsed[tzid] = v
+		return v
 	}
 	for _, comp := range cal.Children {
 		if comp.Name != ical.CompEvent && comp.Name != ical.CompToDo {
 			continue
 		}
+		budget := maxTimeValues
 		for _, name := range timeProps {
 			props := comp.Props[name]
 			if len(props) == 0 {
@@ -201,6 +214,10 @@ func normalizeTimes(cal *ical.Calendar) {
 					values = strings.Split(p.Value, ",")
 				}
 				for _, v := range values {
+					if budget == 0 {
+						break // the rest of an absurdly long EXDATE/RDATE list is dropped
+					}
+					budget--
 					np := p
 					np.Params = cloneParams(p.Params)
 					np.Value = strings.TrimSpace(v)
@@ -213,6 +230,14 @@ func normalizeTimes(cal *ical.Calendar) {
 	}
 }
 
+// Bounds on the work an object's own data can ask of normalizeTimes: date-time values per
+// event or to-do (an EXDATE list is one value per date), and observances and RDATEs read
+// from one VTIMEZONE.
+const (
+	maxTimeValues  = 2000
+	maxObservances = 200
+)
+
 func cloneParams(p ical.Params) ical.Params {
 	out := make(ical.Params, len(p))
 	for k, v := range p {
@@ -221,7 +246,7 @@ func cloneParams(p ical.Params) ical.Params {
 	return out
 }
 
-func fixTZID(p *ical.Prop, vtz map[string]*ical.Component) {
+func fixTZID(p *ical.Prop, vtz func(string) *vtimezone) {
 	tzid := p.Params.Get(ical.PropTimezoneID)
 	if tzid == "" {
 		return
@@ -241,25 +266,34 @@ func fixTZID(p *ical.Prop, vtz map[string]*ical.Component) {
 	if err != nil {
 		return
 	}
-	if tz := vtz[tzid]; tz != nil {
-		if off, ok := vtimezoneOffset(tz, wall); ok {
+	if tz := vtz(tzid); tz != nil {
+		if off, ok := tz.offset(wall); ok {
 			p.Value = wall.Add(-time.Duration(off) * time.Second).Format("20060102T150405Z")
 		}
 	}
 	// no VTIMEZONE: the TZID is gone and the value stays floating
 }
 
-// vtimezoneOffset returns the UTC offset (seconds) a VTIMEZONE defines for a wall-clock
-// time: the offset of the observance (STANDARD/DAYLIGHT) whose last onset is the latest one
-// not after that time. wall carries the local time in the UTC location.
-func vtimezoneOffset(tz *ical.Component, wall time.Time) (int, bool) {
-	var best time.Time
-	bestOff, found := 0, false
-	var earliest time.Time
-	earliestFrom, anyObs := 0, false
+// vtimezone is a VTIMEZONE read once for all the values that refer to it.
+type vtimezone struct{ obs []observance }
+
+// observance is one STANDARD or DAYLIGHT block. Its onsets are DTSTART, the RDATEs and the
+// RRULE's occurrences.
+type observance struct {
+	start    time.Time
+	to, from int
+	rule     *yearlyRule // nil: no RRULE, or one that is not the yearly shape
+	rdates   []time.Time // sorted
+}
+
+func parseVTimezone(tz *ical.Component) *vtimezone {
+	v := &vtimezone{}
 	for _, obs := range tz.Children {
 		if obs.Name != ical.CompTimezoneStandard && obs.Name != ical.CompTimezoneDaylight {
 			continue
+		}
+		if len(v.obs) == maxObservances {
+			break
 		}
 		to, okTo := parseUTCOffset(propText(obs, ical.PropTimezoneOffsetTo))
 		from, okFrom := parseUTCOffset(propText(obs, ical.PropTimezoneOffsetFrom))
@@ -274,38 +308,57 @@ func vtimezoneOffset(tz *ical.Component, wall time.Time) (int, bool) {
 		if !okFrom {
 			from = to
 		}
-		if !anyObs || start.Before(earliest) {
-			earliest, earliestFrom, anyObs = start, from, true
+		o := observance{start: start, to: to, from: from}
+		if rr := obs.Props.Get(ical.PropRecurrenceRule); rr != nil {
+			o.rule = parseYearlyRule(rr.Value)
+		}
+	rdates:
+		for _, rd := range obs.Props[ical.PropRecurrenceDates] {
+			for _, val := range strings.Split(rd.Value, ",") {
+				if len(o.rdates) == maxTimeValues {
+					break rdates
+				}
+				if t, err := time.ParseInLocation("20060102T150405", strings.TrimSpace(val), time.UTC); err == nil {
+					o.rdates = append(o.rdates, t)
+				}
+			}
+		}
+		sort.Slice(o.rdates, func(i, j int) bool { return o.rdates[i].Before(o.rdates[j]) })
+		v.obs = append(v.obs, o)
+	}
+	return v
+}
+
+// vtimezoneOffset returns the UTC offset (seconds) a VTIMEZONE defines for a wall-clock
+// time: the offset of the observance (STANDARD/DAYLIGHT) whose last onset is the latest one
+// not after that time. wall carries the local time in the UTC location.
+func vtimezoneOffset(tz *ical.Component, wall time.Time) (int, bool) {
+	return parseVTimezone(tz).offset(wall)
+}
+
+func (v *vtimezone) offset(wall time.Time) (int, bool) {
+	var best time.Time
+	bestOff, found := 0, false
+	var earliest time.Time
+	earliestFrom, anyObs := 0, false
+	for _, o := range v.obs {
+		if !anyObs || o.start.Before(earliest) {
+			earliest, earliestFrom, anyObs = o.start, o.from, true
 		}
 		onset := time.Time{}
-		if !start.After(wall) {
-			onset = start
+		if !o.start.After(wall) {
+			onset = o.start
 		}
-		if rr := obs.Props.Get(ical.PropRecurrenceRule); rr != nil {
-			if opt, err := rrule.StrToROptionInLocation(rr.Value, time.UTC); err == nil {
-				// Outlook anchors its rules in 1601; rrule-go gives up iterating long before
-				// today from there. The yearly BYMONTH/BYDAY rules do not depend on the
-				// anchor's year, so start counting two years before the time looked up.
-				opt.Dtstart = start
-				if y := wall.Year() - 2; start.Year() < y {
-					opt.Dtstart = time.Date(y, start.Month(), start.Day(), start.Hour(), start.Minute(), start.Second(), 0, time.UTC)
-				}
-				if r, err := rrule.NewRRule(*opt); err == nil {
-					if t := r.Before(wall, true); !t.IsZero() && t.After(onset) {
-						onset = t
-					}
-				}
+		if o.rule != nil {
+			if t, ok := o.rule.lastOnset(o.start, wall); ok && t.After(onset) {
+				onset = t
 			}
 		}
-		for _, rd := range obs.Props[ical.PropRecurrenceDates] {
-			for _, v := range strings.Split(rd.Value, ",") {
-				if t, err := time.ParseInLocation("20060102T150405", strings.TrimSpace(v), time.UTC); err == nil && !t.After(wall) && t.After(onset) {
-					onset = t
-				}
-			}
+		if i := sort.Search(len(o.rdates), func(i int) bool { return o.rdates[i].After(wall) }); i > 0 && o.rdates[i-1].After(onset) {
+			onset = o.rdates[i-1]
 		}
 		if !onset.IsZero() && (!found || onset.After(best)) {
-			best, bestOff, found = onset, to, true
+			best, bestOff, found = onset, o.to, true
 		}
 	}
 	if found {
@@ -315,6 +368,172 @@ func vtimezoneOffset(tz *ical.Component, wall time.Time) (int, bool) {
 		return earliestFrom, true // before the first onset: the offset it changes from
 	}
 	return 0, false
+}
+
+// yearlyRule is the one RRULE shape zones use for their transitions: FREQ=YEARLY in one
+// month, on a weekday position (BYDAY=-1SU, 2SU) and/or month days (BYMONTHDAY=8,...,14),
+// optionally ended by UNTIL or COUNT. Its onsets are computed directly, a month at a
+// time. A VTIMEZONE comes from the object's author, and handing an arbitrary rule to
+// rrule-go costs whatever the rule asks for (a sub-daily rule, a timeset of every second
+// of the day, a rule that never matches and runs to year 9999), once per date value.
+type yearlyRule struct {
+	month     time.Month // 0: the month of DTSTART
+	days      []byDay
+	monthDays []int
+	until     time.Time
+	count     int
+}
+
+type byDay struct {
+	n  int // 0: every such weekday; 1..5 from the start of the month, -1..-5 from its end
+	wd time.Weekday
+}
+
+var weekdays = map[string]time.Weekday{"SU": time.Sunday, "MO": time.Monday, "TU": time.Tuesday,
+	"WE": time.Wednesday, "TH": time.Thursday, "FR": time.Friday, "SA": time.Saturday}
+
+// parseYearlyRule returns nil for any rule that is not the yearly shape.
+func parseYearlyRule(s string) *yearlyRule {
+	r := &yearlyRule{}
+	yearly := false
+	for _, part := range strings.Split(strings.ToUpper(strings.TrimSpace(s)), ";") {
+		k, v, ok := strings.Cut(part, "=")
+		if !ok {
+			return nil
+		}
+		switch k {
+		case "FREQ":
+			yearly = v == "YEARLY"
+		case "INTERVAL":
+			if v != "1" {
+				return nil
+			}
+		case "WKST": // no effect on a position within a month
+		case "BYMONTH":
+			m, err := strconv.Atoi(v)
+			if err != nil || m < 1 || m > 12 {
+				return nil
+			}
+			r.month = time.Month(m)
+		case "BYDAY":
+			for _, d := range strings.Split(v, ",") {
+				if len(d) < 2 || len(r.days) == 7 {
+					return nil
+				}
+				wd, ok := weekdays[d[len(d)-2:]]
+				if !ok {
+					return nil
+				}
+				n := 0
+				if pos := d[:len(d)-2]; pos != "" {
+					var err error
+					if n, err = strconv.Atoi(pos); err != nil || n == 0 || n < -5 || n > 5 {
+						return nil
+					}
+				}
+				r.days = append(r.days, byDay{n, wd})
+			}
+		case "BYMONTHDAY":
+			for _, d := range strings.Split(v, ",") {
+				n, err := strconv.Atoi(d)
+				if err != nil || n == 0 || n < -31 || n > 31 || len(r.monthDays) == 31 {
+					return nil
+				}
+				r.monthDays = append(r.monthDays, n)
+			}
+		case "UNTIL":
+			var err error
+			if r.until, err = time.ParseInLocation("20060102T150405", strings.TrimSuffix(v, "Z"), time.UTC); err != nil {
+				if r.until, err = time.ParseInLocation("20060102", v, time.UTC); err != nil {
+					return nil
+				}
+			}
+		case "COUNT":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 {
+				return nil
+			}
+			r.count = n
+		default:
+			return nil
+		}
+	}
+	if !yearly {
+		return nil
+	}
+	return r
+}
+
+// lastOnset returns the latest onset of the rule that is not after wall and not before
+// start (DTSTART, whose clock time every onset takes).
+func (r *yearlyRule) lastOnset(start, wall time.Time) (time.Time, bool) {
+	month := r.month
+	if month == 0 {
+		month = start.Month()
+	}
+	monthDays := r.monthDays
+	if len(r.days) == 0 && len(monthDays) == 0 {
+		monthDays = []int{start.Day()}
+	}
+	h, mi, sec := start.Clock()
+	matches := func(y, d, daysIn int) bool {
+		if len(monthDays) > 0 {
+			ok := false
+			for _, md := range monthDays {
+				if md == d || md < 0 && daysIn+md+1 == d {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return false
+			}
+		}
+		if len(r.days) == 0 {
+			return true
+		}
+		wd := time.Date(y, month, d, 0, 0, 0, 0, time.UTC).Weekday()
+		for _, bd := range r.days {
+			if bd.wd == wd && (bd.n == 0 || bd.n > 0 && (d-1)/7+1 == bd.n || bd.n < 0 && (daysIn-d)/7+1 == -bd.n) {
+				return true
+			}
+		}
+		return false
+	}
+	// onsetIn is the latest onset in year y not after upTo.
+	onsetIn := func(y int, upTo time.Time) (time.Time, bool) {
+		daysIn := time.Date(y, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
+		for d := daysIn; d >= 1; d-- {
+			if !matches(y, d, daysIn) {
+				continue
+			}
+			t := time.Date(y, month, d, h, mi, sec, 0, time.UTC)
+			if t.After(upTo) || t.Before(start) || !r.until.IsZero() && t.After(r.until) {
+				continue
+			}
+			return t, true
+		}
+		return time.Time{}, false
+	}
+	lastYear := wall.Year()
+	if !r.until.IsZero() {
+		lastYear = min(lastYear, r.until.Year())
+	}
+	if r.count > 0 {
+		// COUNT is read as one onset a year, which is what a zone's rule produces.
+		first := start.Year()
+		if _, ok := onsetIn(first, time.Date(first, 12, 31, 23, 59, 59, 0, time.UTC)); !ok {
+			first++
+		}
+		lastYear = min(lastYear, first+r.count-1)
+	}
+	// An onset exists in most years; a fifth weekday or a 31st can skip a few.
+	for y := lastYear; y >= max(start.Year(), lastYear-8); y-- {
+		if t, ok := onsetIn(y, wall); ok {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // parseUTCOffset parses a UTC-OFFSET value (+HHMM or +HHMMSS) into seconds.

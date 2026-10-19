@@ -51,8 +51,8 @@ func Handler(svc *storage.FileService, prefix string) http.Handler {
 			// Refuse a file that does not fit before reading the body: WebDAV clients
 			// (Finder, rclone, the desktop sync) always declare a length, and 507 with
 			// a reason is a far better answer than letting them push gigabytes only to
-			// fail at commit time. A chunked PUT has no declared length — the quota
-			// limiter inside Push still stops it, the client just sees a plain failure.
+			// fail at commit time. A chunked PUT has no declared length: writeFile
+			// stops buffering it at the allowance and the client gets 507 all the same.
 			// macOS junk files (._*, .DS_Store) are accepted and thrown away, so they
 			// cost nothing and must not be refused when the quota is full.
 			if r.ContentLength > 0 && !isMacJunk(path.Base(r.URL.Path)) {
@@ -65,7 +65,9 @@ func Handler(svc *storage.FileService, prefix string) http.Handler {
 					return
 				}
 			}
-			r = r.WithContext(WithDeclaredLength(r.Context(), r.ContentLength))
+			ctx, pq := withPutQuota(WithDeclaredLength(r.Context(), r.ContentLength))
+			r = r.WithContext(ctx)
+			w = &quotaStatusWriter{ResponseWriter: w, pq: pq}
 		}
 		if r.Method == "MOVE" {
 			r = r.WithContext(withMove(r.Context()))
@@ -116,4 +118,28 @@ func sameHostname(a, b string) bool {
 		b = h
 	}
 	return strings.EqualFold(a, b)
+}
+
+// quotaStatusWriter turns the 405 x/net/webdav sends for a failed body copy into 507 when
+// the copy failed because the body ran past the user's allowance.
+type quotaStatusWriter struct {
+	http.ResponseWriter
+	pq       *putQuota
+	replaced bool
+}
+
+func (q *quotaStatusWriter) WriteHeader(code int) {
+	if code == http.StatusMethodNotAllowed && q.pq.exceeded {
+		q.replaced = true
+		http.Error(q.ResponseWriter, quota.ErrExceeded.Error(), http.StatusInsufficientStorage)
+		return
+	}
+	q.ResponseWriter.WriteHeader(code)
+}
+
+func (q *quotaStatusWriter) Write(p []byte) (int, error) {
+	if q.replaced {
+		return len(p), nil // the 405 status text; the 507 body is already written
+	}
+	return q.ResponseWriter.Write(p)
 }

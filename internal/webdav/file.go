@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"discodrive/internal/db"
+	"discodrive/internal/quota"
 	"discodrive/internal/storage"
 )
 
@@ -157,9 +158,16 @@ type writeFile struct {
 	tmp      *os.File
 	expect   int64 // declared Content-Length; -1 when the client did not state one
 	written  int64 // bytes actually buffered so far
+	limit    int64 // the user's allowance when the PUT began; quota.Unlimited if none
 }
 
 func (w *writeFile) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.limit-w.written {
+		if pq := putQuotaOf(w.ctx); pq != nil {
+			pq.exceeded = true
+		}
+		return 0, fmt.Errorf("upload of %q: %w", w.name, quota.ErrExceeded)
+	}
 	n, err := w.tmp.Write(p)
 	w.written += int64(n)
 	return n, err

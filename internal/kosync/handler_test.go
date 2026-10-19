@@ -400,3 +400,22 @@ func TestCredentialsRevokedOnPasswordChange(t *testing.T) {
 		t.Fatalf("old ebook credential accepted: %d", code)
 	}
 }
+
+// /syncs/ is exempt from the API body limit, so the handler caps its own body and fields:
+// a reading position is a few hundred bytes, and the table is outside the storage quota.
+func TestSyncsPutBounded(t *testing.T) {
+	h, _, _, _, _, _ := setupKosync(t)
+
+	huge := []byte(`{"document":"d","progress":"` + strings.Repeat("x", 200<<10) + `"}`)
+	if rec := doRequest(h, http.MethodPut, "/syncs/progress", testEmail1, md5Key(testPassword), huge); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("200 KiB body: %d, want 413", rec.Code)
+	}
+	long, _ := json.Marshal(map[string]any{"document": strings.Repeat("d", 600), "progress": "p"})
+	if rec := doRequest(h, http.MethodPut, "/syncs/progress", testEmail1, md5Key(testPassword), long); rec.Code != http.StatusBadRequest {
+		t.Fatalf("600-byte document: %d, want 400", rec.Code)
+	}
+	ok, _ := json.Marshal(map[string]any{"document": strings.Repeat("d", 32), "progress": "/body/DocFragment[12]/body/p[3]/text().0", "device": "KOReader", "device_id": strings.Repeat("a", 32)})
+	if rec := doRequest(h, http.MethodPut, "/syncs/progress", testEmail1, md5Key(testPassword), ok); rec.Code != http.StatusOK {
+		t.Fatalf("ordinary position: %d %s", rec.Code, rec.Body.String())
+	}
+}

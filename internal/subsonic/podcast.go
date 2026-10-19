@@ -462,7 +462,7 @@ func downloadPodcastEpisode(h *Handler, c *reqCtx) {
 		if norm, ok := safecontent.MediaFor(ct, relPath); ok {
 			ct = norm
 		}
-		if setErr := h.q.SetEpisodeDownloaded(bg, db.SetEpisodeDownloadedParams{
+		if setErr := h.publishEpisode(bg, userUUID, db.SetEpisodeDownloadedParams{
 			ID:          epID,
 			DiskPath:    pgtype.Text{String: relPath, Valid: true},
 			Size:        pgtype.Int8{Int64: size, Valid: true},
@@ -470,9 +470,46 @@ func downloadPodcastEpisode(h *Handler, c *reqCtx) {
 			Suffix:      suf,
 			UserID:      userUUID,
 		}); setErr != nil {
-			log.Printf("discodrive: downloadPodcastEpisode set-downloaded: %v", setErr)
+			log.Printf("discodrive: downloadPodcastEpisode publish %s: %v", db.UUIDString(epID), setErr)
+			_ = storage.NewLocalDisk(storageRoot).Remove(relPath)
+			if err := h.q.SetEpisodeStatus(bg, db.SetEpisodeStatusParams{
+				ID:     epID,
+				Status: "error",
+				UserID: userUUID,
+			}); err != nil {
+				log.Printf("discodrive: downloadPodcastEpisode set-error-status: %v", err)
+			}
 		}
 	}()
 
 	c.ok(map[string]any{})
+}
+
+// publishEpisode charges a downloaded episode to the quota and marks it downloaded in one
+// transaction. The allowance read before the download is only a ceiling for that one
+// stream: parallel downloads of different episodes each see the same free space, so the
+// final size is checked again here, serialized with uploads, reservations and podcast
+// covers by the upload-quota lock.
+func (h *Handler) publishEpisode(ctx context.Context, user pgtype.UUID, arg db.SetEpisodeDownloadedParams) error {
+	conn, err := h.q.AcquireConnection(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.Background())
+	qt := h.q.WithTx(tx)
+	if err := qt.LockUploadQuota(ctx); err != nil {
+		return err
+	}
+	if err := quota.New(qt, h.files.Quota().Total()).Check(ctx, user, arg.Size.Int64); err != nil {
+		return err
+	}
+	if err := qt.SetEpisodeDownloaded(ctx, arg); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

@@ -62,6 +62,16 @@ func TestPut_RefusedWith507WhenOverQuota(t *testing.T) {
 		return rec
 	}
 
+	// A chunked body declares no length, so the up-front check cannot refuse it; it used to
+	// be spooled to the temp dir in full before Push applied the quota.
+	chunked := httptest.NewRequest(http.MethodPut, "/dav/chunked.bin", strings.NewReader(strings.Repeat("x", 4<<20)))
+	chunked.ContentLength = -1
+	crec := httptest.NewRecorder()
+	h.ServeHTTP(crec, chunked.WithContext(context.WithValue(ctx, ctxUserKey, uid)))
+	if crec.Code != http.StatusInsufficientStorage {
+		t.Fatalf("chunked PUT past the quota = %d, want 507 (%s)", crec.Code, crec.Body.String())
+	}
+
 	if rec := put("ok.bin", 900); rec.Code != http.StatusCreated {
 		t.Fatalf("PUT inside the quota = %d %s", rec.Code, rec.Body.String())
 	}

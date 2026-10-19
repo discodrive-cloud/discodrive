@@ -9,8 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dhowden/tag"
-
+	"discodrive/internal/music/tagwrite"
 	"discodrive/internal/storage"
 )
 
@@ -116,7 +115,7 @@ func readLyrics(audioPath string, open func(string) (*os.File, error)) (raw stri
 	}
 	defer f.Close()
 
-	m, err := tag.ReadFrom(f)
+	m, err := tagwrite.ReadFrom(f)
 	if err != nil {
 		return "", false
 	}
