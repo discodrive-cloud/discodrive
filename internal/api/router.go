@@ -300,6 +300,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	// WebDAV (enabled by flag; auth is handled inside davHandler)
 	if davHandler != nil {
 		mux.Handle("/dav/", davHandler)
+		mux.Handle("/dav", davHandler) // Windows asks for the share root without the slash
 	}
 
 	if caldavHandler != nil {

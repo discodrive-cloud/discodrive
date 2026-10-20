@@ -18,7 +18,7 @@ func limitAPIBodies(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, pattern := mux.Handler(r)
 		switch pattern {
-		case "", "/dav/", "/caldav/", "/carddav/", "/rest/", "/opds/", "/opds", "/users/", "/syncs/", "/app/",
+		case "", "/dav/", "/dav", "/caldav/", "/carddav/", "/rest/", "/opds/", "/opds", "/users/", "/syncs/", "/app/",
 			"POST /files/upload", "PUT /sync/file", "PUT /upload/{id}/chunk/{n}", "POST /me/contacts/import":
 			mux.ServeHTTP(w, r)
 			return

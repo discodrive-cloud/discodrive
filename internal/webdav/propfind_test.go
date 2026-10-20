@@ -157,3 +157,27 @@ func TestPropfindSkipsUnlistableChild(t *testing.T) {
 		t.Errorf("macOS junk must not be exposed over WebDAV:\n%s", respBody.String())
 	}
 }
+
+// Windows Explorer opens a share as /dav, without the trailing slash; the root must answer
+// with the same listing instead of 404.
+func TestPropfindRootWithoutSlash(t *testing.T) {
+	ctx := context.Background()
+	wfs, fs, uid := setup(t)
+	if _, err := fs.Push(ctx, uid, nil, "hello.txt", nil, "init", strings.NewReader("hi")); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	srv := httptest.NewServer(&webdav.Handler{Prefix: "/dav", FileSystem: wfs, LockSystem: webdav.NewMemLS()})
+	defer srv.Close()
+
+	req, _ := http.NewRequest("PROPFIND", srv.URL+"/dav", strings.NewReader(`<?xml version="1.0"?><propfind xmlns="DAV:"><allprop/></propfind>`))
+	req.Header.Set("Depth", "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PROPFIND: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusMultiStatus || !strings.Contains(string(body), "hello.txt") {
+		t.Fatalf("PROPFIND /dav = %d:\n%s", resp.StatusCode, body)
+	}
+}

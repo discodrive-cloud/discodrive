@@ -22,6 +22,9 @@ server {
     # Subsonic and public downloads may carry tokens in query parameters.
     access_log off;
     client_max_body_size 0;
+    # Relative Location headers: behind a TLS proxy or on a published port other than
+    # 443, nginx's own absolute redirects would point at the wrong scheme or port.
+    absolute_redirect off;
 
     ssl_protocols TLSv1.2 TLSv1.3;
     add_header Strict-Transport-Security "max-age=31536000" always;
@@ -29,7 +32,9 @@ server {
     ssl_certificate     /etc/nginx/certs/dev.pem;
     ssl_certificate_key /etc/nginx/certs/dev-key.pem;
 
-    location /dav/ {
+    # Exact /dav too: Windows asks for the share root without the slash, and nginx would
+    # otherwise answer with its own redirect, which Explorer does not follow.
+    location ~ ^/dav(/|$) {
         proxy_pass http://app:${APP_PORT};
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
