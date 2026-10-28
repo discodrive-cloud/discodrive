@@ -607,7 +607,7 @@ func TestMaps_CLIExtract(t *testing.T) {
 	args := filepath.Join(dir, "args")
 	bin := filepath.Join(dir, "pmtiles")
 	script := "#!/bin/sh\necho \"$@\" > " + args + "\nfor last; do :; done\nprintf PMTilesX > \"$last\"\n" +
-		"echo 'extract.go:1: fetching 1 dirs' >&2\nprintf 'fetching chunks 50%% | (2 MB/4 MB)\\r' >&2\n"
+		"echo 'extract.go:1: fetching 1 dirs'\nprintf 'fetching chunks 50%% | (2 MB/4 MB)\\r'\n" // stdout, as the real tool
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

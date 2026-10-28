@@ -221,7 +221,8 @@ func (m *Manager) Available() bool { return m.cfg.Extract != nil }
 
 // cliExtract runs `pmtiles extract <url> <out> --bbox=... --maxzoom=N` (go-pmtiles CLI).
 // The tool sizes the output file up front and fills it in place, so the file says
-// nothing about progress; its stderr does: log lines, then a progress bar with bytes.
+// nothing about progress; its output does: log lines, then a progress bar with bytes,
+// both on stdout (errors go to stderr).
 func cliExtract(bin string) func(ctx context.Context, src, bbox string, maxzoom int8, out string, progress func(int64)) error {
 	return func(ctx context.Context, src, bbox string, maxzoom int8, out string, progress func(int64)) error {
 		args := []string{"extract", fmt.Sprintf("--maxzoom=%d", maxzoom)}
@@ -229,22 +230,24 @@ func cliExtract(bin string) func(ctx context.Context, src, bbox string, maxzoom 
 			args = append(args, "--bbox="+bbox)
 		}
 		cmd := exec.CommandContext(ctx, bin, append(args, src, out)...)
-		var stderr limitedBuf
-		cmd.Stderr = &lineWriter{line: func(l string) {
+		var tail limitedBuf // the tool's last words, for the error
+		// One writer for both streams: exec then calls Write from one goroutine at a time.
+		lw := &lineWriter{line: func(l string) {
 			if done, ok := parseProgress(l); ok {
 				progress(done)
 				return
 			}
 			if l = strings.TrimSpace(l); l != "" {
 				progress(-1)
-				stderr.Write([]byte(l + "\n"))
+				tail.Write([]byte(l + "\n"))
 			}
 		}}
+		cmd.Stdout, cmd.Stderr = lw, lw
 		if err := cmd.Run(); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(tail.String()))
 		}
 		return nil
 	}
