@@ -6,8 +6,20 @@ import { regionURL } from './mapStyle'
 export interface MapLib {
   maplibregl: any
   source: any // pmtiles FetchSource: setHeaders() before use (the token renews)
-  archive: any // pmtiles PMTiles of the region
+  archive: any // pmtiles PMTiles of the region; read it through openRegion
   basemaps: any
+  pm: any
+  protocol: any
+}
+
+// openRegion reads the region's header afresh for a new map and throws if there is no
+// region. A kept archive would serve what it read before: it holds a failed read for
+// good (its cache keeps the rejected promise), and an old region's header after the file
+// was removed for a new one — either way a blank map until a reload.
+export async function openRegion(lib: MapLib): Promise<any> {
+  lib.archive = new lib.pm.PMTiles(lib.source)
+  lib.protocol.add(lib.archive)
+  return await lib.archive.getHeader()
 }
 
 let shared: Promise<MapLib> | null = null
@@ -31,7 +43,7 @@ export function loadMapLib(): Promise<MapLib> {
       const source = new pm.FetchSource(regionURL(location.origin), new Headers())
       const archive = new pm.PMTiles(source)
       protocol.add(archive)
-      return { maplibregl, source, archive, basemaps }
+      return { maplibregl, source, archive, basemaps, pm, protocol }
     })()
     shared.catch(() => { shared = null })
   }

@@ -5,7 +5,7 @@
 // style are loaded with import() on first use, so the gallery does not carry them.
 import { buildMapStyle, mapLang, mapRequest, type MapFlavor } from '~/lib/photos/mapStyle'
 import type { LatLon } from '~/lib/photos/coords'
-import { loadMapLib, type MapLib } from '~/lib/photos/mapLib'
+import { loadMapLib, openRegion, type MapLib } from '~/lib/photos/mapLib'
 
 const props = withDefaults(defineProps<{
   modelValue: LatLon | null
@@ -52,6 +52,8 @@ onMounted(async () => {
     lib = await loadMapLib()
     // The session token renews; the archive's requests use the current one.
     lib.source.setHeaders(new Headers(sess.value.token ? { Authorization: `Bearer ${sess.value.token}` } : {}))
+    // No region (none chosen, or a new one still downloading): say so, not a blank map.
+    const h = await openRegion(lib)
     if (!el.value) return
     const p = props.modelValue
     map = new lib!.maplibregl.Map({
@@ -81,13 +83,8 @@ onMounted(async () => {
     })
     placeMarker(p, false)
     // No point yet: show the whole downloaded region.
-    if (!p) {
-      try {
-        const h = await lib!.archive.getHeader()
-        if (map && Number.isFinite(h.minLon) && h.maxLon > h.minLon) {
-          map.fitBounds([[h.minLon, h.minLat], [h.maxLon, h.maxLat]], { padding: 20, duration: 0 })
-        }
-      } catch { /* the map still works */ }
+    if (!p && Number.isFinite(h.minLon) && h.maxLon > h.minLon) {
+      map.fitBounds([[h.minLon, h.minLat], [h.maxLon, h.maxLat]], { padding: 20, duration: 0 })
     }
   } catch {
     failed.value = true
