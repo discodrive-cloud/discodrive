@@ -20,6 +20,7 @@ beforeEach(async () => {
   vi.stubGlobal('useStorageTick', () => ({ value: 0 }))
   vi.stubGlobal('resetPlayerSession', vi.fn())
   vi.stubGlobal('lockVault', vi.fn())
+  vi.stubGlobal('lockHiddenPhotos', vi.fn())
   vi.stubGlobal('navigateTo', vi.fn())
   api = await import('./useApi')
   api.setSession(session('first'))

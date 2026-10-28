@@ -102,6 +102,14 @@ type Querier interface {
 	// the node itself AND all its ancestors (recursive CTE), taking active shares for the user.
 	CalendarShareForUser(ctx context.Context, arg CalendarShareForUserParams) (pgtype.UUID, error)
 	ClaimEpisodeForDownload(ctx context.Context, arg ClaimEpisodeForDownloadParams) (int64, error)
+	// Takes pending thumbnails, oldest claim first, and stamps indexed_at so later claims
+	// rotate to other rows (a stuck row does not starve the rest). The row stays 'pending'
+	// until SetThumbState. exclude lists the ids this process is rendering right now: a
+	// claim commits at once, so SKIP LOCKED alone would hand the same row to a second worker.
+	ClaimPendingThumbs(ctx context.Context, arg ClaimPendingThumbsParams) ([]PhotoAsset, error)
+	// Videos waiting for the web-playable copy. The row stays 'pending' until
+	// SetTranscodeState; exclude is what this process is transcoding right now.
+	ClaimPendingTranscodes(ctx context.Context, arg ClaimPendingTranscodesParams) ([]PhotoAsset, error)
 	// bytes_done restarts at 0: 'processing' rows count toward the owner's used space.
 	ClaimSavedItem(ctx context.Context, id pgtype.UUID) (int64, error)
 	// ClaimTOTPStep makes a TOTP code single-use: it succeeds (1 row) only for a step
@@ -128,6 +136,9 @@ type Querier interface {
 	CountAddressbooks(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountAdmins(ctx context.Context) (int64, error)
 	CountCalendars(ctx context.Context, userID pgtype.UUID) (int64, error)
+	// Other live assets with the same content in the user's sources (copies of the card).
+	CountPhotoCopies(ctx context.Context, arg CountPhotoCopiesParams) (int64, error)
+	CountPhotoIndexing(ctx context.Context, userID pgtype.UUID) (CountPhotoIndexingRow, error)
 	CountPlaylistSongs(ctx context.Context, playlistID pgtype.UUID) (int64, error)
 	// Returns how many documents the user has a stored position for.
 	CountReadingProgress(ctx context.Context, userID pgtype.UUID) (int64, error)
@@ -178,6 +189,16 @@ type Querier interface {
 	DeleteFileVersion(ctx context.Context, id pgtype.UUID) error
 	DeleteFinishedDownloads(ctx context.Context, arg DeleteFinishedDownloadsParams) (int64, error)
 	DeleteInternetRadioStation(ctx context.Context, arg DeleteInternetRadioStationParams) (int64, error)
+	DeletePhotoAssetByNode(ctx context.Context, nodeID pgtype.UUID) ([]pgtype.UUID, error)
+	// Assets of every node under a folder path (the folder was trashed or left the sources;
+	// the change log records only the folder itself). Driven from the user's assets, not
+	// their nodes.
+	DeletePhotoAssetsUnderPath(ctx context.Context, arg DeletePhotoAssetsUnderPathParams) ([]pgtype.UUID, error)
+	// Assets under a folder path whose node is under none of the given roots (the source
+	// paths): the folder left the sources. Assets still under a root survive (an ancestor
+	// of a source was renamed, moved or restored).
+	DeletePhotoAssetsUnderPathOutsideRoots(ctx context.Context, arg DeletePhotoAssetsUnderPathOutsideRootsParams) ([]pgtype.UUID, error)
+	DeletePhotoSources(ctx context.Context, userID pgtype.UUID) error
 	DeletePlaylistForUser(ctx context.Context, arg DeletePlaylistForUserParams) error
 	DeletePodcastChannelForUser(ctx context.Context, arg DeletePodcastChannelForUserParams) (int64, error)
 	DeletePodcastEpisodeForUser(ctx context.Context, arg DeletePodcastEpisodeForUserParams) (int64, error)
@@ -237,6 +258,12 @@ type Querier interface {
 	GetNodeForUser(ctx context.Context, arg GetNodeForUserParams) (Node, error)
 	GetPairingByCodeHash(ctx context.Context, deviceCodeHash string) (DevicePairing, error)
 	GetPairingByUserCode(ctx context.Context, userCode string) (DevicePairing, error)
+	GetPhotoAsset(ctx context.Context, arg GetPhotoAssetParams) (PhotoAsset, error)
+	// The row by id alone, for endpoints whose credential is a node-scoped token and that
+	// compare the owner themselves.
+	GetPhotoAssetByID(ctx context.Context, id pgtype.UUID) (PhotoAsset, error)
+	GetPhotoAssetByNode(ctx context.Context, nodeID pgtype.UUID) (PhotoAsset, error)
+	GetPhotoSettings(ctx context.Context, userID pgtype.UUID) (PhotoSetting, error)
 	GetPlayQueue(ctx context.Context, userID pgtype.UUID) (PlayQueue, error)
 	GetPlayQueueEntries(ctx context.Context, userID pgtype.UUID) ([]GetPlayQueueEntriesRow, error)
 	GetPlaylist(ctx context.Context, id pgtype.UUID) (Playlist, error)
@@ -294,6 +321,7 @@ type Querier interface {
 	// row that is there instead of duplicating it.
 	// It reports the rows inserted: 0 means a row was there, and the new copy is unused.
 	InsertFileVersion(ctx context.Context, arg InsertFileVersionParams) (int64, error)
+	InsertPhotoSource(ctx context.Context, arg InsertPhotoSourceParams) (PhotoSource, error)
 	InsertPlayHistory(ctx context.Context, arg InsertPlayHistoryParams) error
 	// WebAuthn credentials (A.4). The full go-webauthn Credential is stored as JSON.
 	InsertWebAuthnCredential(ctx context.Context, arg InsertWebAuthnCredentialParams) (WebauthnCredential, error)
@@ -350,6 +378,9 @@ type Querier interface {
 	ListExpiredTombstones(ctx context.Context, deletedAt pgtype.Timestamptz) ([]ListExpiredTombstonesRow, error)
 	ListFileNodesUnderFolder(ctx context.Context, id pgtype.UUID) ([]Node, error)
 	ListFileVersions(ctx context.Context, nodeID pgtype.UUID) ([]FileVersion, error)
+	ListHiddenPhotoAssets(ctx context.Context, arg ListHiddenPhotoAssetsParams) ([]PhotoAsset, error)
+	// Months of the hidden cards, as the timeline's buckets.
+	ListHiddenPhotoMonthBuckets(ctx context.Context, userID pgtype.UUID) ([]ListHiddenPhotoMonthBucketsRow, error)
 	ListInternetRadioStations(ctx context.Context, userID pgtype.UUID) ([]InternetRadioStation, error)
 	ListLiveNodes(ctx context.Context, userID pgtype.UUID) ([]Node, error)
 	ListNewestEpisodesForUser(ctx context.Context, arg ListNewestEpisodesForUserParams) ([]PodcastEpisode, error)
@@ -358,8 +389,41 @@ type Querier interface {
 	// Nodes that have more than keep versions (trimming candidates).
 	ListNodesWithExcessVersions(ctx context.Context, keep interface{}) ([]pgtype.UUID, error)
 	ListNotificationPrefs(ctx context.Context, userID pgtype.UUID) ([]ListNotificationPrefsRow, error)
+	ListOnThisDay(ctx context.Context, arg ListOnThisDayParams) ([]PhotoAsset, error)
+	// The caller's own assets by id, any state: the handlers decide what a hidden or
+	// trashed one may do.
+	ListOwnPhotoAssets(ctx context.Context, arg ListOwnPhotoAssetsParams) ([]PhotoAsset, error)
 	ListPendingRescanRequests(ctx context.Context) ([]RescanRequest, error)
 	ListPendingSavedItems(ctx context.Context, limit int32) ([]SavedItem, error)
+	ListPhotoAssetIDs(ctx context.Context, userID pgtype.UUID) ([]pgtype.UUID, error)
+	ListPhotoAssetsInMonth(ctx context.Context, arg ListPhotoAssetsInMonthParams) ([]PhotoAsset, error)
+	// Assets with coordinates and no place yet. A failed lookup must be stored as 0 by the
+	// caller, or the row is picked again forever.
+	ListPhotoAssetsWithoutPlace(ctx context.Context, limit int32) ([]PhotoAsset, error)
+	// Other live cards with the same content as the given cards (copies in other folders),
+	// by the card they copy. An edit applies to them too, as flags and delete do: to the
+	// user they are one photo, and an edited twin would otherwise come back with the old values.
+	ListPhotoCardCopies(ctx context.Context, arg ListPhotoCardCopiesParams) ([]ListPhotoCardCopiesRow, error)
+	// Children (live videos, originals) of the given parent assets, for the feed rows and the card.
+	ListPhotoChildren(ctx context.Context, parentIds []pgtype.UUID) ([]ListPhotoChildrenRow, error)
+	// Nodes to delete for cards: each card, its children, and every copy of the same
+	// content (with the copies' children).
+	ListPhotoDeleteNodes(ctx context.Context, arg ListPhotoDeleteNodesParams) ([]pgtype.UUID, error)
+	// Files that could not be processed (thumbnail or metadata), for the settings list.
+	// Hidden ones are left out: their names show only after the unlock.
+	ListPhotoFailedFiles(ctx context.Context, arg ListPhotoFailedFilesParams) ([]ListPhotoFailedFilesRow, error)
+	// Everything grouping looks at (Live Photo pairs by live_cid, RAW+JPEG by name and time).
+	ListPhotoGroupCandidates(ctx context.Context, userID pgtype.UUID) ([]ListPhotoGroupCandidatesRow, error)
+	// Feed filters shared by ListPhotoMonthBuckets and ListPhotoAssetsInMonth. Hidden, trashed
+	// and child rows (live videos, originals) never show. Duplicates (same content_hash within
+	// the user) collapse to the row with the smallest id AMONG THE ROWS THAT PASS THE SAME
+	// FILTERS, so a copy is not lost because its twin is filtered out; NULL hashes never collapse.
+	// Buckets dedup with one window pass over the filtered rows instead of a per-row twin
+	// lookup (same result as the month query's NOT EXISTS, several times faster on a big library).
+	ListPhotoMonthBuckets(ctx context.Context, arg ListPhotoMonthBucketsParams) ([]ListPhotoMonthBucketsRow, error)
+	// Trashed nodes to restore for cards: each card and its children.
+	ListPhotoRestoreNodes(ctx context.Context, arg ListPhotoRestoreNodesParams) ([]pgtype.UUID, error)
+	ListPhotoSources(ctx context.Context, userID pgtype.UUID) ([]PhotoSource, error)
 	ListPlaylistsByUser(ctx context.Context, userID pgtype.UUID) ([]Playlist, error)
 	ListPodcastChannelsForUser(ctx context.Context, userID pgtype.UUID) ([]PodcastChannel, error)
 	ListPublicSettings(ctx context.Context) ([]Setting, error)
@@ -376,6 +440,11 @@ type Querier interface {
 	ListSharesForResource(ctx context.Context, arg ListSharesForResourceParams) ([]ResourceShare, error)
 	ListSharesForUser(ctx context.Context, sharedWithUser pgtype.UUID) ([]ResourceShare, error)
 	ListStaleBookNodes(ctx context.Context, id pgtype.UUID) ([]Node, error)
+	// Media files of the folder's subtree whose asset row is missing or older than the file.
+	// The extensions are exactly photos.Indexer.Accepts: a file the change log would not
+	// index must not be indexed by a full pass either (the next change would remove it).
+	// Newest first: on the first run the recent photos show up before the old archive.
+	ListStalePhotoNodes(ctx context.Context, id pgtype.UUID) ([]Node, error)
 	// Files of the folder's subtree whose song row is missing, older than the file, or
 	// predates duration probing — the whole scan in one query instead of one per file.
 	ListStaleSongNodes(ctx context.Context, id pgtype.UUID) ([]Node, error)
@@ -407,6 +476,7 @@ type Querier interface {
 	ListTombstonedNodePaths(ctx context.Context, userID pgtype.UUID) ([]pgtype.Text, error)
 	ListTombstonedRootChildren(ctx context.Context, userID pgtype.UUID) ([]string, error)
 	ListTrashNodes(ctx context.Context, userID pgtype.UUID) ([]Node, error)
+	ListTrashedPhotoAssets(ctx context.Context, userID pgtype.UUID) ([]PhotoAsset, error)
 	ListUnusedBackupCodes(ctx context.Context, userID pgtype.UUID) ([]BackupCode, error)
 	ListUserIDs(ctx context.Context) ([]pgtype.UUID, error)
 	// Users with used space — for the admin dashboard, and the definition the quota check
@@ -450,6 +520,9 @@ type Querier interface {
 	MarkBackupCodeUsed(ctx context.Context, id pgtype.UUID) (int64, error)
 	MarkQuotaNotified(ctx context.Context, id pgtype.UUID) error
 	MaxPlaylistPosition(ctx context.Context, playlistID pgtype.UUID) (interface{}, error)
+	// The newest purge of the user (0 when none): purged nodes take their asset rows with
+	// them (cascade) without a change_log row, so derivative files are swept when it moves.
+	MaxPurgedSeq(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// MoveBookmark re-parents a node. The NOT EXISTS guard rejects a move that
 	// would create a cycle (the target parent must not be inside the moved subtree).
 	// UNION (not UNION ALL) in the walks below is the cycle guard: a node already
@@ -459,7 +532,13 @@ type Querier interface {
 	NextChangeSeq(ctx context.Context, id pgtype.UUID) (int64, error)
 	NotificationPrefsForEvent(ctx context.Context, arg NotificationPrefsForEventParams) ([]NotificationPrefsForEventRow, error)
 	PruneBooksOutsideFolder(ctx context.Context, arg PruneBooksOutsideFolderParams) ([]pgtype.Text, error)
+	// Assets whose node is under none of the user's sources (trashed nodes included: a
+	// trashed photo of a source stays in the gallery trash).
+	PrunePhotoAssetsOutsideSources(ctx context.Context, userID pgtype.UUID) ([]pgtype.UUID, error)
 	PruneSongsOutsideFolder(ctx context.Context, arg PruneSongsOutsideFolderParams) error
+	// Queues a video for transcoding unless it is queued or done already (a changed file
+	// resets the state in UpsertPhotoAsset). Reports whether a row was queued.
+	QueuePhotoTranscode(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Returns accessible songs in random order with optional genre/year filters.
 	// Pass NULL for genre, from_year, to_year to skip those filters.
 	RandomAccessibleSongs(ctx context.Context, arg RandomAccessibleSongsParams) ([]RandomAccessibleSongsRow, error)
@@ -525,6 +604,24 @@ type Querier interface {
 	// The cursor only moves forward: a catch-up that started before a folder switch must
 	// not undo the cursor the switch set.
 	SetMusicIndexedSeq(ctx context.Context, arg SetMusicIndexedSeqParams) error
+	// A card's flags apply to its children (live video, original) and to the user's cards of
+	// the same content (copies): to the user they are one photo.
+	SetPhotoCardFlags(ctx context.Context, arg SetPhotoCardFlagsParams) error
+	// The capture date of the node was set by the user (written into the file or its sidecar).
+	SetPhotoDateEdited(ctx context.Context, nodeID pgtype.UUID) error
+	// A nil favorite or hidden leaves that flag as it is.
+	SetPhotoFlags(ctx context.Context, arg SetPhotoFlagsParams) error
+	// The cursor only moves forward: a catch-up that started before a source change must
+	// not undo the cursor the change set.
+	SetPhotoIndexedSeq(ctx context.Context, arg SetPhotoIndexedSeqParams) error
+	// The file changed only in ways the gallery does not read (renamed, trashed and restored:
+	// each bumps the node version): record the version without a re-read or a new thumbnail.
+	SetPhotoNodeVersion(ctx context.Context, arg SetPhotoNodeVersionParams) error
+	SetPhotoParent(ctx context.Context, arg SetPhotoParentParams) error
+	SetPhotoPlace(ctx context.Context, arg SetPhotoPlaceParams) error
+	// The user erased (true) or set (false) the position by hand; erasing also clears what is
+	// stored, so the row is right before the next re-read.
+	SetPhotoPlaceCleared(ctx context.Context, arg SetPhotoPlaceClearedParams) error
 	SetPodcastChannelCoverPath(ctx context.Context, arg SetPodcastChannelCoverPathParams) error
 	SetPodcastChannelMeta(ctx context.Context, arg SetPodcastChannelMetaParams) error
 	SetRating(ctx context.Context, arg SetRatingParams) error
@@ -532,6 +629,8 @@ type Querier interface {
 	SetSavedItemDone(ctx context.Context, arg SetSavedItemDoneParams) (int64, error)
 	SetSavedItemError(ctx context.Context, arg SetSavedItemErrorParams) error
 	SetSharePasswordHash(ctx context.Context, arg SetSharePasswordHashParams) error
+	SetThumbState(ctx context.Context, arg SetThumbStateParams) error
+	SetTranscodeState(ctx context.Context, arg SetTranscodeStateParams) error
 	SetUserLanguage(ctx context.Context, arg SetUserLanguageParams) error
 	SetUserQuota(ctx context.Context, arg SetUserQuotaParams) (User, error)
 	SetUserRole(ctx context.Context, arg SetUserRoleParams) (User, error)
@@ -559,6 +658,9 @@ type Querier interface {
 	// edited). NULL exclude_id excludes nobody. Used to keep the handed-out total within
 	// the server-wide cap.
 	SumAssignedQuotas(ctx context.Context, excludeID pgtype.UUID) (int64, error)
+	// Realigns trashed_at with the files' trash state (a full pass; the change log does it
+	// per file).
+	SyncPhotoTrash(ctx context.Context, userID pgtype.UUID) error
 	// TombstoneBookmarkTree marks the whole subtree deleted with one seq value
 	// (valid: the cursor needs per-row monotonicity, not uniqueness). Runs inside
 	// a tx after NextBookmarkSeq.
@@ -570,6 +672,10 @@ type Querier interface {
 	TotalUploadReserved(ctx context.Context) (int64, error)
 	TouchDevice(ctx context.Context, id pgtype.UUID) error
 	TouchUploadReservation(ctx context.Context, id string) error
+	TrashPhotoAssetByNode(ctx context.Context, nodeID pgtype.UUID) error
+	// A trashed folder: its assets go to the gallery trash, not away. Only rows whose node
+	// is trashed: a live folder created at the same path since then keeps its photos.
+	TrashPhotoAssetsUnderPath(ctx context.Context, arg TrashPhotoAssetsUnderPathParams) error
 	// The part of a user's occupied space that emptying the trash would release: trashed
 	// files plus the version history that goes with them. Files sit there for TRASH_DAYS,
 	// so this is the fastest space a user can free by themselves.
@@ -582,6 +688,9 @@ type Querier interface {
 	// partial unique indexes fire here if a live node already holds a restored name.
 	UndeleteTombstoneSubtree(ctx context.Context, arg UndeleteTombstoneSubtreeParams) ([]UndeleteTombstoneSubtreeRow, error)
 	Unstar(ctx context.Context, arg UnstarParams) error
+	UntrashPhotoAssetByNode(ctx context.Context, nodeID pgtype.UUID) error
+	// A restored folder: its assets come back from the gallery trash.
+	UntrashPhotoAssetsUnderPath(ctx context.Context, arg UntrashPhotoAssetsUnderPathParams) error
 	UpdateBookMetadata(ctx context.Context, arg UpdateBookMetadataParams) error
 	UpdateBrowserBookmark(ctx context.Context, arg UpdateBrowserBookmarkParams) (BrowserBookmark, error)
 	UpdateInternetRadioStation(ctx context.Context, arg UpdateInternetRadioStationParams) (int64, error)
@@ -619,6 +728,11 @@ type Querier interface {
 	UpsertKnownLogin(ctx context.Context, arg UpsertKnownLoginParams) (bool, error)
 	UpsertMusicSettings(ctx context.Context, arg UpsertMusicSettingsParams) (MusicSetting, error)
 	UpsertNotificationPref(ctx context.Context, arg UpsertNotificationPrefParams) error
+	// The indexer owns the metadata columns; the user's own state (favorite, hidden, trashed_at,
+	// parent_id, role) survives a re-index. The thumbnail goes back to pending when the file
+	// changed (node_version differs).
+	UpsertPhotoAsset(ctx context.Context, arg UpsertPhotoAssetParams) (PhotoAsset, error)
+	UpsertPhotoSettings(ctx context.Context, arg UpsertPhotoSettingsParams) (PhotoSetting, error)
 	UpsertPlayQueue(ctx context.Context, arg UpsertPlayQueueParams) error
 	UpsertPodcastEpisode(ctx context.Context, arg UpsertPodcastEpisodeParams) error
 	// Inserts or updates the reading position for (user_id, document). All mutable

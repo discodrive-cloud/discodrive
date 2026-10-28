@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { photosNavVisible } from '~/lib/photos/settings'
+
 const sess = useSession()
 const route = useRoute()
 const { theme, toggle: toggleTheme } = useTheme()
@@ -8,9 +10,15 @@ const { confirm } = useDialog()
 
 const musicEnabled = ref(false)
 const booksEnabled = ref(false)
+const photosEnabled = usePhotosEnabled()
 onMounted(async () => {
-  try { musicEnabled.value = (await request<{ enabled: boolean }>('/me/music')).enabled } catch { /* ignore */ }
-  try { booksEnabled.value = (await request<{ enabled: boolean }>('/me/ebooks')).enabled } catch { /* ignore */ }
+  if (sess.value.role === 'admin') return // the admin menu has no sections
+  // Sections the server switched off are not asked about at all.
+  const f = await loadFeatures()
+  // A lite build has no gallery even when it was left on: no dead nav item.
+  if (f.photos) try { photosEnabled.value = photosNavVisible(await request<{ enabled: boolean; available: boolean }>('/me/photos/v1/settings')) } catch { /* ignore */ }
+  if (f.music) try { musicEnabled.value = (await request<{ enabled: boolean }>('/me/music')).enabled } catch { /* ignore */ }
+  if (f.books) try { booksEnabled.value = (await request<{ enabled: boolean }>('/me/ebooks')).enabled } catch { /* ignore */ }
 })
 
 const nav = computed(() => {
@@ -30,6 +38,9 @@ const nav = computed(() => {
     { to: '/contacts', icon: 'lucide:contact', label: t('nav.contacts') },
     { to: '/saved', icon: 'lucide:bookmark', label: t('nav.saved') },
   ]
+  if (photosEnabled.value) {
+    items.push({ to: '/photos', icon: 'lucide:image', label: t('nav.photos') })
+  }
   if (booksEnabled.value) {
     items.push({ to: '/books-edit', icon: 'lucide:book-open', label: t('nav.books') })
   }
@@ -125,7 +136,11 @@ async function logout() {
         <Icon name="lucide:hard-drive" class="text-accent" size="20" />
         <span class="font-mono text-base font-semibold tracking-tight">Disco<span class="text-accent">Drive</span></span>
       </header>
-      <main class="flex-1 overflow-auto">
+      <!-- A full-bleed page (the photo grid) fills the area and scrolls by itself. -->
+      <main v-if="route.meta.fullBleed" class="min-h-0 flex-1 overflow-hidden">
+        <slot />
+      </main>
+      <main v-else class="flex-1 overflow-auto">
         <div class="mx-auto max-w-6xl p-4 md:p-6">
           <slot />
         </div>

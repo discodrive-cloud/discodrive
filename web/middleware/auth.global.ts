@@ -45,4 +45,7 @@ export default defineNuxtRouteMiddleware(async (to) => {
   const isAdminRoute = to.path.startsWith('/admin')
   if (isAdminRoute && sess.value.role !== 'admin') return navigateTo('/files')
   if (!isAdminRoute && sess.value.role === 'admin' && to.path === '/') return navigateTo('/admin')
+  // A section the server has switched off has no pages either.
+  const section = sectionOfRoute(to.path)
+  if (section && !(await loadFeatures())[section]) return navigateTo('/files')
 })

@@ -9,7 +9,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"time"
 
 	"discodrive/internal/httpsecurity"
 )
@@ -50,6 +52,14 @@ type Config struct {
 	// Generous by default: distro ISOs and archives are the whole point of
 	// server-side downloads (a 2 GB cap rejected a plain Ubuntu server ISO).
 	SavedMaxDownloadMB int
+	// MusicEnabled, BooksEnabled and PhotosEnabled (MUSIC_ENABLED, BOOKS_ENABLED,
+	// PHOTOS_ENABLED; on unless set to false) let an operator — a provider, a company —
+	// take a section away from everyone: it is neither shown nor can it be turned on,
+	// its client protocols (Subsonic; OPDS and KOReader sync) are closed and nothing is
+	// indexed for it. Data already there is kept for when it is switched back on.
+	MusicEnabled  bool
+	BooksEnabled  bool
+	PhotosEnabled bool
 	// StorageTotalGB is how much of the disk discodrive may occupy in total; 0 = the
 	// whole disk. It bounds both what admins can hand out (the sum of user quotas)
 	// and what users can actually write, so the service cannot fill a disk it shares
@@ -59,6 +69,17 @@ type Config struct {
 	// specified; 0 = no quota (only the server-wide cap applies). Existing users are
 	// never touched by this.
 	DefaultUserQuotaGB int
+	// PhotosWorkers is how many background workers render gallery thumbnails; 0 is the
+	// economy mode (nothing in the background, previews are built on demand, no video
+	// transcoding). Default: half the CPUs, at least one and at most four. Each render is
+	// one vips process limited to VIPS_CONCURRENCY threads (default 1) and each ffmpeg
+	// run to PHOTOS_FFMPEG_THREADS (default 2), so the first run over a big archive takes
+	// about PHOTOS_WORKERS cores (plus as many again for viewer previews at most) instead
+	// of all of them: the server also serves files. On a shared NAS 2 is a good value.
+	PhotosWorkers int
+	// PhotosExifTimeout bounds one exiftool read (PHOTOS_EXIF_TIMEOUT, seconds; default
+	// 60): a file exiftool hangs on is recorded as failed and the reader restarted.
+	PhotosExifTimeout time.Duration
 }
 
 // GiB is the byte multiplier for the *_GB settings: they are binary gigabytes,
@@ -90,6 +111,11 @@ func Load() Config {
 		XAccelEnabled:         getenvBool("XACCEL_ENABLED", true),
 		SavedMaxDownloadMB:    getenvInt("SAVED_MAX_DOWNLOAD_MB", 32768),
 		StorageTotalGB:        getenvInt("STORAGE_TOTAL_GB", 0),
+		MusicEnabled:          getenvBool("MUSIC_ENABLED", true),
+		BooksEnabled:          getenvBool("BOOKS_ENABLED", true),
+		PhotosEnabled:         getenvBool("PHOTOS_ENABLED", true),
+		PhotosWorkers:         photosWorkers(),
+		PhotosExifTimeout:     time.Duration(max(1, getenvInt("PHOTOS_EXIF_TIMEOUT", 60))) * time.Second,
 		DefaultUserQuotaGB:    getenvInt("DEFAULT_USER_QUOTA_GB", 0),
 	}
 }
@@ -125,4 +151,15 @@ func getenvBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+// photosWorkers reads PHOTOS_WORKERS; unset or invalid means max(1, min(4, NumCPU/2)),
+// 0 is kept.
+func photosWorkers() int {
+	def := max(1, min(4, runtime.NumCPU()/2))
+	n := getenvInt("PHOTOS_WORKERS", def)
+	if n < 0 {
+		return def
+	}
+	return n
 }

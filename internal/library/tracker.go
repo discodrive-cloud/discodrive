@@ -1,4 +1,4 @@
-// Package library keeps media indexes (music, e-books) in step with the change log:
+// Package library keeps media indexes (music, e-books, photos) in step with the change log:
 // every change to a file is a change_log row, so a library processes only rows after
 // its per-user cursor — work in proportion to what changed, none when idle.
 package library
@@ -19,7 +19,9 @@ import (
 
 type Library interface {
 	Name() string
-	State(ctx context.Context, userID pgtype.UUID) (folder string, cursor int64, ok bool, err error)
+	// State returns the library's root folders (disk paths; music and e-books have one,
+	// photos one per source), its cursor, and ok=false when the library is off.
+	State(ctx context.Context, userID pgtype.UUID) (roots []string, cursor int64, ok bool, err error)
 	SetCursor(ctx context.Context, userID pgtype.UUID, seq int64) error
 	Accepts(diskPath string) bool
 	Index(ctx context.Context, userID, nodeID, diskPath string) error
@@ -31,14 +33,45 @@ type Library interface {
 	Heal(ctx context.Context, userID pgtype.UUID) error
 }
 
+// AfterCatchUp is optionally implemented by a library that has work to do once a
+// catch-up pass of a user ends (photos regroup Live/edited pairs over the whole library
+// rather than per file). It runs after every CatchUp whose State was ok, also when no
+// change was pending; the library decides cheaply whether anything is to be done.
+type AfterCatchUp interface {
+	AfterCatchUp(ctx context.Context, userID pgtype.UUID) error
+}
+
 const pageSize = 500
 
 // CatchUp processes the user's changes after the library's cursor.
 func CatchUp(ctx context.Context, q *db.Queries, lib Library, userID pgtype.UUID) error {
-	folder, cursor, ok, err := lib.State(ctx, userID)
+	roots, cursor, ok, err := lib.State(ctx, userID)
 	if err != nil || !ok {
 		return err
 	}
+	if err := catchUp(ctx, q, lib, userID, roots, cursor); err != nil {
+		return err
+	}
+	if a, ok := lib.(AfterCatchUp); ok {
+		return a.AfterCatchUp(ctx, userID)
+	}
+	return nil
+}
+
+// inRoots reports whether p is one of roots or lies under one, and whether it is a root.
+func inRoots(roots []string, p string) (inside, isRoot bool) {
+	for _, r := range roots {
+		if p == r {
+			return true, true
+		}
+		if strings.HasPrefix(p, r+"/") {
+			inside = true
+		}
+	}
+	return inside, false
+}
+
+func catchUp(ctx context.Context, q *db.Queries, lib Library, userID pgtype.UUID, roots []string, cursor int64) error {
 	uid := db.UUIDString(userID)
 	for {
 		rows, err := q.ListChangesAfter(ctx, db.ListChangesAfterParams{UserID: userID, Seq: cursor, Limit: pageSize})
@@ -55,10 +88,11 @@ func CatchUp(ctx context.Context, q *db.Queries, lib Library, userID pgtype.UUID
 			}
 			seen[c.NodeID] = true
 			nid, p := db.UUIDString(c.NodeID), c.DiskPath.String
-			// The library folder belongs to the library too; its own deletion is what
-			// drops everything under it (the first case below).
-			inside := c.DiskPath.Valid && (p == folder || strings.HasPrefix(p, folder+"/"))
-			if c.IsDir && c.Deleted && p == folder {
+			// A root folder belongs to the library too; its own deletion is what drops
+			// everything under it (the first case below).
+			inside, isRoot := inRoots(roots, p)
+			inside = inside && c.DiskPath.Valid
+			if c.IsDir && c.Deleted && isRoot {
 				inside = false
 			}
 			var err error
@@ -126,8 +160,14 @@ func (t *Tracker) listen(ctx context.Context) error {
 	if _, err := conn.Exec(ctx, "LISTEN change_log"); err != nil {
 		return err
 	}
-	t.catchUpAll(ctx) // at start and after every reconnect: nothing logged meanwhile is lost
-	t.healAll(ctx)    // and nothing a failed catch-up skipped stays missing
+	// At start and after every reconnect: nothing logged meanwhile is lost, and nothing a
+	// failed catch-up skipped stays missing. Off this goroutine: a long heal (a library's
+	// first full pass) must not stop notifications for every user and library; the gate
+	// still keeps one run per library and user.
+	go func() {
+		t.catchUpAll(ctx)
+		t.healAll(ctx)
+	}()
 	for {
 		n, err := conn.Conn().WaitForNotification(ctx)
 		if err != nil {

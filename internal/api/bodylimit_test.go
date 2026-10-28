@@ -64,7 +64,7 @@ func TestAPIBodyLimits(t *testing.T) {
 func TestPublicAuthRoutesRejectOversizeBeforeServices(t *testing.T) {
 	// Real router with no services: oversized requests must be rejected before
 	// login, registration, or any database/password work is invoked.
-	h := NewRouter(nil, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, false, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewRouter(nil, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	for _, path := range []string{"/auth/login", "/auth/register", "/auth/mfa/totp", "/auth/device/token", "/auth/webauthn/login/finish", "/setup/admin"} {
 		r := httptest.NewRequest("POST", path, strings.NewReader(strings.Repeat("x", maxAuthBody+1)))
 		r.ContentLength = -1

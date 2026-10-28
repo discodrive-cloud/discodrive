@@ -16,6 +16,9 @@ import (
 	"discodrive/internal/ebook"
 	"discodrive/internal/music"
 	"discodrive/internal/notify"
+	"discodrive/internal/photos"
+	"discodrive/internal/photos/maps"
+	"discodrive/internal/photos/media"
 	"discodrive/internal/quota"
 	"discodrive/internal/saved"
 	"discodrive/internal/secret"
@@ -44,6 +47,11 @@ type Server struct {
 	metaEditor   *ebook.MetadataEditor
 	saved        *saved.Service
 	bookmarks    *bookmarks.Service
+	photos       *photos.Indexer // nil in the lite build (no media tools)
+	thumbs       *photos.Thumbs
+	photoEditor  *photos.Editor // nil in the lite build
+	maps         *maps.Manager  // nil in the lite build
+	sections     Sections       // optional sections the operator left on
 }
 
 // quotaChecker is the same checker the storage layer enforces writes with, so the admin
@@ -57,8 +65,14 @@ func (s *Server) quotaChecker() *quota.Checker {
 }
 
 // NewRouter registers public and authenticated routes.
-func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService, uploads *storage.Uploads, storageRoot string, cipher *secret.Cipher, notifier *notify.Notifier, ui fs.FS, davHandler http.Handler, caldavHandler http.Handler, carddavHandler http.Handler, davSvc *davpkg.Service, xaccel bool, events *EventHub, subsonicHandler http.Handler, opdsHandler http.Handler, kosyncHandler http.Handler, tagEditor *music.TagEditor, metaEditor *ebook.MetadataEditor, savedSvc *saved.Service, bookmarksSvc *bookmarks.Service) http.Handler {
-	s := &Server{auth: authSvc, q: q, files: files, uploads: uploads, storageRoot: storageRoot, cipher: cipher, notify: notifier, dav: davSvc, xaccel: xaccel, events: events, loginLimiter: newLoginLimiter(), pollLimiter: newPollLimiter(), feedLimiter: newLoginLimiter(), tagEditor: tagEditor, metaEditor: metaEditor, saved: savedSvc, bookmarks: bookmarksSvc}
+func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService, uploads *storage.Uploads, storageRoot string, cipher *secret.Cipher, notifier *notify.Notifier, ui fs.FS, davHandler http.Handler, caldavHandler http.Handler, carddavHandler http.Handler, davSvc *davpkg.Service, xaccel bool, events *EventHub, subsonicHandler http.Handler, opdsHandler http.Handler, kosyncHandler http.Handler, tagEditor *music.TagEditor, metaEditor *ebook.MetadataEditor, savedSvc *saved.Service, bookmarksSvc *bookmarks.Service, photosIdx *photos.Indexer, photoThumbs *photos.Thumbs, photoMaps *maps.Manager, opts ...Option) http.Handler {
+	s := &Server{auth: authSvc, q: q, files: files, uploads: uploads, storageRoot: storageRoot, cipher: cipher, notify: notifier, dav: davSvc, xaccel: xaccel, events: events, loginLimiter: newLoginLimiter(), pollLimiter: newPollLimiter(), feedLimiter: newLoginLimiter(), tagEditor: tagEditor, metaEditor: metaEditor, saved: savedSvc, bookmarks: bookmarksSvc, photos: photosIdx, thumbs: photoThumbs, maps: photoMaps, sections: AllSections}
+	for _, o := range opts {
+		o(s)
+	}
+	if photosIdx != nil {
+		s.photoEditor = photos.NewEditor(q, files, storageRoot, media.Detect(), photosIdx)
+	}
 	mux := http.NewServeMux()
 
 	// public
@@ -187,6 +201,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("GET /me/ebooks/library/{id}/download", prot(http.HandlerFunc(s.handleDownloadEbook)))
 
 	// music settings (OpenSubsonic)
+	mux.Handle("GET /me/features", prot(http.HandlerFunc(s.handleGetFeatures)))
 	mux.Handle("GET /me/music", prot(http.HandlerFunc(s.handleGetMusicSettings)))
 	mux.Handle("PUT /me/music", prot(http.HandlerFunc(s.handlePutMusicSettings)))
 	mux.Handle("POST /me/music/password", prot(http.HandlerFunc(s.handlePostMusicPassword)))
@@ -209,6 +224,30 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("PUT /me/music/tags/{id}", prot(http.HandlerFunc(s.handlePutMusicTags)))
 	mux.Handle("POST /me/music/tags/folder/{id}/count", prot(http.HandlerFunc(s.handleMusicTagsFolderCount)))
 	mux.Handle("POST /me/music/tags/folder/{id}", prot(http.HandlerFunc(s.handlePostMusicTagsFolder)))
+
+	// photos gallery (versioned: the mobile app depends on it)
+	mux.Handle("GET /me/photos/v1/settings", prot(http.HandlerFunc(s.handleGetPhotoSettings)))
+	mux.Handle("PUT /me/photos/v1/settings", prot(http.HandlerFunc(s.handlePutPhotoSettings)))
+	mux.Handle("GET /me/photos/v1/failed", prot(http.HandlerFunc(s.handlePhotoFailed)))
+	mux.Handle("GET /me/photos/v1/buckets", prot(http.HandlerFunc(s.handlePhotoBuckets)))
+	mux.Handle("GET /me/photos/v1/months/{month}", prot(http.HandlerFunc(s.handlePhotoMonth)))
+	mux.Handle("GET /me/photos/v1/on-this-day", prot(http.HandlerFunc(s.handlePhotoOnThisDay)))
+	mux.Handle("GET /me/photos/v1/assets/{id}", prot(http.HandlerFunc(s.handleGetPhotoAsset)))
+	mux.Handle("GET /me/photos/v1/assets/{id}/thumb", prot(http.HandlerFunc(s.photoDerivative("thumb"))))
+	mux.Handle("GET /me/photos/v1/assets/{id}/preview", prot(http.HandlerFunc(s.photoDerivative("preview"))))
+	mux.Handle("POST /me/photos/v1/assets/{id}/play", prot(http.HandlerFunc(s.handlePhotoPlay)))
+	mux.Handle("PATCH /me/photos/v1/assets", prot(http.HandlerFunc(s.handlePatchPhotoAssets)))
+	mux.Handle("PUT /me/photos/v1/assets/metadata", prot(http.HandlerFunc(s.handlePutPhotoMetadata)))
+	mux.Handle("POST /me/photos/v1/assets/delete", prot(http.HandlerFunc(s.handleDeletePhotoAssets)))
+	mux.Handle("POST /me/photos/v1/hidden/unlock", prot(http.HandlerFunc(s.rateLimited(s.handlePhotosHiddenUnlock))))
+	mux.Handle("GET /me/photos/v1/hidden/buckets", prot(http.HandlerFunc(s.handlePhotosHiddenBuckets)))
+	mux.Handle("GET /me/photos/v1/hidden", prot(http.HandlerFunc(s.handlePhotosHidden)))
+	mux.Handle("GET /me/photos/v1/trash", prot(http.HandlerFunc(s.handlePhotosTrash)))
+	mux.Handle("POST /me/photos/v1/trash/restore", prot(http.HandlerFunc(s.handlePhotosRestore)))
+	mux.Handle("GET /me/photos/v1/maps/status", prot(http.HandlerFunc(s.handlePhotoMapsStatus)))
+	mux.Handle("GET /me/photos/v1/maps/region.pmtiles", prot(http.HandlerFunc(s.handlePhotoMapsRegion)))
+	mux.Handle("GET /me/photos/v1/maps/assets/{path...}", prot(http.HandlerFunc(s.handlePhotoMapsAsset)))
+	mux.HandleFunc("GET /me/photos/v1/assets/{id}/video", s.handlePhotoVideo) // auth = stream token in ?t=
 
 	// sync scope settings (daemon-only; gated by X-Discodrive-Scope header)
 	mux.Handle("GET /me/sync", prot(http.HandlerFunc(s.handleGetSyncSettings)))
@@ -294,6 +333,8 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("PUT /admin/settings", admin(s.handleAdminPutSetting))
 	mux.Handle("GET /admin/smtp", admin(s.handleAdminGetSmtp))
 	mux.Handle("POST /admin/smtp/test", admin(s.handleAdminSmtpTest))
+	mux.Handle("GET /admin/photos/v1/maps", admin(s.handleAdminGetPhotoMaps))
+	mux.Handle("PUT /admin/photos/v1/maps", admin(s.handleAdminPutPhotoMaps))
 	mux.Handle("POST /admin/rescan", admin(s.handleAdminRescan))
 	mux.Handle("GET /admin/rescan", admin(s.handleAdminRescanList))
 
@@ -340,5 +381,5 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	})
 	mux.Handle("/app/", http.StripPrefix("/app", spaHandler(ui)))
 
-	return limitAPIBodies(mux)
+	return s.sectionGate(limitAPIBodies(mux))
 }

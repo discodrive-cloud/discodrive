@@ -49,7 +49,7 @@ func TestMeStorage(t *testing.T) {
 	files := storage.NewFileService(pool, storage.NewLocalDisk(t.TempDir()))
 	files.SetQuota(quota.New(q, 0))
 	h := api.NewRouter(svc, q, files, nil, t.TempDir(), nil, nil, nil, nil, nil, nil, nil,
-		false, nil, nil, nil, nil, nil, nil, nil, nil)
+		false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	get := func() map[string]any {
 		t.Helper()
@@ -152,7 +152,7 @@ func TestSyncPut_RefusedBeforeTheBody(t *testing.T) {
 	files := storage.NewFileService(pool, storage.NewLocalDisk(t.TempDir()))
 	files.SetQuota(quota.New(q, 0))
 	h := api.NewRouter(svc, q, files, nil, t.TempDir(), nil, nil, nil, nil, nil, nil, nil,
-		false, nil, nil, nil, nil, nil, nil, nil, nil)
+		false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	body := &countingReader{n: 5000}
 	req := httptest.NewRequest(http.MethodPut, "/sync/file?path=big.bin", body)
@@ -219,7 +219,7 @@ func TestMeStorage_DoesNotLeakTheServerCap(t *testing.T) {
 	files := storage.NewFileService(pool, storage.NewLocalDisk(t.TempDir()))
 	files.SetQuota(quota.New(q, 1000)) // server cap, no personal quota
 	h := api.NewRouter(svc, q, files, nil, t.TempDir(), nil, nil, nil, nil, nil, nil, nil,
-		false, nil, nil, nil, nil, nil, nil, nil, nil)
+		false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/me/storage", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)

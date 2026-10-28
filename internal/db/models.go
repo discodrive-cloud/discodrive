@@ -278,6 +278,61 @@ type NotificationPref struct {
 	Enabled  bool        `json:"enabled"`
 }
 
+type PhotoAsset struct {
+	ID             pgtype.UUID        `json:"id"`
+	UserID         pgtype.UUID        `json:"user_id"`
+	NodeID         pgtype.UUID        `json:"node_id"`
+	Kind           string             `json:"kind"`
+	TakenAt        pgtype.Timestamptz `json:"taken_at"`
+	TakenLocal     pgtype.Timestamp   `json:"taken_local"`
+	TzOffsetMin    pgtype.Int4        `json:"tz_offset_min"`
+	DateSource     string             `json:"date_source"`
+	Lat            pgtype.Float8      `json:"lat"`
+	Lon            pgtype.Float8      `json:"lon"`
+	PlaceID        pgtype.Int4        `json:"place_id"`
+	CountryCode    pgtype.Text        `json:"country_code"`
+	PlaceCleared   bool               `json:"place_cleared"`
+	Make           pgtype.Text        `json:"make"`
+	Model          pgtype.Text        `json:"model"`
+	Lens           pgtype.Text        `json:"lens"`
+	FNumber        pgtype.Float4      `json:"f_number"`
+	FocalMm        pgtype.Float4      `json:"focal_mm"`
+	Exposure       pgtype.Text        `json:"exposure"`
+	Iso            pgtype.Int4        `json:"iso"`
+	Width          pgtype.Int4        `json:"width"`
+	Height         pgtype.Int4        `json:"height"`
+	DurationMs     pgtype.Int8        `json:"duration_ms"`
+	VideoCodec     pgtype.Text        `json:"video_codec"`
+	IsHdr          bool               `json:"is_hdr"`
+	LiveCid        pgtype.Text        `json:"live_cid"`
+	ContentHash    pgtype.Text        `json:"content_hash"`
+	ParentID       pgtype.UUID        `json:"parent_id"`
+	Role           pgtype.Text        `json:"role"`
+	Favorite       bool               `json:"favorite"`
+	Hidden         bool               `json:"hidden"`
+	TrashedAt      pgtype.Timestamptz `json:"trashed_at"`
+	ThumbState     string             `json:"thumb_state"`
+	ThumbError     pgtype.Text        `json:"thumb_error"`
+	IndexError     pgtype.Text        `json:"index_error"`
+	TranscodeState pgtype.Text        `json:"transcode_state"`
+	IndexedAt      pgtype.Timestamptz `json:"indexed_at"`
+	NodeVersion    pgtype.Int8        `json:"node_version"`
+}
+
+type PhotoSetting struct {
+	UserID     pgtype.UUID        `json:"user_id"`
+	Enabled    bool               `json:"enabled"`
+	IndexedSeq int64              `json:"indexed_seq"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+type PhotoSource struct {
+	ID           pgtype.UUID        `json:"id"`
+	UserID       pgtype.UUID        `json:"user_id"`
+	FolderNodeID pgtype.UUID        `json:"folder_node_id"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type PlayHistory struct {
 	ID       pgtype.UUID        `json:"id"`
 	UserID   pgtype.UUID        `json:"user_id"`

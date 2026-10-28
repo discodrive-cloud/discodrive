@@ -1,7 +1,12 @@
 <script setup lang="ts">
+import MapsAdmin from '~/components/photos/MapsAdmin.vue'
+
 const { t, locale } = useI18n()
 const { request } = useApi()
 const { SUPPORTED, saveLanguage } = useLocale()
+// The maps block belongs to the gallery: none when the server has it switched off.
+const photosOn = ref(false)
+onMounted(async () => { photosOn.value = (await loadFeatures()).photos })
 const error = ref('')
 const ok = ref('')
 const saving = ref(false)
@@ -137,6 +142,8 @@ async function sendTest() {
         <Icon name="lucide:triangle-alert" size="14" /> {{ accessError }}
       </p>
     </div>
+
+    <MapsAdmin v-if="photosOn" />
 
     <div class="mb-6 card p-5">
       <h2 class="mb-3 text-sm font-medium text-muted">{{ t('admin.smtp_section') }}</h2>

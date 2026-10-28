@@ -15,7 +15,7 @@ func TestDAVRootWithoutSlash(t *testing.T) {
 		got = r.URL.Path
 		w.WriteHeader(http.StatusMultiStatus)
 	})
-	h := NewRouter(nil, nil, nil, nil, "", nil, nil, nil, dav, nil, nil, nil, false, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewRouter(nil, nil, nil, nil, "", nil, nil, nil, dav, nil, nil, nil, false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	for _, path := range []string{"/dav", "/dav/"} {
 		got = ""
 		w := httptest.NewRecorder()

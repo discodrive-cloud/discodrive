@@ -25,7 +25,9 @@ useModalEscape(computed(() => !!state.value), cancel)
 <template>
   <div
     v-if="state"
-    class="fixed inset-0 z-30 flex items-center justify-center bg-black/50 p-4"
+    class="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
+    role="dialog"
+    aria-modal="true"
     @click.self="cancel"
   >
     <div class="card w-full max-w-sm p-5">

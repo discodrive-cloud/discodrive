@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -36,6 +37,10 @@ import (
 	"discodrive/internal/music"
 	"discodrive/internal/notify"
 	"discodrive/internal/opds"
+	"discodrive/internal/photos"
+	"discodrive/internal/photos/geo"
+	"discodrive/internal/photos/maps"
+	"discodrive/internal/photos/media"
 	"discodrive/internal/podcast"
 	"discodrive/internal/quota"
 	"discodrive/internal/rescan"
@@ -287,11 +292,27 @@ func runServer(cfg config.Config) {
 	bookmarksSvc := bookmarks.NewService(pool, queries, store)
 
 	// Background jobs: GC for versions/trash, quotas, podcasts, saved items, bookmarks.
-	musicIdx := music.NewIndexer(queries, cfg.StorageRoot)
-	ebookIdx := ebook.NewIndexer(queries, cfg.StorageRoot)
-	tagEditor := music.NewTagEditor(queries, fileSvc, cfg.StorageRoot)
-	metaEditor := ebook.NewMetadataEditor(queries, cfg.StorageRoot)
+	// A section the operator switched off (MUSIC_ENABLED, BOOKS_ENABLED, PHOTOS_ENABLED)
+	// gets no indexer, no editor and no client protocol; its data stays in place.
+	var libs []library.Library
+	var tagEditor *music.TagEditor
+	var metaEditor *ebook.MetadataEditor
+	if cfg.MusicEnabled {
+		libs = append(libs, music.NewIndexer(queries, cfg.StorageRoot))
+		tagEditor = music.NewTagEditor(queries, fileSvc, cfg.StorageRoot)
+	} else {
+		log.Println("discodrive: music is turned off (MUSIC_ENABLED=false)")
+	}
+	if cfg.BooksEnabled {
+		libs = append(libs, ebook.NewIndexer(queries, cfg.StorageRoot))
+		metaEditor = ebook.NewMetadataEditor(queries, cfg.StorageRoot)
+	} else {
+		log.Println("discodrive: books are turned off (BOOKS_ENABLED=false)")
+	}
 	workerCfg := worker.Default(cfg.VersionKeep, cfg.TrashDays)
+	if !cfg.MusicEnabled {
+		workerCfg.PodcastRefreshInterval = 0 // podcasts are part of music
+	}
 	// Lets the storage-alert job warn the admins about the cap running out, not just
 	// about the disk running out.
 	workerCfg.StorageTotal = cfg.StorageTotalBytes()
@@ -305,7 +326,50 @@ func runServer(cfg config.Config) {
 	go rescan.NewRunner(pool, fileSvc).Run(ctx)
 	// Libraries follow the change log: a catch-up per user whose files changed, and for
 	// everyone at start.
-	go library.NewTracker(pool, musicIdx, ebookIdx).Run(ctx)
+	// The gallery needs the media tools (exiftool, vips, ffmpeg, ffprobe); the lite
+	// image has none, and the photos library is then simply not there.
+	var photosIdx *photos.Indexer
+	var photoThumbs *photos.Thumbs
+	var photoMaps *maps.Manager
+	if tools := media.Detect(); !cfg.PhotosEnabled {
+		log.Println("discodrive: photos are turned off (PHOTOS_ENABLED=false)")
+	} else if tools.Available() {
+		exif, err := media.NewExif(tools)
+		if err != nil {
+			log.Printf("discodrive: photos disabled: %v", err)
+		} else {
+			defer exif.Close()
+			exif.Timeout = cfg.PhotosExifTimeout
+			// Places come from GeoNames files an admin downloads together with the maps;
+			// the geocoder is swapped in when they are there and fills in older assets.
+			geocoder := &photos.SwappableGeocoder{}
+			photosIdx = photos.NewIndexer(queries, cfg.StorageRoot, exif, geocoder)
+			photoMaps = maps.New(ctx, queries, cfg.StorageRoot, maps.Config{Pmtiles: tools.Pmtiles})
+			var geoMu sync.Mutex
+			photoMaps.OnGeo = func() {
+				geoMu.Lock()
+				defer geoMu.Unlock()
+				ix, err := geo.Load(photoMaps.GeoDir())
+				if err != nil {
+					log.Printf("discodrive: photos: loading places: %v", err)
+					return
+				}
+				geocoder.Swap(ix)
+				go func() {
+					n, err := photos.BackfillPlaces(ctx, queries, ix)
+					log.Printf("discodrive: photos: %s, places filled for %d assets (err=%v)", ix, n, err)
+				}()
+			}
+			go photoMaps.Resume(ctx)
+			photoThumbs = photos.NewThumbs(queries, cfg.StorageRoot, tools, cfg.PhotosWorkers, exif)
+			photosIdx.OnPending = photoThumbs.Kick
+			go photoThumbs.Run(ctx)
+			libs = append(libs, photosIdx)
+		}
+	} else {
+		log.Printf("discodrive: photos disabled: media tools not found")
+	}
+	go library.NewTracker(pool, libs...).Run(ctx)
 	// Reap abandoned resumable-upload sessions (idle > 1h) and their staged temp files.
 	go uploads.StartGC(ctx, 5*time.Minute, time.Hour)
 
@@ -323,14 +387,20 @@ func runServer(cfg config.Config) {
 	cardHandler := &godavcarddav.Handler{Backend: cardBackend, Prefix: "/carddav"}
 	carddavH := carddavpkg.Handler(authSvc, queries, cardBackend, cardHandler)
 
-	subsonicH := subsonic.New(queries, cipher, fileSvc, cfg.StorageRoot, cfg.XAccelEnabled)
-	opdsH := opds.New(queries, cipher, cfg.StorageRoot, cfg.XAccelEnabled)
-	kosyncH := kosync.New(queries, cipher)
+	var subsonicH, opdsH, kosyncH http.Handler
+	if cfg.MusicEnabled {
+		subsonicH = subsonic.New(queries, cipher, fileSvc, cfg.StorageRoot, cfg.XAccelEnabled)
+	}
+	if cfg.BooksEnabled {
+		opdsH = opds.New(queries, cipher, cfg.StorageRoot, cfg.XAccelEnabled)
+		kosyncH = kosync.New(queries, cipher)
+	}
+	sections := api.WithSections(api.Sections{Music: cfg.MusicEnabled, Books: cfg.BooksEnabled, Photos: cfg.PhotosEnabled})
 
 	scriptHashes := inlineScriptHashes(discodrive.WebUI())
 	srv := &http.Server{
 		Addr:              cfg.Addr(),
-		Handler:           transport.Handler(securityHeaders(scriptHashes, compressResponses(api.NewRouter(authSvc, queries, fileSvc, uploads, cfg.StorageRoot, cipher, notifier, discodrive.WebUI(), dav, caldavH, carddavH, davSvc, cfg.XAccelEnabled, eventHub, subsonicH, opdsH, kosyncH, tagEditor, metaEditor, savedSvc, bookmarksSvc)))),
+		Handler:           transport.Handler(securityHeaders(scriptHashes, compressResponses(api.NewRouter(authSvc, queries, fileSvc, uploads, cfg.StorageRoot, cipher, notifier, discodrive.WebUI(), dav, caldavH, carddavH, davSvc, cfg.XAccelEnabled, eventHub, subsonicH, opdsH, kosyncH, tagEditor, metaEditor, savedSvc, bookmarksSvc, photosIdx, photoThumbs, photoMaps, sections)))),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

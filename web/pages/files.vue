@@ -92,6 +92,19 @@ const nodes = ref<Node[]>([])
 const error = ref('')
 const busy = ref(false)
 const stack = ref<{ id: string; name: string }[]>([{ id: '', name: t('files.root_name') }])
+// ?folder=<id>&name=<path> opens a folder directly (the gallery's «где лежит»). Its
+// ancestors are not looked up: one crumb carries the whole path, the root crumb goes up.
+const filesRoute = useRoute()
+function openFromQuery(): boolean {
+  const folder = filesRoute.query.folder
+  if (typeof folder !== 'string' || !/^[0-9a-f-]{36}$/i.test(folder)) return false
+  const name = typeof filesRoute.query.name === 'string' && filesRoute.query.name ? filesRoute.query.name : '…'
+  stack.value = [stack.value[0], { id: folder, name }]
+  return true
+}
+openFromQuery()
+// Another «где лежит» while Files is already open.
+watch(() => filesRoute.query.folder, () => { if (openFromQuery()) load() })
 const parentId = computed(() => stack.value[stack.value.length - 1].id)
 const fileInput = ref<HTMLInputElement>()
 const newFolder = ref('')

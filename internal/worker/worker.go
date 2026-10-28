@@ -109,7 +109,9 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 		return w.q.DeleteExpiredAuthChallenges(ctx)
 	})
-	go w.tick(ctx, w.cfg.PodcastRefreshInterval, "podcast-refresh", w.podcastRefresh)
+	if w.cfg.PodcastRefreshInterval > 0 { // 0: music (and with it podcasts) is turned off
+		go w.tick(ctx, w.cfg.PodcastRefreshInterval, "podcast-refresh", w.podcastRefresh)
+	}
 	if w.saved != nil {
 		go w.tick(ctx, w.cfg.SavedScanInterval, "saved-scan", w.saved.ProcessPending)
 		go w.tick(ctx, w.cfg.SavedCleanupInterval, "saved-cleanup", w.saved.CleanupDownloads)

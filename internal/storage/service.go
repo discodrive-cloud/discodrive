@@ -778,6 +778,9 @@ type PushMeta struct {
 	// server time either way: they record when a revision reached us, not when it was
 	// authored, and that ordering is what history browsing relies on.
 	ModifiedAt time.Time
+	// RejectStale answers ErrStaleVersion on a base version mismatch instead of storing
+	// the pushed bytes as a conflict copy (for edits the caller can simply drop).
+	RejectStale bool
 }
 
 // PushWithMeta is Push plus client-supplied metadata; see Push for the sync semantics.
@@ -886,6 +889,10 @@ func (s *FileService) pushOnce(ctx context.Context, userID string, parentID *str
 			return PushResult{}, err
 		}
 		return s.finishPush(ctx, tx, qtx, ownerUUID, node, "update", false, tmpRel, rel, snap, &liveChanged) // overwrites the primary file
+	}
+
+	if meta.RejectStale {
+		return PushResult{}, ErrStaleVersion
 	}
 
 	// CONFLICT: the server version stays as the primary; the client version becomes

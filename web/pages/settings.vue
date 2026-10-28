@@ -5,29 +5,38 @@ import AccessPanel from '~/components/settings/AccessPanel.vue'
 import SyncPanel from '~/components/settings/SyncPanel.vue'
 import MusicPanel from '~/components/settings/MusicPanel.vue'
 import BooksPanel from '~/components/settings/BooksPanel.vue'
+import PhotosPanel from '~/components/settings/PhotosPanel.vue'
 import NotificationsPanel from '~/components/settings/NotificationsPanel.vue'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 
-const tabs = [
+const allTabs = [
   { id: 'general', component: GeneralPanel },
   { id: 'security', component: SecurityPanel },
   { id: 'access', component: AccessPanel },
   { id: 'sync', component: SyncPanel },
   { id: 'music', component: MusicPanel },
   { id: 'books', component: BooksPanel },
+  { id: 'photos', component: PhotosPanel },
   { id: 'notifications', component: NotificationsPanel },
 ] as const
 
-const ids = tabs.map((x) => x.id)
+// Sections the server switched off have no settings tab.
+const features = useFeatures()
+onMounted(() => { loadFeatures() })
+const tabs = computed(() => allTabs.filter((x) => {
+  const section = sectionOfRoute(`/${x.id}`)
+  return !section || features.value[section]
+}))
+const ids = computed(() => tabs.value.map((x) => x.id as string))
 // Active tab is driven by ?tab=; fall back to 'general' for missing/unknown values.
 const active = computed(() => {
   const q = route.query.tab
-  return typeof q === 'string' && (ids as readonly string[]).includes(q) ? q : 'general'
+  return typeof q === 'string' && ids.value.includes(q) ? q : 'general'
 })
-const activeComponent = computed(() => tabs.find((x) => x.id === active.value)!.component)
+const activeComponent = computed(() => tabs.value.find((x) => x.id === active.value)!.component)
 
 function select(id: string) {
   router.replace({ query: { ...route.query, tab: id } })

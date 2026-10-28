@@ -10,5 +10,5 @@ func TestNewRouterNoPatternConflict(t *testing.T) {
 			t.Fatalf("NewRouter panicked (route conflict): %v", r)
 		}
 	}()
-	_ = NewRouter(nil, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, false, nil, nil, nil, nil, nil, nil, nil, nil)
+	_ = NewRouter(nil, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 }

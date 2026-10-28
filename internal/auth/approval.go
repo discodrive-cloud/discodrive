@@ -18,7 +18,7 @@ import (
 var ErrApproval = errors.New("confirm your identity to manage authentication")
 
 func validApprovalAction(action string) bool {
-	if action == "register" || action == "totp:setup" {
+	if action == "register" || action == "totp:setup" || action == "photos:hidden" {
 		return true
 	}
 	id, ok := strings.CutPrefix(action, "delete:")

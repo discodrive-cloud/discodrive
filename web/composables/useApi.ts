@@ -46,6 +46,7 @@ export function setSession(s: Session, persist = true) {
   if (sess.value.email && s.email && s.email !== sess.value.email) {
     resetPlayerSession()
     lockVault()
+    lockHiddenPhotos()
   }
   sess.value = s
   if (persist && import.meta.client) localStorage.setItem('kf_session', JSON.stringify(s))
@@ -54,6 +55,7 @@ export function setSession(s: Session, persist = true) {
 export function clearSession(persist = true) {
   resetPlayerSession() // stop playback everywhere and drop the persisted queue
   lockVault() // vault keys and decrypted names must not survive a logout
+  lockHiddenPhotos() // nor the unlock of the gallery's Hidden part
   setSession({ token: '', role: '', email: '' }, persist)
 }
 

@@ -64,6 +64,7 @@ func newEnv(t *testing.T) *env {
 type fakeLib struct {
 	mu       sync.Mutex
 	folder   string
+	roots    []string // when set, State returns these instead of folder
 	cursor   int64
 	indexed  map[string]bool
 	removed  map[string]bool
@@ -75,10 +76,13 @@ func newFake(folder string) *fakeLib {
 	return &fakeLib{folder: folder, indexed: map[string]bool{}, removed: map[string]bool{}}
 }
 func (f *fakeLib) Name() string { return "fake" }
-func (f *fakeLib) State(context.Context, pgtype.UUID) (string, int64, bool, error) {
+func (f *fakeLib) State(context.Context, pgtype.UUID) ([]string, int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.folder, f.cursor, true, nil
+	if f.roots != nil {
+		return f.roots, f.cursor, true, nil
+	}
+	return []string{f.folder}, f.cursor, true, nil
 }
 func (f *fakeLib) SetCursor(_ context.Context, _ pgtype.UUID, s int64) error {
 	f.mu.Lock()
@@ -466,4 +470,97 @@ func TestTrashedFolderLeavesMusicLibrary(t *testing.T) {
 	if len(songs) != 1 || songs[0].NodeID != keep.ID {
 		t.Fatalf("songs %+v: want only the track outside the trashed album", songs)
 	}
+}
+
+// A library with several roots (photo sources): files under any root are indexed, a
+// file moved from one root into another stays indexed, a file outside every root is
+// not, and trashing one root drops only what is under it.
+func TestCatchUp_MultipleRoots(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	a, _ := e.fs.CreateFolder(ctx, e.userID, nil, "A")
+	b, _ := e.fs.CreateFolder(ctx, e.userID, nil, "B")
+	aPrefix, _ := e.fs.CreateFolder(ctx, e.userID, nil, "A2") // shares a prefix with A, not a root
+	aid, bid, pid := id(a), id(b), id(aPrefix)
+	lib := newFake("")
+	lib.roots = []string{a.DiskPath.String, b.DiskPath.String}
+
+	inA := push(t, e, &aid, "a.mp3")
+	inB := push(t, e, &bid, "b.mp3")
+	other := push(t, e, &pid, "c.mp3")
+	if err := library.CatchUp(ctx, e.q, lib, e.uid); err != nil {
+		t.Fatal(err)
+	}
+	if !lib.indexed[id(inA)] || !lib.indexed[id(inB)] || lib.indexed[id(other)] {
+		t.Fatalf("indexed %v: want the files of both roots only", lib.indexed)
+	}
+
+	lib.indexed, lib.underRm = map[string]bool{}, nil
+	if _, err := e.fs.Move(ctx, e.userID, id(inA), &bid); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.fs.Delete(ctx, e.userID, aid); err != nil {
+		t.Fatal(err)
+	}
+	if err := library.CatchUp(ctx, e.q, lib, e.uid); err != nil {
+		t.Fatal(err)
+	}
+	if !lib.indexed[id(inA)] || lib.removed[id(inA)] {
+		t.Fatalf("a file moved between roots: indexed %v removed %v", lib.indexed, lib.removed)
+	}
+	if len(lib.underRm) != 1 || lib.underRm[0] != a.DiskPath.String {
+		t.Fatalf("remove-under %v: want the trashed root A only", lib.underRm)
+	}
+}
+
+// slowHeal is a library whose Heal runs until released (a first full pass over a big
+// archive).
+type slowHeal struct {
+	*fakeLib
+	started chan struct{}
+	release chan struct{}
+}
+
+func (s *slowHeal) Name() string { return "slow" }
+func (s *slowHeal) Heal(ctx context.Context, _ pgtype.UUID) error {
+	select {
+	case s.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+// A heal that takes long must not stop the tracker: changes keep reaching the other
+// libraries while it runs.
+func TestTrackerNotBlockedByLongHeal(t *testing.T) {
+	e := newEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	music, _ := e.fs.CreateFolder(ctx, e.userID, nil, "Music")
+	mid := id(music)
+	slow := &slowHeal{fakeLib: newFake(music.DiskPath.String), started: make(chan struct{}, 1), release: make(chan struct{})}
+	defer close(slow.release)
+	lib := newFake(music.DiskPath.String)
+	go library.NewTracker(e.pool, slow, lib).Run(ctx)
+	select {
+	case <-slow.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the startup heal did not run")
+	}
+	n := push(t, e, &mid, "a.mp3")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		lib.mu.Lock()
+		ok := lib.indexed[id(n)]
+		lib.mu.Unlock()
+		if ok {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("upload not indexed while another library healed")
 }

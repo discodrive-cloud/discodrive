@@ -360,25 +360,25 @@ func (ix *Indexer) scanFolder(ctx context.Context, userID, folderNodeID string) 
 
 func (ix *Indexer) Name() string { return "music" }
 
-func (ix *Indexer) State(ctx context.Context, userID pgtype.UUID) (string, int64, bool, error) {
+func (ix *Indexer) State(ctx context.Context, userID pgtype.UUID) ([]string, int64, bool, error) {
 	ms, err := ix.q.GetMusicSettings(ctx, userID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", 0, false, nil
+		return nil, 0, false, nil
 	} else if err != nil {
-		return "", 0, false, err
+		return nil, 0, false, err
 	}
 	if !ms.Enabled || !ms.FolderNodeID.Valid {
-		return "", 0, false, nil
+		return nil, 0, false, nil
 	}
 	// Trashed or not: when the library folder itself goes to the trash, its own "delete"
 	// in the log must still be matched against its path to drop everything under it.
 	folder, err := ix.q.GetNodeAnyState(ctx, ms.FolderNodeID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", 0, false, nil // purged: the cascade already removed its songs
+		return nil, 0, false, nil // purged: the cascade already removed its songs
 	} else if err != nil {
-		return "", 0, false, err
+		return nil, 0, false, err
 	}
-	return folder.DiskPath.String, ms.IndexedSeq, true, nil
+	return []string{folder.DiskPath.String}, ms.IndexedSeq, true, nil
 }
 
 func (ix *Indexer) SetCursor(ctx context.Context, userID pgtype.UUID, seq int64) error {
