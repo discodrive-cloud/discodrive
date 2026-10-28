@@ -17,6 +17,8 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,8 +35,8 @@ type Region struct {
 	ID      string `json:"id"`
 	BBox    string `json:"bbox"`
 	MaxZoom int8   `json:"maxzoom"`
-	// ApproxBytes is the expected size of the extract. centralasia at zoom 14 was
-	// measured (2.14 GB); the others are ESTIMATES. It drives the free-space check and
+	// ApproxBytes is the expected size of the extract. centralasia at zoom 14 (2.14 GB)
+	// and world at zoom 10 (3.8 GB, 2026-10) were measured; europe is an ESTIMATE. It drives the free-space check and
 	// the hard stop (twice this size).
 	ApproxBytes int64 `json:"approxBytes"`
 }
@@ -43,7 +45,7 @@ type Region struct {
 var Regions = []Region{
 	{ID: "centralasia", BBox: "46,35,88,56", MaxZoom: 14, ApproxBytes: 2_200_000_000},
 	{ID: "europe", BBox: "-25,34,45,72", MaxZoom: 12, ApproxBytes: 6_000_000_000},
-	{ID: "world", BBox: "", MaxZoom: 10, ApproxBytes: 5_000_000_000},
+	{ID: "world", BBox: "", MaxZoom: 10, ApproxBytes: 3_800_000_000},
 }
 
 // FindRegion returns the region with the id.
@@ -108,8 +110,9 @@ type Config struct {
 	GeoURL       string
 	AssetsZipURL string
 	Client       *http.Client
-	// Extract cuts bbox/maxzoom out of the remote archive src into the file out.
-	Extract func(ctx context.Context, src, bbox string, maxzoom int8, out string) error
+	// Extract cuts bbox/maxzoom out of the remote archive src into the file out. It calls
+	// progress on every sign of life: with the bytes fetched so far, or -1 when unknown.
+	Extract func(ctx context.Context, src, bbox string, maxzoom int8, out string, progress func(done int64)) error
 	// Free returns the bytes free on the volume holding dir (default: statfs).
 	Free func(dir string) (uint64, error)
 	// Stall, Tick and RestartAfter tune the watchdogs (defaults: 2 min, 1 s, 30 s).
@@ -200,15 +203,26 @@ func (m *Manager) AssetsDir() string { return filepath.Join(m.dir, "assets") }
 func (m *Manager) Available() bool { return m.cfg.Extract != nil }
 
 // cliExtract runs `pmtiles extract <url> <out> --bbox=... --maxzoom=N` (go-pmtiles CLI).
-func cliExtract(bin string) func(ctx context.Context, src, bbox string, maxzoom int8, out string) error {
-	return func(ctx context.Context, src, bbox string, maxzoom int8, out string) error {
-		args := []string{"extract", "--quiet", fmt.Sprintf("--maxzoom=%d", maxzoom)}
+// The tool sizes the output file up front and fills it in place, so the file says
+// nothing about progress; its stderr does: log lines, then a progress bar with bytes.
+func cliExtract(bin string) func(ctx context.Context, src, bbox string, maxzoom int8, out string, progress func(int64)) error {
+	return func(ctx context.Context, src, bbox string, maxzoom int8, out string, progress func(int64)) error {
+		args := []string{"extract", fmt.Sprintf("--maxzoom=%d", maxzoom)}
 		if bbox != "" {
 			args = append(args, "--bbox="+bbox)
 		}
 		cmd := exec.CommandContext(ctx, bin, append(args, src, out)...)
 		var stderr limitedBuf
-		cmd.Stderr = &stderr
+		cmd.Stderr = &lineWriter{line: func(l string) {
+			if done, ok := parseProgress(l); ok {
+				progress(done)
+				return
+			}
+			if l = strings.TrimSpace(l); l != "" {
+				progress(-1)
+				stderr.Write([]byte(l + "\n"))
+			}
+		}}
 		if err := cmd.Run(); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -219,16 +233,59 @@ func cliExtract(bin string) func(ctx context.Context, src, bbox string, maxzoom 
 	}
 }
 
-// limitedBuf keeps the first 2 KB written to it (a tool's error output).
+// limitedBuf keeps the last 2 KB written to it (a tool's error comes at the end).
 type limitedBuf struct{ b []byte }
 
 func (l *limitedBuf) Write(p []byte) (int, error) {
-	if room := 2048 - len(l.b); room > 0 {
-		l.b = append(l.b, p[:min(room, len(p))]...)
+	l.b = append(l.b, p...)
+	if n := len(l.b); n > 2048 {
+		l.b = append(l.b[:0], l.b[n-2048:]...)
 	}
 	return len(p), nil
 }
 func (l *limitedBuf) String() string { return string(l.b) }
+
+// lineWriter hands every line (ended by \n or by the \r of a redrawn progress bar) to line.
+type lineWriter struct {
+	buf  []byte
+	line func(string)
+}
+
+func (w *lineWriter) Write(p []byte) (int, error) {
+	for _, c := range p {
+		if c == '\n' || c == '\r' {
+			w.line(string(w.buf))
+			w.buf = w.buf[:0]
+			continue
+		}
+		if len(w.buf) < 4096 {
+			w.buf = append(w.buf, c)
+		}
+	}
+	return len(p), nil
+}
+
+// progressRe matches the byte count of the tool's progress bar: "(37 MB/3.5 GB" or
+// "(1.4/3.5 GB" (the unit of the total then applies to both).
+var progressRe = regexp.MustCompile(`\(\s*([0-9.]+)\s*([KMGT]?B)?\s*/\s*[0-9.]+\s*([KMGT]?B)`)
+
+// parseProgress reads the bytes fetched so far from a progress bar line.
+func parseProgress(l string) (int64, bool) {
+	m := progressRe.FindStringSubmatch(l)
+	if m == nil {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	unit := m[2]
+	if unit == "" {
+		unit = m[3]
+	}
+	mult := map[string]float64{"B": 1, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}[unit]
+	return int64(v * mult), true
+}
 
 func (m *Manager) load(ctx context.Context) (Status, error) {
 	st := Status{State: StateNone}
@@ -460,9 +517,10 @@ func (m *Manager) run(ctx context.Context, reg Region) error {
 	ectx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var guardErr atomic.Value // error that made the watchdog cancel the extract
+	var reported atomic.Bool  // the tool reports its bytes: the file size is not progress
 	stop := make(chan struct{})
 	watchDone := make(chan struct{})
-	go func() { // progress = size of the file being written, plus the two guards
+	go func() { // progress = the tool's own reports or the size of the file, plus the two guards
 		defer close(watchDone)
 		t := time.NewTicker(m.cfg.Tick)
 		defer t.Stop()
@@ -477,7 +535,9 @@ func (m *Manager) run(ctx context.Context, reg Region) error {
 			switch {
 			case err == nil && fi.Size() != size:
 				size = fi.Size()
-				m.bytes.Store(size)
+				if !reported.Load() {
+					m.bytes.Store(size)
+				}
 				m.last.Store(time.Now().UnixNano())
 				if limit := 2 * m.approx[reg.ID]; limit > 0 && size > limit {
 					guardErr.Store(fmt.Errorf("extract grew past %d MB (twice the expected size), stopped", limit>>20))
@@ -494,7 +554,13 @@ func (m *Manager) run(ctx context.Context, reg Region) error {
 			}
 		}
 	}()
-	err = m.cfg.Extract(ectx, src, reg.BBox, reg.MaxZoom, part)
+	err = m.cfg.Extract(ectx, src, reg.BBox, reg.MaxZoom, part, func(done int64) {
+		if done >= 0 {
+			reported.Store(true)
+			m.bytes.Store(done)
+		}
+		m.last.Store(time.Now().UnixNano())
+	})
 	close(stop)
 	<-watchDone
 	if g, ok := guardErr.Load().(error); ok {

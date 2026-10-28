@@ -39,7 +39,7 @@ func TestMaps_RealExtract(t *testing.T) {
 	}
 	out := filepath.Join(t.TempDir(), "region.pmtiles")
 	start := time.Now()
-	if err := m.cfg.Extract(context.Background(), src, reg.BBox, reg.MaxZoom, out); err != nil {
+	if err := m.cfg.Extract(context.Background(), src, reg.BBox, reg.MaxZoom, out, func(int64) {}); err != nil {
 		t.Fatal(err)
 	}
 	fi, _ := os.Stat(out)

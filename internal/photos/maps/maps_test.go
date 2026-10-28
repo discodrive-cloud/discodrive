@@ -113,9 +113,12 @@ type fakeExtract struct {
 	maxzoom int8
 	size    int  // bytes written (default: a few)
 	stall   bool // write, then hang until cancelled
+	// reports: after writing the whole file, report progress this many times, 30 ms
+	// apart, before finishing (the real tool sizes its file up front, then fills it)
+	reports int
 }
 
-func (f *fakeExtract) run(ctx context.Context, src, bbox string, maxzoom int8, out string) error {
+func (f *fakeExtract) run(ctx context.Context, src, bbox string, maxzoom int8, out string, progress func(int64)) error {
 	f.calls.Add(1)
 	f.lastSrc, f.bbox, f.maxzoom = src, bbox, maxzoom
 	body := []byte("PMTiles-fake-0123456789")
@@ -128,6 +131,14 @@ func (f *fakeExtract) run(ctx context.Context, src, bbox string, maxzoom int8, o
 	if f.stall {
 		<-ctx.Done()
 		return ctx.Err()
+	}
+	for i := 1; i <= f.reports; i++ {
+		select {
+		case <-time.After(30 * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		progress(int64(i))
 	}
 	if f.gate != nil {
 		select {
@@ -411,6 +422,61 @@ func TestMaps_ExtractStallFails(t *testing.T) {
 	}
 }
 
+// The real tool sizes its file up front and fills it in place: a file that does not grow
+// is no stall while the tool keeps reporting progress, and the bytes come from it.
+func TestMaps_ProgressReportsKeepExtractAlive(t *testing.T) {
+	q := testQueries(t)
+	fx := &fakeExtract{size: 50, reports: 12} // ~360 ms of reports, the file never changes
+	m, _ := newMgr(t, q, fx, func(c *Config) { c.Stall = 150 * time.Millisecond })
+	if err := m.Set(context.Background(), "centralasia"); err != nil {
+		t.Fatal(err)
+	}
+	var mid Status
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		st, err := m.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.State == StateDownloading && st.Bytes > 0 && st.Bytes < 50 {
+			mid = st
+			break
+		}
+	}
+	if mid.Bytes == 0 {
+		t.Fatal("no progress from the tool's reports while downloading")
+	}
+	m.Wait()
+	if st, _ := m.Status(context.Background()); st.State != StateReady || st.Bytes != 50 {
+		t.Fatalf("after reports: %+v", st)
+	}
+}
+
+func TestParseProgress(t *testing.T) {
+	cases := map[string]int64{
+		"fetching chunks   1% |      | (37 MB/3.5 GB, 12 MB/s) [2s:4m47s]": 37e6,
+		"fetching chunks  38% |███   | (1.4/3.5 GB, 20 MB/s) [53s:1m49s]":  1.4e9,
+		"fetching chunks   0% |      | ( 0 B/3.5 GB) [0s:0s]":              0,
+		"fetching chunks  50% |      | (512 KB/1.0 MB, 1 MB/s)":            512e3,
+	}
+	for l, want := range cases {
+		if got, ok := parseProgress(l); !ok || got != want {
+			t.Errorf("parseProgress(%q) = %d %v, want %d", l, got, ok, want)
+		}
+	}
+	for _, l := range []string{"2026/10/28 02:07:16 extract.go:401: fetching 11 dirs, 11 chunks, 1 requests", ""} {
+		if _, ok := parseProgress(l); ok {
+			t.Errorf("parseProgress(%q) matched", l)
+		}
+	}
+	var lines []string
+	w := &lineWriter{line: func(l string) { lines = append(lines, l) }}
+	_, _ = w.Write([]byte("log line\nbar 1%\rbar 2"))
+	_, _ = w.Write([]byte("%\r"))
+	if strings.Join(lines, "|") != "log line|bar 1%|bar 2%" {
+		t.Fatalf("lines %q", lines)
+	}
+}
+
 func TestMaps_HTTPStallFails(t *testing.T) {
 	q := testQueries(t)
 	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -497,20 +563,26 @@ func TestMaps_CLIExtract(t *testing.T) {
 	dir := t.TempDir()
 	args := filepath.Join(dir, "args")
 	bin := filepath.Join(dir, "pmtiles")
-	script := "#!/bin/sh\necho \"$@\" > " + args + "\nfor last; do :; done\nprintf PMTilesX > \"$last\"\n"
+	script := "#!/bin/sh\necho \"$@\" > " + args + "\nfor last; do :; done\nprintf PMTilesX > \"$last\"\n" +
+		"echo 'extract.go:1: fetching 1 dirs' >&2\nprintf 'fetching chunks 50%% | (2 MB/4 MB)\\r' >&2\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "out.pmtiles")
-	if err := cliExtract(bin)(context.Background(), "https://h/x.pmtiles", "1,2,3,4", 12, out); err != nil {
+	var reports []int64
+	if err := cliExtract(bin)(context.Background(), "https://h/x.pmtiles", "1,2,3,4", 12, out, func(d int64) { reports = append(reports, d) }); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(args)
-	want := "extract --quiet --maxzoom=12 --bbox=1,2,3,4 https://h/x.pmtiles " + out + "\n"
+	want := "extract --maxzoom=12 --bbox=1,2,3,4 https://h/x.pmtiles " + out + "\n"
 	if string(got) != want {
 		t.Fatalf("args %q want %q", got, want)
 	}
-	if err := cliExtract(bin)(context.Background(), "u", "", 10, out); err != nil {
+	if len(reports) != 2 || reports[0] != -1 || reports[1] != 2e6 {
+		t.Fatalf("progress reports %v, want [-1 2000000]", reports)
+	}
+	nop := func(int64) {}
+	if err := cliExtract(bin)(context.Background(), "u", "", 10, out, nop); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := os.ReadFile(args); strings.Contains(string(got), "--bbox") {
@@ -518,7 +590,7 @@ func TestMaps_CLIExtract(t *testing.T) {
 	}
 	fail := filepath.Join(dir, "fail")
 	_ = os.WriteFile(fail, []byte("#!/bin/sh\necho nope >&2\nexit 3\n"), 0o755)
-	if err := cliExtract(fail)(context.Background(), "u", "", 10, out); err == nil || !strings.Contains(err.Error(), "nope") {
+	if err := cliExtract(fail)(context.Background(), "u", "", 10, out, nop); err == nil || !strings.Contains(err.Error(), "nope") {
 		t.Fatalf("error should carry stderr: %v", err)
 	}
 }
