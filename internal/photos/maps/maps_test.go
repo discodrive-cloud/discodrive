@@ -113,6 +113,8 @@ type fakeExtract struct {
 	maxzoom int8
 	size    int  // bytes written (default: a few)
 	stall   bool // write, then hang until cancelled
+	// stallFirst: the first stallFirst calls stall, the later ones go through
+	stallFirst int32
 	// reports: after writing the whole file, report progress this many times, 30 ms
 	// apart, before finishing (the real tool sizes its file up front, then fills it)
 	reports int
@@ -128,7 +130,7 @@ func (f *fakeExtract) run(ctx context.Context, src, bbox string, maxzoom int8, o
 	if err := os.WriteFile(out, body, 0o600); err != nil {
 		return err
 	}
-	if f.stall {
+	if f.stall || f.calls.Load() <= f.stallFirst {
 		<-ctx.Done()
 		return ctx.Err()
 	}
@@ -253,7 +255,7 @@ func TestMaps_DownloadStateMachine(t *testing.T) {
 	}
 	close(fx.gate)
 	m.Wait()
-	if st = waitState(t, m, StateReady); st.Region != "world" || fx.maxzoom != 10 || fx.bbox != "" {
+	if st = waitState(t, m, StateReady); st.Region != "world" || fx.maxzoom != 12 || fx.bbox != "" {
 		t.Fatalf("after switch %+v maxzoom=%d bbox=%q", st, fx.maxzoom, fx.bbox)
 	}
 	// Removing the region removes the files and the state.
@@ -401,8 +403,8 @@ func TestMaps_SizeCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := waitState(t, m, StateFailed)
-	if !strings.Contains(st.Error, "twice the expected size") {
-		t.Fatalf("%+v", st)
+	if !strings.Contains(st.Error, "twice the expected size") || fx.calls.Load() != 1 {
+		t.Fatalf("%+v calls=%d (an oversized extract is not retried)", st, fx.calls.Load())
 	}
 	if _, err := os.Stat(m.RegionFile() + ".part"); err == nil {
 		t.Error(".part kept")
@@ -417,8 +419,48 @@ func TestMaps_ExtractStallFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := waitState(t, m, StateFailed)
-	if !strings.Contains(st.Error, "stalled") {
-		t.Fatalf("%+v", st)
+	if !strings.Contains(st.Error, "stalled: no data for 150ms") || fx.calls.Load() != extractAttempts {
+		t.Fatalf("%+v calls=%d", st, fx.calls.Load())
+	}
+}
+
+// A connection that goes quiet once costs one retry, not the download.
+func TestMaps_ExtractStallRetried(t *testing.T) {
+	q := testQueries(t)
+	fx := &fakeExtract{stallFirst: 1}
+	m, _ := newMgr(t, q, fx, func(c *Config) { c.Stall = 150 * time.Millisecond })
+	if err := m.Set(context.Background(), "centralasia"); err != nil {
+		t.Fatal(err)
+	}
+	m.Wait()
+	if st, _ := m.Status(context.Background()); st.State != StateReady || fx.calls.Load() != 2 {
+		t.Fatalf("%+v calls=%d", st, fx.calls.Load())
+	}
+}
+
+// A region cut at another detail than its definition now asks for (the world went from
+// zoom 10 to 12) is downloaded again when chosen again; the same detail is not.
+func TestMaps_ChangedZoomDownloadsAgain(t *testing.T) {
+	ctx := context.Background()
+	q := testQueries(t)
+	fx := &fakeExtract{}
+	m, _ := newMgr(t, q, fx)
+	if err := os.MkdirAll(filepath.Dir(m.RegionFile()), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.RegionFile(), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.save(ctx, "world", persisted{State: StateReady, Bytes: 3}) // recorded before MaxZoom was kept
+	if err := m.Set(ctx, "world"); err != nil {
+		t.Fatal(err)
+	}
+	m.Wait()
+	if st, _ := m.Status(ctx); st.State != StateReady || fx.calls.Load() != 1 || fx.maxzoom != 12 {
+		t.Fatalf("%+v calls=%d maxzoom=%d", st, fx.calls.Load(), fx.maxzoom)
+	}
+	if err := m.Set(ctx, "world"); err != nil || fx.calls.Load() != 1 {
+		t.Fatalf("same detail again: %v calls=%d", err, fx.calls.Load())
 	}
 }
 
@@ -457,6 +499,7 @@ func TestParseProgress(t *testing.T) {
 		"fetching chunks  38% |███   | (1.4/3.5 GB, 20 MB/s) [53s:1m49s]":  1.4e9,
 		"fetching chunks   0% |      | ( 0 B/3.5 GB) [0s:0s]":              0,
 		"fetching chunks  50% |      | (512 KB/1.0 MB, 1 MB/s)":            512e3,
+		"fetching chunks   0% |      | (400 kB/3.5 GB, 46 kB/s)":           400e3,
 	}
 	for l, want := range cases {
 		if got, ok := parseProgress(l); !ok || got != want {

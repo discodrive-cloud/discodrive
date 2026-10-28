@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"discodrive/internal/photos"
+	"discodrive/internal/photos/maps"
 )
 
 func TestPhotoMaps_AdminAndServe(t *testing.T) {
@@ -37,7 +38,7 @@ func TestPhotoMaps_AdminAndServe(t *testing.T) {
 		}
 	}
 	e.json(e.do(e.tok, "GET", "/admin/photos/v1/maps", nil), 200, &full)
-	if len(full.Regions) != 3 || full.Regions[0].ID != "centralasia" || full.Regions[0].ApproxBytes < 1e9 {
+	if len(full.Regions) != len(maps.Regions) || full.Regions[0].ID != "centralasia" || full.Regions[0].ApproxBytes < 1e9 {
 		t.Fatalf("regions %+v", full.Regions)
 	}
 	if rec := e.do(e.tok, "PUT", "/admin/photos/v1/maps", map[string]any{"region": "centralasia"}); rec.Code != http.StatusServiceUnavailable {

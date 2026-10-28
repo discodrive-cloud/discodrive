@@ -35,17 +35,29 @@ type Region struct {
 	ID      string `json:"id"`
 	BBox    string `json:"bbox"`
 	MaxZoom int8   `json:"maxzoom"`
-	// ApproxBytes is the expected size of the extract. centralasia at zoom 14 (2.14 GB)
-	// and world at zoom 10 (3.8 GB, 2026-10) were measured; europe is an ESTIMATE. It drives the free-space check and
-	// the hard stop (twice this size).
+	// ApproxBytes is the expected size of the extract, measured with `pmtiles extract
+	// --dry-run` on the 2026-10 build and rounded up (builds grow slowly). It drives the
+	// free-space check and the hard stop (twice this size).
 	ApproxBytes int64 `json:"approxBytes"`
 }
 
-// Regions is what an admin can choose from.
+// Regions is what an admin can choose from: streets (zoom 12, 14 for Central Asia) for a
+// part of the world, the whole world at the same detail, or the whole world coarse
+// (zoom 10: cities, no streets) for a small disk.
 var Regions = []Region{
-	{ID: "centralasia", BBox: "46,35,88,56", MaxZoom: 14, ApproxBytes: 2_200_000_000},
-	{ID: "europe", BBox: "-25,34,45,72", MaxZoom: 12, ApproxBytes: 6_000_000_000},
-	{ID: "world", BBox: "", MaxZoom: 10, ApproxBytes: 3_800_000_000},
+	{ID: "centralasia", BBox: "46,35,88,56", MaxZoom: 14, ApproxBytes: 2_300_000_000},
+	{ID: "europe", BBox: "-25,34,45,72", MaxZoom: 12, ApproxBytes: 7_300_000_000},
+	{ID: "russia", BBox: "19,41,180,82", MaxZoom: 12, ApproxBytes: 4_300_000_000},
+	{ID: "middleeast", BBox: "25,12,63,44", MaxZoom: 12, ApproxBytes: 700_000_000},
+	{ID: "southasia", BBox: "60,5,98,37", MaxZoom: 12, ApproxBytes: 800_000_000},
+	{ID: "eastasia", BBox: "73,18,150,54", MaxZoom: 12, ApproxBytes: 2_200_000_000},
+	{ID: "southeastasia", BBox: "92,-11,141,29", MaxZoom: 12, ApproxBytes: 850_000_000},
+	{ID: "africa", BBox: "-26,-35,52,38", MaxZoom: 12, ApproxBytes: 1_900_000_000},
+	{ID: "northamerica", BBox: "-170,7,-50,72", MaxZoom: 12, ApproxBytes: 4_500_000_000},
+	{ID: "southamerica", BBox: "-82,-56,-34,13", MaxZoom: 12, ApproxBytes: 1_200_000_000},
+	{ID: "oceania", BBox: "110,-48,180,-9", MaxZoom: 12, ApproxBytes: 400_000_000},
+	{ID: "world", BBox: "", MaxZoom: 12, ApproxBytes: 19_000_000_000},
+	{ID: "worldcoarse", BBox: "", MaxZoom: 10, ApproxBytes: 4_000_000_000},
 }
 
 // FindRegion returns the region with the id.
@@ -93,12 +105,17 @@ type Status struct {
 	State  string `json:"state"`
 	Bytes  int64  `json:"bytes"`
 	Error  string `json:"error"`
+	// MaxZoom of the file on disk (0 = recorded before it was kept).
+	MaxZoom int8 `json:"-"`
 }
 
 type persisted struct {
 	State string `json:"state"`
 	Bytes int64  `json:"bytes"`
 	Error string `json:"error,omitempty"`
+	// MaxZoom is the detail the file was cut at: a region whose definition has changed
+	// since (the world went from 10 to 12) is downloaded again when chosen again.
+	MaxZoom int8 `json:"maxzoom,omitempty"`
 }
 
 // Config points the downloader at its sources; zero values mean the real ones.
@@ -267,7 +284,7 @@ func (w *lineWriter) Write(p []byte) (int, error) {
 
 // progressRe matches the byte count of the tool's progress bar: "(37 MB/3.5 GB" or
 // "(1.4/3.5 GB" (the unit of the total then applies to both).
-var progressRe = regexp.MustCompile(`\(\s*([0-9.]+)\s*([KMGT]?B)?\s*/\s*[0-9.]+\s*([KMGT]?B)`)
+var progressRe = regexp.MustCompile(`\(\s*([0-9.]+)\s*([kKMGT]?B)?\s*/\s*[0-9.]+\s*([kKMGT]?B)`)
 
 // parseProgress reads the bytes fetched so far from a progress bar line.
 func parseProgress(l string) (int64, bool) {
@@ -283,7 +300,7 @@ func parseProgress(l string) (int64, bool) {
 	if unit == "" {
 		unit = m[3]
 	}
-	mult := map[string]float64{"B": 1, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}[unit]
+	mult := map[string]float64{"B": 1, "kB": 1e3, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}[unit]
 	return int64(v * mult), true
 }
 
@@ -304,7 +321,7 @@ func (m *Manager) load(ctx context.Context) (Status, error) {
 	}
 	var p persisted
 	if json.Unmarshal([]byte(s.Value), &p) == nil && p.State != "" {
-		st.State, st.Bytes, st.Error = p.State, p.Bytes, p.Error
+		st.State, st.Bytes, st.Error, st.MaxZoom = p.State, p.Bytes, p.Error, p.MaxZoom
 	}
 	return st, nil
 }
@@ -388,7 +405,7 @@ func (m *Manager) Set(ctx context.Context, regionID string) error {
 		_ = m.q.DeleteSetting(ctx, KeyState)
 		return os.RemoveAll(m.dir)
 	}
-	if st.Region == regionID && st.State == StateReady {
+	if st.Region == regionID && st.State == StateReady && st.MaxZoom == reg.MaxZoom {
 		if _, err := os.Stat(m.RegionFile()); err == nil {
 			return nil
 		}
@@ -465,7 +482,7 @@ func (m *Manager) start(reg Region) {
 			log.Printf("discodrive: photos maps: %v", err)
 			m.save(m.base, reg.ID, persisted{State: StateFailed, Error: err.Error()})
 		default:
-			m.save(m.base, reg.ID, persisted{State: StateReady, Bytes: m.bytes.Load()})
+			m.save(m.base, reg.ID, persisted{State: StateReady, Bytes: m.bytes.Load(), MaxZoom: reg.MaxZoom})
 		}
 	}()
 }
@@ -513,10 +530,40 @@ func (m *Manager) run(ctx context.Context, reg Region) error {
 	}
 	out := m.RegionFile()
 	part := out + ".part"
+	// The tool fetches a region in a few long range requests and cannot resume one; a
+	// connection that goes quiet midway is cut by the watchdog and the extract retried.
+	for attempt := 1; ; attempt++ {
+		again, err := m.extract(ctx, reg, src, part)
+		if err == nil {
+			break
+		}
+		_ = os.Remove(part)
+		if !again || attempt == extractAttempts || ctx.Err() != nil {
+			return fmt.Errorf("extract %s: %w", reg.ID, err)
+		}
+		log.Printf("discodrive: photos maps: extract %s, attempt %d of %d: %v", reg.ID, attempt, extractAttempts, err)
+	}
+	fi, err := os.Stat(part)
+	if err != nil {
+		return err
+	}
+	m.bytes.Store(fi.Size())
+	return os.Rename(part, out)
+}
+
+// extractAttempts is how many times an extract that stalled or failed is tried.
+const extractAttempts = 3
+
+// extract runs the tool once into part under the watchdog. again reports whether a
+// retry may help (not when the extract outgrew its bound or was cancelled).
+func (m *Manager) extract(ctx context.Context, reg Region, src, part string) (again bool, err error) {
 	_ = os.Remove(part)
+	m.bytes.Store(0)
+	m.last.Store(time.Now().UnixNano())
 	ectx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var guardErr atomic.Value // error that made the watchdog cancel the extract
+	var oversize atomic.Bool  // the guard stopped an extract that outgrew its bound
 	var reported atomic.Bool  // the tool reports its bytes: the file size is not progress
 	stop := make(chan struct{})
 	watchDone := make(chan struct{})
@@ -540,6 +587,7 @@ func (m *Manager) run(ctx context.Context, reg Region) error {
 				}
 				m.last.Store(time.Now().UnixNano())
 				if limit := 2 * m.approx[reg.ID]; limit > 0 && size > limit {
+					oversize.Store(true)
 					guardErr.Store(fmt.Errorf("extract grew past %d MB (twice the expected size), stopped", limit>>20))
 					cancel()
 					return
@@ -548,7 +596,7 @@ func (m *Manager) run(ctx context.Context, reg Region) error {
 				err != nil && time.Since(began) > 10*m.cfg.Stall:
 				// (the tool reads the archive's directories before the first byte is
 				// written, hence the longer allowance until the file exists)
-				guardErr.Store(errors.New("extract stalled: no progress"))
+				guardErr.Store(fmt.Errorf("extract stalled: no data for %v, at %d MB", m.cfg.Stall, m.bytes.Load()>>20))
 				cancel()
 				return
 			}
@@ -564,20 +612,12 @@ func (m *Manager) run(ctx context.Context, reg Region) error {
 	close(stop)
 	<-watchDone
 	if g, ok := guardErr.Load().(error); ok {
-		err = g
-	} else if err == nil {
+		return !oversize.Load(), g
+	}
+	if err == nil {
 		err = ctx.Err()
 	}
-	if err != nil {
-		_ = os.Remove(part)
-		return fmt.Errorf("extract %s: %w", reg.ID, err)
-	}
-	fi, err := os.Stat(part)
-	if err != nil {
-		return err
-	}
-	m.bytes.Store(fi.Size())
-	return os.Rename(part, out)
+	return err != nil && ctx.Err() == nil, err
 }
 
 // latestBuild finds the newest daily build of the last buildDays days by HEAD requests.
