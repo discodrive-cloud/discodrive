@@ -484,9 +484,10 @@ func TestRender_TruncatedHEICUsesEmbeddedThumbnail(t *testing.T) {
 	src := filepath.Join(dir, "IMG_7840.HEIC")
 	run(t, tools.Vips, "black", filepath.Join(dir, "b.v"), "320", "240")
 	run(t, tools.Vips, "copy", filepath.Join(dir, "b.v"), src)
-	// vips that fails on the image itself, like libheif on a cut-off file.
+	// vips that fails on the image itself, like libheif on a cut-off file; `vips
+	// thumbnail` re-opens the full image even when asked for the [thumbnail] one.
 	fake := filepath.Join(dir, "vips")
-	script := "#!/bin/sh\ncase \"$2\" in *.HEIC) echo 'error in tile 0 x 8' >&2; exit 1;; esac\nexec " + tools.Vips + " \"$@\"\n"
+	script := "#!/bin/sh\ncase \"$1 $2\" in \"thumbnail \"*.HEIC*) echo 'error in tile 0 x 8' >&2; exit 1;; esac\nexec " + tools.Vips + " \"$@\"\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -63,8 +63,10 @@ func renderImage(ctx context.Context, t Tools, src string, m Meta, dst string, s
 		err := thumb(in)
 		if err != nil && ctx.Err() == nil && heifExts[strings.ToLower(filepath.Ext(in))] {
 			// A cut-off HEIC (an interrupted copy) fails to decode; its embedded
-			// thumbnail still shows the whole picture, small.
-			if terr := thumb(in + "[thumbnail]"); terr == nil {
+			// thumbnail still shows the whole picture, small. It is taken out first:
+			// `vips thumbnail` would open the full image even when given [thumbnail].
+			small := filepath.Join(work, "embedded.v")
+			if runCmd(ctx, t.Vips, "copy", in+"[thumbnail]", small) == nil && thumb(small) == nil {
 				return nil
 			}
 		}
