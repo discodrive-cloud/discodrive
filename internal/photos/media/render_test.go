@@ -423,3 +423,80 @@ func TestRawFallback_MasksAreNotPreviews(t *testing.T) {
 		t.Fatalf("rendered %s from a DNG that has only masks", p)
 	}
 }
+
+// Pixel Motion Photos (.MP.mp4) carry a second, larger video stream with a single frame
+// at the start; ffmpeg picks the largest stream by default, which has nothing past 0 s.
+// Clips of one or two frames have nothing at the seek point either.
+func TestThumb_VideoFrameOfMainStream(t *testing.T) {
+	tools := exifTools(t)
+	e, _ := newExif(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	motion := filepath.Join(dir, "PXL.MP.mp4")
+	run(t, tools.Ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=d=0.8:s=320x240:r=30",
+		"-f", "lavfi", "-i", "color=c=red:s=640x480:r=25:d=0.04",
+		"-map", "0:v", "-map", "1:v", "-c:v", "libx264", "-pix_fmt", "yuv420p", motion)
+	tiny := filepath.Join(dir, "tiny.mov")
+	run(t, tools.Ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=d=0.04:s=320x240:r=25",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", tiny)
+	for _, src := range []string{motion, tiny} {
+		m, err := e.Read(ctx, src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dst := filepath.Join(t.TempDir(), "p.jpg")
+		if err := Preview(ctx, tools, src, m, dst); err != nil {
+			t.Fatalf("%s: %v", filepath.Base(src), err)
+		}
+		if w, h := jpegSize(t, tools, dst); w != 320 || h != 240 {
+			t.Fatalf("%s: frame %dx%d, want the main stream's 320x240", filepath.Base(src), w, h)
+		}
+	}
+}
+
+// Some apps save a plain JPEG under a .dng name: it is shown as the JPEG it is.
+func TestPreview_JPEGNamedDNG(t *testing.T) {
+	tools := exifTools(t)
+	e, _ := newExif(t)
+	ctx := context.Background()
+	src := filepath.Join(t.TempDir(), "IMG_3588.DNG")
+	if err := os.Rename(solidJPEG(t, tools, "a.jpg", "1506", "2008", "-Make=Apple"), src); err != nil {
+		t.Fatal(err)
+	}
+	m, err := e.Read(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "p.jpg")
+	if err := Preview(ctx, tools, src, m, dst); err != nil {
+		t.Fatal(err)
+	}
+	if w, h := jpegSize(t, tools, dst); w != 1506 || h != 2008 {
+		t.Fatalf("size = %dx%d", w, h)
+	}
+}
+
+// A truncated HEIC (an interrupted copy) cannot be decoded; its embedded thumbnail shows
+// the whole picture, small.
+func TestRender_TruncatedHEICUsesEmbeddedThumbnail(t *testing.T) {
+	tools := exifTools(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "IMG_7840.HEIC")
+	run(t, tools.Vips, "black", filepath.Join(dir, "b.v"), "320", "240")
+	run(t, tools.Vips, "copy", filepath.Join(dir, "b.v"), src)
+	// vips that fails on the image itself, like libheif on a cut-off file.
+	fake := filepath.Join(dir, "vips")
+	script := "#!/bin/sh\ncase \"$2\" in *.HEIC) echo 'error in tile 0 x 8' >&2; exit 1;; esac\nexec " + tools.Vips + " \"$@\"\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ft := tools
+	ft.Vips = fake
+	dst := filepath.Join(t.TempDir(), "t.jpg")
+	if err := Thumb(context.Background(), ft, src, Meta{Kind: "photo"}, dst); err != nil {
+		t.Fatal(err)
+	}
+	if w, h := jpegSize(t, tools, dst); w != ThumbSize || h != ThumbSize {
+		t.Fatalf("size = %dx%d", w, h)
+	}
+}

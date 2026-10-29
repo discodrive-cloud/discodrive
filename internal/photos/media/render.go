@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image/color"
 	"image/jpeg"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -49,16 +50,29 @@ func renderImage(ctx context.Context, t Tools, src string, m Meta, dst string, s
 	}
 	return atomicWrite(dst, func(tmp string) error {
 		s := strconv.Itoa(size)
-		args := []string{"thumbnail", in, tmp + "[Q=82,strip]", s, "--height", s, "--export-profile", "srgb"}
-		if crop {
-			args = append(args, "--crop", "centre")
-		} else {
-			// A preview never enlarges a small original.
-			args = append(args, "--size", "down")
+		thumb := func(in string) error {
+			args := []string{"thumbnail", in, tmp + "[Q=82,strip]", s, "--height", s, "--export-profile", "srgb"}
+			if crop {
+				args = append(args, "--crop", "centre")
+			} else {
+				// A preview never enlarges a small original.
+				args = append(args, "--size", "down")
+			}
+			return runCmd(ctx, t.Vips, args...)
 		}
-		return runCmd(ctx, t.Vips, args...)
+		err := thumb(in)
+		if err != nil && ctx.Err() == nil && heifExts[strings.ToLower(filepath.Ext(in))] {
+			// A cut-off HEIC (an interrupted copy) fails to decode; its embedded
+			// thumbnail still shows the whole picture, small.
+			if terr := thumb(in + "[thumbnail]"); terr == nil {
+				return nil
+			}
+		}
+		return err
 	})
 }
+
+var heifExts = map[string]bool{".heic": true, ".heif": true, ".hif": true}
 
 // Resource limits of one render. The gallery renders in the background next to a file
 // server (the first run over a big archive takes hours), so each external process gets
@@ -101,10 +115,16 @@ func imageSource(ctx context.Context, t Tools, src string, m Meta, work string) 
 	if err != nil {
 		return "", err
 	}
+	ext := filepath.Ext(abs)
+	raw := rawExts[strings.ToLower(ext)]
+	if raw && isJPEG(abs) {
+		// vips picks the raw loader by the name; a .jpg name makes it read a JPEG.
+		raw, ext = false, ".jpg"
+	}
 	switch {
 	case m.Kind == "video":
 		return videoFrame(ctx, t, abs, m, work)
-	case rawExts[strings.ToLower(filepath.Ext(abs))] && m.HasPreview:
+	case raw && m.HasPreview:
 		// Developing the raw ourselves ignores BaselineExposure and gain tables
 		// (Apple ProRAW comes out about twice too dark); the preview rendered by
 		// the camera is what the user expects to see.
@@ -118,18 +138,31 @@ func imageSource(ctx context.Context, t Tools, src string, m Meta, work string) 
 			return "", fmt.Errorf("raw preview: %w", err)
 		}
 		return p, nil
-	case rawExts[strings.ToLower(filepath.Ext(abs))]:
+	case raw:
 		return rawFallback(ctx, t, abs, m, work)
 	}
 	// vips treats "[...]" in a name as loader options; link such files under a safe name.
-	if strings.Contains(abs, "[") {
-		link := filepath.Join(work, "src"+filepath.Ext(abs))
+	if strings.Contains(abs, "[") || ext != filepath.Ext(abs) {
+		link := filepath.Join(work, "src"+ext)
 		if err := os.Symlink(abs, link); err != nil {
 			return "", err
 		}
 		return link, nil
 	}
 	return abs, nil
+}
+
+// isJPEG reports whether the file starts like a JPEG: some apps save one under a RAW
+// name (.dng), and it is shown as the JPEG it is.
+func isJPEG(p string) bool {
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var b [3]byte
+	_, err = io.ReadFull(f, b[:])
+	return err == nil && b == [3]byte{0xff, 0xd8, 0xff}
 }
 
 // rawFallback shows a RAW that has no big embedded preview (old DNGs, some NEFs): it is
@@ -286,12 +319,25 @@ func videoFrame(ctx context.Context, t Tools, abs string, m Meta, work string) (
 		at = d
 	}
 	out := filepath.Join(work, "frame.jpg")
-	// ffmpeg applies the stream rotation itself.
+	// ffmpeg applies the stream rotation itself. The first video stream (not cover art)
+	// is the clip: Pixel Motion Photos add a larger one-frame stream, which ffmpeg would
+	// pick by default.
 	th := ffmpegThreads()
-	err := runCmd(ctx, t.Ffmpeg, "-v", "error", "-y", "-threads", th, "-ss", strconv.FormatFloat(at, 'f', 3, 64),
-		"-i", abs, "-frames:v", "1", "-q:v", "2", "-threads", th, out)
+	frame := func(seek ...string) error {
+		args := append([]string{"-v", "error", "-y", "-threads", th}, seek...)
+		args = append(args, "-i", abs, "-map", "0:V:0", "-frames:v", "1", "-update", "1", "-q:v", "2", "-threads", th, out)
+		return runCmd(ctx, t.Ffmpeg, args...)
+	}
+	err := frame("-ss", strconv.FormatFloat(at, 'f', 3, 64))
+	if _, serr := os.Stat(out); (err != nil || serr != nil) && ctx.Err() == nil {
+		// A clip of a frame or two has nothing at the seek point: take the first frame.
+		err = frame()
+	}
 	if err != nil {
 		return "", err
+	}
+	if _, err := os.Stat(out); err != nil {
+		return "", errors.New("ffmpeg wrote no frame")
 	}
 	return out, nil
 }

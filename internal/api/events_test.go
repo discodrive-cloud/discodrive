@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -108,5 +109,40 @@ func TestEventHubIsolatesUsers(t *testing.T) {
 func TestFormatSSEEvent(t *testing.T) {
 	if got := formatSSEEvent(42); got != "data: {\"seq\":42}\n\n" {
 		t.Fatalf("SSE format: %q", got)
+	}
+}
+
+// A burst of changes (a rescan importing thousands of files) reaches a client as a few
+// events carrying the latest seq, not one per change: clients refresh on every event.
+func TestStreamEventsCoalescesBursts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := make(chan int64)
+	var mu sync.Mutex
+	var got []string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		streamEvents(ctx, ch, func(s string) { mu.Lock(); got = append(got, s); mu.Unlock() }, 100*time.Millisecond, time.Hour)
+	}()
+	for seq := int64(1); seq <= 5000; seq++ {
+		ch <- seq
+	}
+	time.Sleep(300 * time.Millisecond)
+	ch <- 5001 // after a quiet spell: at once
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) < 3 || len(got) > 10 {
+		t.Fatalf("%d events for a burst of 5000 and one more, want a few: %q", len(got), got)
+	}
+	if got[0] != formatSSEEvent(1) {
+		t.Fatalf("first event %q, want seq 1 at once", got[0])
+	}
+	if got[len(got)-2] != formatSSEEvent(5000) || got[len(got)-1] != formatSSEEvent(5001) {
+		t.Fatalf("last events %q, want the burst's latest seq and then 5001", got[len(got)-2:])
 	}
 }

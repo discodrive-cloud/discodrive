@@ -131,18 +131,50 @@ func (s *Server) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, ": connected\n\n")
 	flusher.Flush()
 
-	keepalive := time.NewTicker(25 * time.Second)
+	streamEvents(r.Context(), ch, func(s string) {
+		fmt.Fprint(w, s)
+		flusher.Flush()
+	}, sseCoalesce, 25*time.Second)
+}
+
+// sseCoalesce is the shortest gap between two events of one stream. A bulk change (a
+// rescan importing tens of thousands of files) is one notification per file; a client
+// refreshes on every event, so they go out as one event per window, with the latest seq.
+const sseCoalesce = 500 * time.Millisecond
+
+// streamEvents writes the events of ch until ctx ends: the first one after a quiet
+// spell at once, the rest at most once per window, carrying the latest seq.
+func streamEvents(ctx context.Context, ch <-chan int64, write func(string), window, keepaliveEvery time.Duration) {
+	keepalive := time.NewTicker(keepaliveEvery)
 	defer keepalive.Stop()
+	var (
+		pending  int64
+		flush    <-chan time.Time
+		lastSent time.Time
+	)
+	send := func(seq int64) {
+		write(formatSSEEvent(seq))
+		lastSent = time.Now()
+	}
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case seq := <-ch:
-			fmt.Fprint(w, formatSSEEvent(seq))
-			flusher.Flush()
+			switch {
+			case flush != nil:
+				pending = max(pending, seq)
+			case time.Since(lastSent) >= window:
+				send(seq)
+			default:
+				pending = seq
+				flush = time.After(window - time.Since(lastSent))
+			}
+		case <-flush:
+			flush = nil
+			send(pending)
 		case <-keepalive.C:
-			fmt.Fprint(w, ": keepalive\n\n")
-			flusher.Flush()
+			write(": keepalive\n\n")
 		}
 	}
 }
