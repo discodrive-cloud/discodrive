@@ -853,8 +853,10 @@ JOIN nodes n ON n.id = a.node_id
 WHERE a.user_id = ANY($1::uuid[])
   AND (a.user_id = $2 OR n.user_id = a.user_id)
   AND (a.user_id = $2 OR $2 <> ALL($1::uuid[])
-       OR a.content_hash IS NULL OR NOT EXISTS (
-        SELECT 1 FROM photo_assets o WHERE o.user_id = $2 AND o.content_hash = a.content_hash))
+       OR a.content_hash IS NULL OR a.content_hash NOT IN (
+        -- NOT IN, not NOT EXISTS: one hashed set, and an estimate low enough to keep the
+        -- planner off JIT, which alone tripled the time of a 65k feed
+        SELECT o.content_hash FROM photo_assets o WHERE o.user_id = $2 AND o.content_hash IS NOT NULL))
   AND a.taken_local >= $3::timestamp
   AND a.taken_local < $3::timestamp + interval '1 month'
   AND a.parent_id IS NULL AND NOT a.hidden AND a.trashed_at IS NULL
@@ -1367,8 +1369,10 @@ WITH f AS (
     WHERE a.user_id = ANY($1::uuid[])
   AND (a.user_id = $2 OR n.user_id = a.user_id)
   AND (a.user_id = $2 OR $2 <> ALL($1::uuid[])
-       OR a.content_hash IS NULL OR NOT EXISTS (
-        SELECT 1 FROM photo_assets o WHERE o.user_id = $2 AND o.content_hash = a.content_hash))
+       OR a.content_hash IS NULL OR a.content_hash NOT IN (
+        -- NOT IN, not NOT EXISTS: one hashed set, and an estimate low enough to keep the
+        -- planner off JIT, which alone tripled the time of a 65k feed
+        SELECT o.content_hash FROM photo_assets o WHERE o.user_id = $2 AND o.content_hash IS NOT NULL))
   AND a.parent_id IS NULL AND NOT a.hidden AND a.trashed_at IS NULL
   AND ($3::text IS NULL OR a.kind = $3::text)
   AND ($4::bool IS NULL OR $4::bool = EXISTS (

@@ -147,8 +147,10 @@ WITH f AS (
     WHERE a.user_id = ANY(sqlc.arg(user_ids)::uuid[])
   AND (a.user_id = sqlc.arg(viewer_id) OR n.user_id = a.user_id)
   AND (a.user_id = sqlc.arg(viewer_id) OR sqlc.arg(viewer_id) <> ALL(sqlc.arg(user_ids)::uuid[])
-       OR a.content_hash IS NULL OR NOT EXISTS (
-        SELECT 1 FROM photo_assets o WHERE o.user_id = sqlc.arg(viewer_id) AND o.content_hash = a.content_hash))
+       OR a.content_hash IS NULL OR a.content_hash NOT IN (
+        -- NOT IN, not NOT EXISTS: one hashed set, and an estimate low enough to keep the
+        -- planner off JIT, which alone tripled the time of a 65k feed
+        SELECT o.content_hash FROM photo_assets o WHERE o.user_id = sqlc.arg(viewer_id) AND o.content_hash IS NOT NULL))
   AND a.parent_id IS NULL AND NOT a.hidden AND a.trashed_at IS NULL
   AND (sqlc.narg(kind)::text IS NULL OR a.kind = sqlc.narg(kind)::text)
   AND (sqlc.narg(live)::bool IS NULL OR sqlc.narg(live)::bool = EXISTS (
@@ -179,8 +181,10 @@ JOIN nodes n ON n.id = a.node_id
 WHERE a.user_id = ANY(sqlc.arg(user_ids)::uuid[])
   AND (a.user_id = sqlc.arg(viewer_id) OR n.user_id = a.user_id)
   AND (a.user_id = sqlc.arg(viewer_id) OR sqlc.arg(viewer_id) <> ALL(sqlc.arg(user_ids)::uuid[])
-       OR a.content_hash IS NULL OR NOT EXISTS (
-        SELECT 1 FROM photo_assets o WHERE o.user_id = sqlc.arg(viewer_id) AND o.content_hash = a.content_hash))
+       OR a.content_hash IS NULL OR a.content_hash NOT IN (
+        -- NOT IN, not NOT EXISTS: one hashed set, and an estimate low enough to keep the
+        -- planner off JIT, which alone tripled the time of a 65k feed
+        SELECT o.content_hash FROM photo_assets o WHERE o.user_id = sqlc.arg(viewer_id) AND o.content_hash IS NOT NULL))
   AND a.taken_local >= sqlc.arg(month)::timestamp
   AND a.taken_local < sqlc.arg(month)::timestamp + interval '1 month'
   AND a.parent_id IS NULL AND NOT a.hidden AND a.trashed_at IS NULL
