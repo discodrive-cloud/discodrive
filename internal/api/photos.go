@@ -100,6 +100,49 @@ func (s *Server) photoSettings(r *http.Request, uid pgtype.UUID) (photoSettingsR
 	return resp, nil
 }
 
+// maxKnownHashes bounds one POST /known.
+const maxKnownHashes = 1000
+
+// POST /me/photos/v1/known {"hashes": [sha256 hex…]} → {"known": [...]} — which of the
+// files the gallery already holds, so a phone's auto-upload can skip a photo that is in
+// the gallery under another folder or name. Trashed and hidden files count: uploading one
+// again would bring back what the user put away. A switched-off gallery knows nothing.
+func (s *Server) handlePhotoKnown(w http.ResponseWriter, r *http.Request) {
+	if !s.photosReady(w) {
+		return
+	}
+	uid, ok := photosUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Hashes []string `json:"hashes"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Hashes) > maxKnownHashes {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	hashes := make([]string, 0, len(req.Hashes))
+	for _, h := range req.Hashes {
+		if b, err := hex.DecodeString(h); err != nil || len(b) != sha256.Size {
+			writeError(w, http.StatusBadRequest, "invalid hash")
+			return
+		}
+		hashes = append(hashes, strings.ToLower(h))
+	}
+	known := []string{}
+	if len(hashes) > 0 && s.photosOn(r, uid) {
+		var err error
+		known, err = s.q.ListKnownPhotoHashes(r.Context(), db.ListKnownPhotoHashesParams{UserID: uid, Hashes: hashes})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"known": known})
+}
+
 type photoFailedDTO struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
@@ -421,6 +464,8 @@ type photoFilter struct {
 	raw      pgtype.Bool
 	favorite pgtype.Bool
 	source   pgtype.UUID
+	areaZ    pgtype.Int4 // the map's area: cells at this zoom (see parseArea)
+	areaKeys []int64
 }
 
 func (s *Server) parsePhotoFilter(w http.ResponseWriter, r *http.Request, uid pgtype.UUID) (photoFilter, bool) {
@@ -442,6 +487,14 @@ func (s *Server) parsePhotoFilter(w http.ResponseWriter, r *http.Request, uid pg
 			}
 			*dst = pgtype.Bool{Bool: b, Valid: true}
 		}
+	}
+	if v := q.Get("area"); v != "" {
+		z, keys, ok := parseArea(v)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid area")
+			return f, false
+		}
+		f.areaZ, f.areaKeys = pgtype.Int4{Int32: z, Valid: true}, keys
 	}
 	if v := q.Get("source"); v != "" {
 		id, err := db.ParseUUID(v)
@@ -487,6 +540,7 @@ func (s *Server) handlePhotoBuckets(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.q.ListPhotoMonthBuckets(r.Context(), db.ListPhotoMonthBucketsParams{
 		UserID: uid, Kind: f.kind, Live: f.live, Raw: f.raw, Favorite: f.favorite, SourceID: f.source,
+		AreaZ: f.areaZ, AreaKeys: f.areaKeys,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -524,6 +578,7 @@ func (s *Server) handlePhotoMonth(w http.ResponseWriter, r *http.Request) {
 	assets, err := s.q.ListPhotoAssetsInMonth(r.Context(), db.ListPhotoAssetsInMonthParams{
 		UserID: uid, Month: pgtype.Timestamp{Time: month, Valid: true},
 		Kind: f.kind, Live: f.live, Raw: f.raw, Favorite: f.favorite, SourceID: f.source,
+		AreaZ: f.areaZ, AreaKeys: f.areaKeys,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")

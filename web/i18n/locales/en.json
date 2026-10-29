@@ -926,6 +926,7 @@
     "tabs": {
       "photos": "Photos",
       "memories": "On this day",
+      "map": "Map",
       "hidden": "Hidden",
       "trash": "Trash"
     },
@@ -1035,6 +1036,9 @@
     "trash_open_files": "Delete for good in the main trash",
     "trash_empty": "The trash is empty.",
     "restore": "Restore",
-    "restored_done": "Restored: {n}"
+    "restored_done": "Restored: {n}",
+    "map_back": "Map",
+    "map_empty": "No photos with a location.",
+    "map_count": "Photos: {n}"
   }
 }

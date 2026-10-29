@@ -926,6 +926,7 @@
     "tabs": {
       "photos": "Fotos",
       "memories": "An diesem Tag",
+      "map": "Karte",
       "hidden": "Ausgeblendet",
       "trash": "Papierkorb"
     },
@@ -1035,6 +1036,9 @@
     "trash_open_files": "Endgültig löschen im allgemeinen Papierkorb",
     "trash_empty": "Der Papierkorb ist leer.",
     "restore": "Wiederherstellen",
-    "restored_done": "Wiederhergestellt: {n}"
+    "restored_done": "Wiederhergestellt: {n}",
+    "map_back": "Karte",
+    "map_empty": "Keine Fotos mit Aufnahmeort.",
+    "map_count": "Fotos: {n}"
   }
 }

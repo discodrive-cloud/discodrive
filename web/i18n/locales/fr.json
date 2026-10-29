@@ -926,6 +926,7 @@
     "tabs": {
       "photos": "Photos",
       "memories": "Ce jour-là",
+      "map": "Carte",
       "hidden": "Masqué",
       "trash": "Corbeille"
     },
@@ -1035,6 +1036,9 @@
     "trash_open_files": "Supprimer définitivement dans la corbeille générale",
     "trash_empty": "La corbeille est vide.",
     "restore": "Restaurer",
-    "restored_done": "Restauré : {n}"
+    "restored_done": "Restauré : {n}",
+    "map_back": "Carte",
+    "map_empty": "Aucune photo avec un lieu.",
+    "map_count": "Photos : {n}"
   }
 }

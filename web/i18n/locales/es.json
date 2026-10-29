@@ -926,6 +926,7 @@
     "tabs": {
       "photos": "Fotos",
       "memories": "Un día como hoy",
+      "map": "Mapa",
       "hidden": "Oculto",
       "trash": "Papelera"
     },
@@ -1035,6 +1036,9 @@
     "trash_open_files": "Eliminar definitivamente en la papelera general",
     "trash_empty": "La papelera está vacía.",
     "restore": "Restaurar",
-    "restored_done": "Restaurados: {n}"
+    "restored_done": "Restaurados: {n}",
+    "map_back": "Mapa",
+    "map_empty": "No hay fotos con ubicación.",
+    "map_count": "Fotos: {n}"
   }
 }

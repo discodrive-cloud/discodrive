@@ -263,6 +263,8 @@ type Querier interface {
 	// compare the owner themselves.
 	GetPhotoAssetByID(ctx context.Context, id pgtype.UUID) (PhotoAsset, error)
 	GetPhotoAssetByNode(ctx context.Context, nodeID pgtype.UUID) (PhotoAsset, error)
+	// The box around every card of the map (the first view); no row when none has a position.
+	GetPhotoMapBounds(ctx context.Context, userID pgtype.UUID) (GetPhotoMapBoundsRow, error)
 	GetPhotoSettings(ctx context.Context, userID pgtype.UUID) (PhotoSetting, error)
 	GetPlayQueue(ctx context.Context, userID pgtype.UUID) (PlayQueue, error)
 	GetPlayQueueEntries(ctx context.Context, userID pgtype.UUID) ([]GetPlayQueueEntriesRow, error)
@@ -382,6 +384,8 @@ type Querier interface {
 	// Months of the hidden cards, as the timeline's buckets.
 	ListHiddenPhotoMonthBuckets(ctx context.Context, userID pgtype.UUID) ([]ListHiddenPhotoMonthBucketsRow, error)
 	ListInternetRadioStations(ctx context.Context, userID pgtype.UUID) ([]InternetRadioStation, error)
+	// Which of the hashes the user's gallery already holds, trashed and hidden files included.
+	ListKnownPhotoHashes(ctx context.Context, arg ListKnownPhotoHashesParams) ([]string, error)
 	ListLiveNodes(ctx context.Context, userID pgtype.UUID) ([]Node, error)
 	ListNewestEpisodesForUser(ctx context.Context, arg ListNewestEpisodesForUserParams) ([]PodcastEpisode, error)
 	// Children of a node without owner scoping (for listing a shared folder after canAccess).
@@ -414,10 +418,17 @@ type Querier interface {
 	ListPhotoFailedFiles(ctx context.Context, arg ListPhotoFailedFilesParams) ([]ListPhotoFailedFilesRow, error)
 	// Everything grouping looks at (Live Photo pairs by live_cid, RAW+JPEG by name and time).
 	ListPhotoGroupCandidates(ctx context.Context, userID pgtype.UUID) ([]ListPhotoGroupCandidatesRow, error)
+	// The map's clusters: the feed's cards with a position inside the box, grouped by
+	// photo_map_cell at zoom z. Duplicates count once, as in the feed. A west edge east of the
+	// east edge means the box crosses the 180th meridian. place_id and country_code are set
+	// only when every card of the cluster shares them (0 and '' otherwise); the cover is the
+	// newest card.
+	ListPhotoMapClusters(ctx context.Context, arg ListPhotoMapClustersParams) ([]ListPhotoMapClustersRow, error)
 	// Feed filters shared by ListPhotoMonthBuckets and ListPhotoAssetsInMonth. Hidden, trashed
 	// and child rows (live videos, originals) never show. Duplicates (same content_hash within
 	// the user) collapse to the row with the smallest id AMONG THE ROWS THAT PASS THE SAME
 	// FILTERS, so a copy is not lost because its twin is filtered out; NULL hashes never collapse.
+	// The area filter (the map) keeps the cards whose photo_map_key at area_z is in area_keys.
 	// Buckets dedup with one window pass over the filtered rows instead of a per-row twin
 	// lookup (same result as the month query's NOT EXISTS, several times faster on a big library).
 	ListPhotoMonthBuckets(ctx context.Context, arg ListPhotoMonthBucketsParams) ([]ListPhotoMonthBucketsRow, error)

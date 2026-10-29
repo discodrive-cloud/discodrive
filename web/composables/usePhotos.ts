@@ -2,6 +2,7 @@
 // "gallery enabled" flag the sidebar follows.
 import { ThumbLoader, ThumbError, type ThumbLoaderOptions } from '~/lib/photos/thumbLoader'
 import type { Bucket } from '~/lib/photos/layout'
+import { clustersQuery, type BBox, type Cluster } from '~/lib/photos/mapClusters'
 import { photosHiddenHeaders, lockPhotosHidden, setPhotosHiddenToken } from '~/lib/photos/hidden'
 import { emptyResult, mergeResult, failChunk, wallDate, type EditResult } from '~/lib/photos/edit'
 import type { RequestOptions } from '~/composables/useApi'
@@ -80,6 +81,7 @@ export interface PhotoFilter {
   kind: 'all' | 'photo' | 'video' | 'live' | 'raw'
   favorite: boolean
   source: string // '' = every source
+  area?: string // the map's cells, "z/x.y,…" (lib/photos/mapClusters)
 }
 
 export interface MetadataResult {
@@ -119,6 +121,7 @@ export function filterQuery(f: PhotoFilter): string {
   if (f.kind === 'raw') p.set('raw', 'true')
   if (f.favorite) p.set('favorite', 'true')
   if (f.source) p.set('source', f.source)
+  if (f.area) p.set('area', f.area)
   const s = p.toString()
   return s ? `?${s}` : ''
 }
@@ -233,6 +236,9 @@ export function usePhotosApi() {
     buckets: (f: PhotoFilter) => request<Bucket[]>(`${PHOTOS_API}/buckets${filterQuery(f)}`),
     month: (month: string, f: PhotoFilter, signal?: AbortSignal) =>
       request<PhotoRow[]>(`${PHOTOS_API}/months/${month}${filterQuery(f)}`, { signal }),
+    mapClusters: (z: number, box: BBox, signal?: AbortSignal) =>
+      request<Cluster<PhotoRow>[]>(`${PHOTOS_API}/map/clusters?${clustersQuery(z, box)}`, { signal }),
+    mapBounds: () => request<BBox | null>(`${PHOTOS_API}/map/bounds`),
     asset: (id: string) => request<PhotoAsset>(`${PHOTOS_API}/assets/${id}`, { headers: h() }),
     async patch(ids: string[], patch: { favorite?: boolean; hidden?: boolean }) {
       for (const part of chunk(ids, PHOTO_BATCH)) {

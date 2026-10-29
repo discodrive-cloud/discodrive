@@ -1,13 +1,15 @@
 <script setup lang="ts">
 // «Фото»: the gallery. Sections are tabs driven by ?tab= (as on the settings page):
-// Фото (the timeline) · В этот день · Скрытое · Корзина. Albums, shared and the map come
-// in later stages and are not shown.
+// Фото (the timeline) · В этот день · Карта · Скрытое · Корзина. Albums and shared come in
+// later stages and are not shown. «Карта» shows only when the server has map tiles; a pin
+// opens its area (?area=) as the timeline's grid narrowed to those cells.
 import PhotoGrid from '~/components/photos/PhotoGrid.vue'
 import PhotoFilters from '~/components/photos/PhotoFilters.vue'
 import SelectionBar from '~/components/photos/SelectionBar.vue'
 import PhotoViewer from '~/components/photos/PhotoViewer.vue'
 import PhotoMemories from '~/components/photos/PhotoMemories.vue'
 import PhotoTrash from '~/components/photos/PhotoTrash.vue'
+import PhotoMap from '~/components/photos/PhotoMap.vue'
 import HiddenUnlock from '~/components/photos/HiddenUnlock.vue'
 import EditDateDialog from '~/components/photos/EditDateDialog.vue'
 import EditPlaceDialog from '~/components/photos/EditPlaceDialog.vue'
@@ -15,11 +17,12 @@ import type { Bucket, PhotoFilter, PhotoRow, PhotoSettings } from '~/composables
 import { mapConcurrent } from '~/lib/mapConcurrent'
 import { photosHiddenHeaders, photosHiddenUnlocked, lockPhotosHidden } from '~/lib/photos/hidden'
 import { photosNavVisible } from '~/lib/photos/settings'
+import { parseArea } from '~/lib/photos/mapClusters'
 import type { EditResult } from '~/lib/photos/edit'
 
 definePageMeta({ fullBleed: true })
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const api = usePhotosApi()
@@ -28,7 +31,7 @@ const { confirm } = useDialog()
 const photosEnabled = usePhotosEnabled()
 
 // ---- sections ----
-const tabs = ['photos', 'memories', 'hidden', 'trash'] as const
+const tabs = ['photos', 'memories', 'map', 'hidden', 'trash'] as const
 type Tab = (typeof tabs)[number]
 const tab = computed<Tab>(() => {
   const q = route.query.tab
@@ -37,8 +40,33 @@ const tab = computed<Tab>(() => {
 function selectTab(id: Tab) {
   selection.value = new Set()
   viewer.value = null
-  router.replace({ query: { ...route.query, tab: id === 'photos' ? undefined : id } })
+  router.replace({ query: { ...route.query, tab: id === 'photos' ? undefined : id, area: undefined } })
 }
+
+// ---- Карта ----
+const mapsReady = ref(false)
+const shownTabs = computed(() => tabs.filter((id) => id !== 'map' || mapsReady.value))
+// The open area of the map: its grid replaces the map until «← Карта».
+const area = computed(() => {
+  const q = route.query.area
+  return tab.value === 'map' && typeof q === 'string' && parseArea(q) ? q : ''
+})
+const areaTitle = ref('')
+let areaFromMap = false
+const mapRef = ref<InstanceType<typeof PhotoMap> | null>(null)
+// Mounted on the first visit and kept under the grid, so it stays where it was.
+const mapMounted = ref(false)
+watch(tab, (v) => { if (v === 'map') mapMounted.value = true }, { immediate: true })
+function openArea(a: string, place: string | null, country: string | null) {
+  areaTitle.value = place ?? (country ? countryName(country, locale.value) : '')
+  areaFromMap = true
+  router.push({ query: { ...route.query, tab: 'map', area: a } })
+}
+function closeArea() {
+  if (areaFromMap) { areaFromMap = false; router.back() }
+  else router.replace({ query: { ...route.query, area: undefined } })
+}
+const areaCount = computed(() => buckets.value.reduce((n, b) => n + b.count, 0))
 
 // ---- settings & buckets ----
 const settings = ref<PhotoSettings | null>(null)
@@ -60,9 +88,10 @@ let bucketsSeq = 0
 async function loadBuckets() {
   if (tab.value === 'hidden') return loadHiddenBuckets()
   if (!settings.value?.enabled || !settings.value.available) return
+  if (tab.value === 'map' && !area.value) return
   const seq = ++bucketsSeq
   try {
-    const b = await api.buckets(filter.value)
+    const b = await api.buckets(activeFilter.value)
     if (seq !== bucketsSeq) return
     // Same counts: keep the array, so the grid does not refetch for nothing.
     if (JSON.stringify(b) !== JSON.stringify(buckets.value)) buckets.value = b
@@ -74,9 +103,13 @@ async function loadBuckets() {
   }
 }
 
+// The map's area replaces the timeline's filters: the map shows every card.
+const activeFilter = computed<PhotoFilter>(() =>
+  tab.value === 'map' ? { kind: 'all', favorite: false, source: '', area: area.value } : filter.value)
+
 // One fetcher per filter: a new function tells the grid to start over.
 const fetchMonth = computed(() => {
-  const f = { ...filter.value }
+  const f = { ...activeFilter.value }
   return (month: string, signal: AbortSignal) => api.month(month, f, signal)
 })
 watch(filter, () => {
@@ -155,8 +188,18 @@ watch(tab, (v) => {
   if (v === 'hidden') loadHiddenBuckets()
   else if (v === 'photos') loadBuckets()
 })
+// A new area (or none: back on the map) starts its grid over.
+watch(area, (a) => {
+  selection.value = new Set()
+  viewer.value = null
+  bucketsLoaded.value = false
+  buckets.value = []
+  if (a) loadBuckets()
+  else nextTick(() => mapRef.value?.resize())
+})
 
 onMounted(async () => {
+  photosMapsReady().then((v) => { mapsReady.value = v })
   await loadSettings()
   await loadBuckets()
   if (tab.value === 'hidden') loadHiddenBuckets()
@@ -372,7 +415,7 @@ async function afterEdit(r: EditResult) {
       <h1 class="text-xl font-semibold">{{ t('photos.title') }}</h1>
       <nav class="-mb-px flex gap-1 overflow-x-auto">
         <button
-          v-for="id in tabs"
+          v-for="id in shownTabs"
           :key="id"
           type="button"
           class="shrink-0 border-b-2 px-3 py-2 text-sm transition"
@@ -458,6 +501,7 @@ async function afterEdit(r: EditResult) {
       <!-- В этот день -->
       <PhotoMemories v-else-if="tab === 'memories'" ref="memories" @open="openMemory" />
 
+
       <!-- Скрытое: unlock first, then the grid of hidden cards -->
       <template v-else-if="tab === 'hidden'">
         <HiddenUnlock v-if="!photosHiddenUnlocked" @unlocked="loadHiddenBuckets" />
@@ -499,6 +543,50 @@ async function afterEdit(r: EditResult) {
 
       <!-- Корзина -->
       <PhotoTrash v-else-if="tab === 'trash'" @restored="(n) => say(t('photos.restored_done', { n }))" />
+
+      <!-- Карта: the map, or the grid of the area a pin opened -->
+      <div v-if="tab === 'map' && area" class="relative flex min-h-0 flex-1 flex-col">
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 md:px-6">
+          <button type="button" class="btn-ghost px-2 py-1.5 text-sm" @click="closeArea">
+            <Icon name="lucide:arrow-left" size="16" /> {{ t('photos.map_back') }}
+          </button>
+          <span v-if="areaTitle" class="font-medium">{{ areaTitle }}</span>
+          <span v-if="bucketsLoaded" class="text-sm text-muted">{{ t('photos.map_count', { n: areaCount }) }}</span>
+          <span v-if="loadError" class="text-xs text-danger">{{ loadError }}</span>
+        </div>
+        <div class="relative min-h-0 flex-1 pl-2 md:pl-4">
+          <PhotoGrid
+            v-if="buckets.length"
+            ref="grid"
+            v-model:selection="selection"
+            :buckets="buckets"
+            :fetch-month="fetchMonth"
+            :loader="loader"
+            @open="openViewer"
+            @range-failed="say(t('photos.range_failed'))"
+          />
+          <div v-else-if="bucketsLoaded" class="flex h-full items-center justify-center p-6 text-center text-sm text-muted">
+            {{ t('photos.empty_filtered') }}
+          </div>
+          <SelectionBar
+            v-if="selection.size"
+            :count="selection.size"
+            :all-favorite="allFavorite"
+            :busy="busy"
+            @clear="selection = new Set()"
+            @favorite="toggleFavorite"
+            @hide="hide"
+            @delete="remove"
+            @download="download"
+            @edit-date="editDate"
+            @edit-place="editPlace"
+          />
+          <div v-if="notice" class="pointer-events-none absolute inset-x-0 z-30 flex justify-center px-4" :class="selection.size ? 'bottom-20' : 'bottom-4'" role="status">
+            <span class="rounded-full bg-black/75 px-3 py-1.5 text-xs text-white">{{ notice }}</span>
+          </div>
+        </div>
+      </div>
+      <PhotoMap v-if="mapMounted" v-show="tab === 'map' && !area" ref="mapRef" @open="openArea" />
     </template>
 
     <!-- outside the tabs: the viewer and the dialogs over it -->

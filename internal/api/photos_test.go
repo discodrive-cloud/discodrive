@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -565,5 +566,42 @@ func TestPhotosFailedFiles(t *testing.T) {
 	lite := newPhotosEnv(t, false, 0)
 	if rec := lite.do(lite.tok, "GET", "/me/photos/v1/failed", nil); rec.Code != 409 {
 		t.Fatalf("lite: %d", rec.Code)
+	}
+}
+
+func TestPhotosKnown_HashesInTheGallery(t *testing.T) {
+	e := newPhotosEnv(t, true, 0)
+	h := func(c byte) string { return strings.Repeat(string(c), 64) }
+	setHash := func(a db.PhotoAsset, hash string) {
+		if _, err := e.pool.Exec(e.ctx, `UPDATE photo_assets SET content_hash = $2 WHERE id = $1`, a.ID, hash); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setHash(e.asset(e.user, assetOpts{}), h('a'))
+	setHash(e.asset(e.user, assetOpts{}), h('a')) // a copy: answered once
+	setHash(e.asset(e.user, assetOpts{hidden: true}), h('b'))
+	setHash(e.asset(e.user, assetOpts{trash: true}), h('c'))
+	setHash(e.asset(e.user2, assetOpts{}), h('d'))
+
+	var resp struct{ Known []string }
+	// Upper-case input matches: the stored hashes are lower-case hex.
+	ask := map[string]any{"hashes": []string{h('a'), strings.ToUpper(h('b')), h('c'), h('d'), h('e')}}
+	e.json(e.do(e.tok, "POST", "/me/photos/v1/known", ask), 200, &resp)
+	sort.Strings(resp.Known)
+	if strings.Join(resp.Known, ",") != strings.Join([]string{h('a'), h('b'), h('c')}, ",") {
+		t.Fatalf("known = %v", resp.Known)
+	}
+
+	e.json(e.do(e.tok, "POST", "/me/photos/v1/known", map[string]any{"hashes": []string{"abc"}}), 400, nil)
+	e.json(e.do(e.tok, "POST", "/me/photos/v1/known", map[string]any{"hashes": make([]string, maxKnownHashes+1)}), 400, nil)
+	e.json(e.do("", "POST", "/me/photos/v1/known", ask), 401, nil)
+
+	// A switched-off gallery knows nothing, though its rows are still there.
+	if _, err := e.q.UpsertPhotoSettings(e.ctx, db.UpsertPhotoSettingsParams{UserID: e.user.ID, Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	e.json(e.do(e.tok, "POST", "/me/photos/v1/known", ask), 200, &resp)
+	if len(resp.Known) != 0 {
+		t.Fatalf("known with the gallery off = %v", resp.Known)
 	}
 }

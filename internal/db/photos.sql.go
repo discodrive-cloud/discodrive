@@ -474,6 +474,34 @@ func (q *Queries) GetPhotoAssetByNode(ctx context.Context, nodeID pgtype.UUID) (
 	return i, err
 }
 
+const getPhotoMapBounds = `-- name: GetPhotoMapBounds :one
+SELECT min(lon)::float8 AS west, min(lat)::float8 AS south, max(lon)::float8 AS east, max(lat)::float8 AS north
+FROM photo_assets
+WHERE user_id = $1 AND parent_id IS NULL AND NOT hidden AND trashed_at IS NULL
+  AND lat IS NOT NULL AND lon IS NOT NULL
+HAVING count(*) > 0
+`
+
+type GetPhotoMapBoundsRow struct {
+	West  float64 `json:"west"`
+	South float64 `json:"south"`
+	East  float64 `json:"east"`
+	North float64 `json:"north"`
+}
+
+// The box around every card of the map (the first view); no row when none has a position.
+func (q *Queries) GetPhotoMapBounds(ctx context.Context, userID pgtype.UUID) (GetPhotoMapBoundsRow, error) {
+	row := q.db.QueryRow(ctx, getPhotoMapBounds, userID)
+	var i GetPhotoMapBoundsRow
+	err := row.Scan(
+		&i.West,
+		&i.South,
+		&i.East,
+		&i.North,
+	)
+	return i, err
+}
+
 const getPhotoSettings = `-- name: GetPhotoSettings :one
 SELECT user_id, enabled, indexed_seq, updated_at FROM photo_settings WHERE user_id = $1
 `
@@ -613,6 +641,37 @@ func (q *Queries) ListHiddenPhotoMonthBuckets(ctx context.Context, userID pgtype
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listKnownPhotoHashes = `-- name: ListKnownPhotoHashes :many
+SELECT DISTINCT content_hash::text FROM photo_assets
+WHERE user_id = $1 AND content_hash = ANY($2::text[])
+`
+
+type ListKnownPhotoHashesParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	Hashes []string    `json:"hashes"`
+}
+
+// Which of the hashes the user's gallery already holds, trashed and hidden files included.
+func (q *Queries) ListKnownPhotoHashes(ctx context.Context, arg ListKnownPhotoHashesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listKnownPhotoHashes, arg.UserID, arg.Hashes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var content_hash string
+		if err := rows.Scan(&content_hash); err != nil {
+			return nil, err
+		}
+		items = append(items, content_hash)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -804,6 +863,8 @@ WHERE a.user_id = $1
         SELECT 1 FROM photo_sources ps JOIN nodes fn ON fn.id = ps.folder_node_id
         WHERE ps.id = $7::uuid AND ps.user_id = a.user_id
           AND starts_with(n.disk_path, fn.disk_path || '/')))
+  AND ($8::int IS NULL OR (a.lat IS NOT NULL AND a.lon IS NOT NULL
+        AND photo_map_key(a.lat, a.lon, $8::int) = ANY($9::bigint[])))
   AND (a.content_hash IS NULL OR NOT EXISTS (
         SELECT 1 FROM photo_assets d JOIN nodes dn ON dn.id = d.node_id
         WHERE d.user_id = a.user_id AND d.content_hash = a.content_hash AND d.id < a.id
@@ -816,7 +877,9 @@ WHERE a.user_id = $1
   AND ($7::uuid IS NULL OR EXISTS (
         SELECT 1 FROM photo_sources ps JOIN nodes fn ON fn.id = ps.folder_node_id
         WHERE ps.id = $7::uuid AND ps.user_id = d.user_id
-          AND starts_with(dn.disk_path, fn.disk_path || '/')))))
+          AND starts_with(dn.disk_path, fn.disk_path || '/')))
+  AND ($8::int IS NULL OR (d.lat IS NOT NULL AND d.lon IS NOT NULL
+        AND photo_map_key(d.lat, d.lon, $8::int) = ANY($9::bigint[])))))
 ORDER BY a.taken_at DESC, a.id
 `
 
@@ -828,6 +891,8 @@ type ListPhotoAssetsInMonthParams struct {
 	Raw      pgtype.Bool      `json:"raw"`
 	Favorite pgtype.Bool      `json:"favorite"`
 	SourceID pgtype.UUID      `json:"source_id"`
+	AreaZ    pgtype.Int4      `json:"area_z"`
+	AreaKeys []int64          `json:"area_keys"`
 }
 
 func (q *Queries) ListPhotoAssetsInMonth(ctx context.Context, arg ListPhotoAssetsInMonthParams) ([]PhotoAsset, error) {
@@ -839,6 +904,8 @@ func (q *Queries) ListPhotoAssetsInMonth(ctx context.Context, arg ListPhotoAsset
 		arg.Raw,
 		arg.Favorite,
 		arg.SourceID,
+		arg.AreaZ,
+		arg.AreaKeys,
 	)
 	if err != nil {
 		return nil, err
@@ -1195,6 +1262,93 @@ func (q *Queries) ListPhotoGroupCandidates(ctx context.Context, userID pgtype.UU
 	return items, nil
 }
 
+const listPhotoMapClusters = `-- name: ListPhotoMapClusters :many
+WITH f AS (
+    SELECT a.id, a.lat, a.lon, a.taken_at, a.place_id, a.country_code, a.content_hash,
+           photo_map_cell(a.lat, a.lon, $1::int) AS cell
+    FROM photo_assets a
+    WHERE a.user_id = $2
+      AND a.parent_id IS NULL AND NOT a.hidden AND a.trashed_at IS NULL
+      AND a.lat IS NOT NULL AND a.lon IS NOT NULL
+      AND a.lat BETWEEN $3::float8 AND $4::float8
+      AND CASE WHEN $5::float8 <= $6::float8
+               THEN a.lon BETWEEN $5::float8 AND $6::float8
+               ELSE a.lon >= $5::float8 OR a.lon <= $6::float8 END
+), ranked AS (
+    SELECT f.id, f.lat, f.lon, f.taken_at, f.place_id, f.country_code, f.content_hash, f.cell, row_number() OVER (PARTITION BY content_hash ORDER BY id) AS rn FROM f
+)
+SELECT cell[1]::bigint AS x, cell[2]::bigint AS y, count(*)::bigint AS count,
+       avg(lat)::float8 AS lat, avg(lon)::float8 AS lon,
+       (array_agg(id ORDER BY taken_at DESC NULLS LAST, id))[1]::uuid AS cover_id,
+       coalesce(CASE WHEN count(DISTINCT place_id) = 1 AND count(place_id) = count(*) THEN min(place_id) END, 0)::int AS place_id,
+       coalesce(CASE WHEN count(DISTINCT country_code) = 1 AND count(country_code) = count(*) THEN min(country_code) END, '')::text AS country_code
+FROM ranked
+WHERE content_hash IS NULL OR rn = 1
+GROUP BY cell
+ORDER BY 3 DESC, 1, 2
+`
+
+type ListPhotoMapClustersParams struct {
+	Z      int32       `json:"z"`
+	UserID pgtype.UUID `json:"user_id"`
+	South  float64     `json:"south"`
+	North  float64     `json:"north"`
+	West   float64     `json:"west"`
+	East   float64     `json:"east"`
+}
+
+type ListPhotoMapClustersRow struct {
+	X           int64       `json:"x"`
+	Y           int64       `json:"y"`
+	Count       int64       `json:"count"`
+	Lat         float64     `json:"lat"`
+	Lon         float64     `json:"lon"`
+	CoverID     pgtype.UUID `json:"cover_id"`
+	PlaceID     int32       `json:"place_id"`
+	CountryCode string      `json:"country_code"`
+}
+
+// The map's clusters: the feed's cards with a position inside the box, grouped by
+// photo_map_cell at zoom z. Duplicates count once, as in the feed. A west edge east of the
+// east edge means the box crosses the 180th meridian. place_id and country_code are set
+// only when every card of the cluster shares them (0 and ” otherwise); the cover is the
+// newest card.
+func (q *Queries) ListPhotoMapClusters(ctx context.Context, arg ListPhotoMapClustersParams) ([]ListPhotoMapClustersRow, error) {
+	rows, err := q.db.Query(ctx, listPhotoMapClusters,
+		arg.Z,
+		arg.UserID,
+		arg.South,
+		arg.North,
+		arg.West,
+		arg.East,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPhotoMapClustersRow{}
+	for rows.Next() {
+		var i ListPhotoMapClustersRow
+		if err := rows.Scan(
+			&i.X,
+			&i.Y,
+			&i.Count,
+			&i.Lat,
+			&i.Lon,
+			&i.CoverID,
+			&i.PlaceID,
+			&i.CountryCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPhotoMonthBuckets = `-- name: ListPhotoMonthBuckets :many
 WITH f AS (
     SELECT a.id, a.taken_local, a.content_hash
@@ -1211,6 +1365,8 @@ WITH f AS (
         SELECT 1 FROM photo_sources ps JOIN nodes fn ON fn.id = ps.folder_node_id
         WHERE ps.id = $6::uuid AND ps.user_id = a.user_id
           AND starts_with(n.disk_path, fn.disk_path || '/')))
+  AND ($7::int IS NULL OR (a.lat IS NOT NULL AND a.lon IS NOT NULL
+        AND photo_map_key(a.lat, a.lon, $7::int) = ANY($8::bigint[])))
 ), ranked AS (
     SELECT taken_local, content_hash,
            row_number() OVER (PARTITION BY content_hash ORDER BY id) AS rn
@@ -1230,6 +1386,8 @@ type ListPhotoMonthBucketsParams struct {
 	Raw      pgtype.Bool `json:"raw"`
 	Favorite pgtype.Bool `json:"favorite"`
 	SourceID pgtype.UUID `json:"source_id"`
+	AreaZ    pgtype.Int4 `json:"area_z"`
+	AreaKeys []int64     `json:"area_keys"`
 }
 
 type ListPhotoMonthBucketsRow struct {
@@ -1241,6 +1399,7 @@ type ListPhotoMonthBucketsRow struct {
 // and child rows (live videos, originals) never show. Duplicates (same content_hash within
 // the user) collapse to the row with the smallest id AMONG THE ROWS THAT PASS THE SAME
 // FILTERS, so a copy is not lost because its twin is filtered out; NULL hashes never collapse.
+// The area filter (the map) keeps the cards whose photo_map_key at area_z is in area_keys.
 // Buckets dedup with one window pass over the filtered rows instead of a per-row twin
 // lookup (same result as the month query's NOT EXISTS, several times faster on a big library).
 func (q *Queries) ListPhotoMonthBuckets(ctx context.Context, arg ListPhotoMonthBucketsParams) ([]ListPhotoMonthBucketsRow, error) {
@@ -1251,6 +1410,8 @@ func (q *Queries) ListPhotoMonthBuckets(ctx context.Context, arg ListPhotoMonthB
 		arg.Raw,
 		arg.Favorite,
 		arg.SourceID,
+		arg.AreaZ,
+		arg.AreaKeys,
 	)
 	if err != nil {
 		return nil, err

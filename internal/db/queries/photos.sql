@@ -131,6 +131,7 @@ ORDER BY n.modified_at DESC, n.id;
 -- and child rows (live videos, originals) never show. Duplicates (same content_hash within
 -- the user) collapse to the row with the smallest id AMONG THE ROWS THAT PASS THE SAME
 -- FILTERS, so a copy is not lost because its twin is filtered out; NULL hashes never collapse.
+-- The area filter (the map) keeps the cards whose photo_map_key at area_z is in area_keys.
 -- Buckets dedup with one window pass over the filtered rows instead of a per-row twin
 -- lookup (same result as the month query's NOT EXISTS, several times faster on a big library).
 -- name: ListPhotoMonthBuckets :many
@@ -149,6 +150,8 @@ WITH f AS (
         SELECT 1 FROM photo_sources ps JOIN nodes fn ON fn.id = ps.folder_node_id
         WHERE ps.id = sqlc.narg(source_id)::uuid AND ps.user_id = a.user_id
           AND starts_with(n.disk_path, fn.disk_path || '/')))
+  AND (sqlc.narg(area_z)::int IS NULL OR (a.lat IS NOT NULL AND a.lon IS NOT NULL
+        AND photo_map_key(a.lat, a.lon, sqlc.narg(area_z)::int) = ANY(sqlc.narg(area_keys)::bigint[])))
 ), ranked AS (
     SELECT taken_local, content_hash,
            row_number() OVER (PARTITION BY content_hash ORDER BY id) AS rn
@@ -176,6 +179,8 @@ WHERE a.user_id = sqlc.arg(user_id)
         SELECT 1 FROM photo_sources ps JOIN nodes fn ON fn.id = ps.folder_node_id
         WHERE ps.id = sqlc.narg(source_id)::uuid AND ps.user_id = a.user_id
           AND starts_with(n.disk_path, fn.disk_path || '/')))
+  AND (sqlc.narg(area_z)::int IS NULL OR (a.lat IS NOT NULL AND a.lon IS NOT NULL
+        AND photo_map_key(a.lat, a.lon, sqlc.narg(area_z)::int) = ANY(sqlc.narg(area_keys)::bigint[])))
   AND (a.content_hash IS NULL OR NOT EXISTS (
         SELECT 1 FROM photo_assets d JOIN nodes dn ON dn.id = d.node_id
         WHERE d.user_id = a.user_id AND d.content_hash = a.content_hash AND d.id < a.id
@@ -188,7 +193,9 @@ WHERE a.user_id = sqlc.arg(user_id)
   AND (sqlc.narg(source_id)::uuid IS NULL OR EXISTS (
         SELECT 1 FROM photo_sources ps JOIN nodes fn ON fn.id = ps.folder_node_id
         WHERE ps.id = sqlc.narg(source_id)::uuid AND ps.user_id = d.user_id
-          AND starts_with(dn.disk_path, fn.disk_path || '/')))))
+          AND starts_with(dn.disk_path, fn.disk_path || '/')))
+  AND (sqlc.narg(area_z)::int IS NULL OR (d.lat IS NOT NULL AND d.lon IS NOT NULL
+        AND photo_map_key(d.lat, d.lon, sqlc.narg(area_z)::int) = ANY(sqlc.narg(area_keys)::bigint[])))))
 ORDER BY a.taken_at DESC, a.id;
 
 -- name: ListHiddenPhotoAssets :many
@@ -447,3 +454,46 @@ UPDATE photo_assets SET place_cleared = sqlc.arg(cleared)::bool,
     place_id = CASE WHEN sqlc.arg(cleared)::bool THEN NULL ELSE place_id END,
     country_code = CASE WHEN sqlc.arg(cleared)::bool THEN NULL ELSE country_code END
 WHERE node_id = sqlc.arg(node_id);
+
+-- Which of the hashes the user's gallery already holds, trashed and hidden files included.
+-- name: ListKnownPhotoHashes :many
+SELECT DISTINCT content_hash::text FROM photo_assets
+WHERE user_id = sqlc.arg(user_id) AND content_hash = ANY(sqlc.arg(hashes)::text[]);
+
+-- The map's clusters: the feed's cards with a position inside the box, grouped by
+-- photo_map_cell at zoom z. Duplicates count once, as in the feed. A west edge east of the
+-- east edge means the box crosses the 180th meridian. place_id and country_code are set
+-- only when every card of the cluster shares them (0 and '' otherwise); the cover is the
+-- newest card.
+-- name: ListPhotoMapClusters :many
+WITH f AS (
+    SELECT a.id, a.lat, a.lon, a.taken_at, a.place_id, a.country_code, a.content_hash,
+           photo_map_cell(a.lat, a.lon, sqlc.arg(z)::int) AS cell
+    FROM photo_assets a
+    WHERE a.user_id = sqlc.arg(user_id)
+      AND a.parent_id IS NULL AND NOT a.hidden AND a.trashed_at IS NULL
+      AND a.lat IS NOT NULL AND a.lon IS NOT NULL
+      AND a.lat BETWEEN sqlc.arg(south)::float8 AND sqlc.arg(north)::float8
+      AND CASE WHEN sqlc.arg(west)::float8 <= sqlc.arg(east)::float8
+               THEN a.lon BETWEEN sqlc.arg(west)::float8 AND sqlc.arg(east)::float8
+               ELSE a.lon >= sqlc.arg(west)::float8 OR a.lon <= sqlc.arg(east)::float8 END
+), ranked AS (
+    SELECT f.*, row_number() OVER (PARTITION BY content_hash ORDER BY id) AS rn FROM f
+)
+SELECT cell[1]::bigint AS x, cell[2]::bigint AS y, count(*)::bigint AS count,
+       avg(lat)::float8 AS lat, avg(lon)::float8 AS lon,
+       (array_agg(id ORDER BY taken_at DESC NULLS LAST, id))[1]::uuid AS cover_id,
+       coalesce(CASE WHEN count(DISTINCT place_id) = 1 AND count(place_id) = count(*) THEN min(place_id) END, 0)::int AS place_id,
+       coalesce(CASE WHEN count(DISTINCT country_code) = 1 AND count(country_code) = count(*) THEN min(country_code) END, '')::text AS country_code
+FROM ranked
+WHERE content_hash IS NULL OR rn = 1
+GROUP BY cell
+ORDER BY 3 DESC, 1, 2;
+
+-- The box around every card of the map (the first view); no row when none has a position.
+-- name: GetPhotoMapBounds :one
+SELECT min(lon)::float8 AS west, min(lat)::float8 AS south, max(lon)::float8 AS east, max(lat)::float8 AS north
+FROM photo_assets
+WHERE user_id = $1 AND parent_id IS NULL AND NOT hidden AND trashed_at IS NULL
+  AND lat IS NOT NULL AND lon IS NOT NULL
+HAVING count(*) > 0;
