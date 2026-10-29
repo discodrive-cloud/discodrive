@@ -2,8 +2,12 @@ package photos
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"hash/crc32"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,6 +188,76 @@ func TestEdit_VideoGoesToSidecar(t *testing.T) {
 	}
 	if b := e.mustAsset(n2); b.DateSource != "edit" || b.TakenAt.Time.Year() != 2001 {
 		t.Fatalf("asset %+v", b)
+	}
+}
+
+// c2paPNG writes a 2×2 PNG with a C2PA manifest box (caBX) ahead of the pixels, as
+// ChatGPT images carry. exiftool writes EXIF into such a file but does not read it back
+// ("IFD0 pointer references previous JUMBFBox directory").
+func c2paPNG(t *testing.T) string {
+	t.Helper()
+	chunk := func(typ string, data []byte) []byte {
+		var b bytes.Buffer
+		_ = binary.Write(&b, binary.BigEndian, uint32(len(data)))
+		b.WriteString(typ)
+		b.Write(data)
+		_ = binary.Write(&b, binary.BigEndian, crc32.ChecksumIEEE(append([]byte(typ), data...)))
+		return b.Bytes()
+	}
+	box := func(typ string, data []byte) []byte {
+		b := binary.BigEndian.AppendUint32(nil, uint32(8+len(data)))
+		return append(append(b, typ...), data...)
+	}
+	uuid, _ := hex.DecodeString("6332706100110010800000aa00389b71")
+	jumb := box("jumb", box("jumd", append(append(uuid, 3), "c2pa\x00"...)))
+	var pix bytes.Buffer
+	z := zlib.NewWriter(&pix)
+	_, _ = z.Write([]byte{0, 128, 128, 128, 128, 128, 128, 0, 128, 128, 128, 128, 128, 128})
+	_ = z.Close()
+	var png bytes.Buffer
+	png.WriteString("\x89PNG\r\n\x1a\n")
+	png.Write(chunk("IHDR", []byte{0, 0, 0, 2, 0, 0, 0, 2, 8, 2, 0, 0, 0}))
+	png.Write(chunk("caBX", jumb))
+	png.Write(chunk("IDAT", pix.Bytes()))
+	png.Write(chunk("IEND", nil))
+	p := filepath.Join(t.TempDir(), "c2pa.png")
+	if err := os.WriteFile(p, png.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A file whose written tags do not read back keeps its bytes; the edit goes to a sidecar.
+func TestEdit_UnreadableWriteGoesToSidecar(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	src := e.source("Photos")
+	sid := id(src)
+	p := c2paPNG(t)
+	before, _ := os.ReadFile(p)
+	n := e.push(&sid, "image_gpt.PNG", p)
+	e.catchUp()
+	a := e.mustAsset(n)
+
+	for _, when := range []*time.Time{tm(2020, 1, 2, 3, 4, time.UTC), tm(2021, 5, 6, 7, 8, time.UTC)} {
+		res, err := e.editor().Apply(ctx, e.userID, []string{db.UUIDString(a.ID)}, Edit{SetTime: when})
+		if err != nil || len(res.Updated) != 1 {
+			t.Fatalf("apply: %v %+v", err, res)
+		}
+		if b := e.mustAsset(n); b.DateSource != "edit" || !b.TakenAt.Time.Equal(*when) {
+			t.Fatalf("asset taken %v, want %v", b.TakenAt.Time, *when)
+		}
+		e.catchUp()
+		if b := e.mustAsset(n); !b.TakenAt.Time.Equal(*when) {
+			t.Fatalf("after catch-up: taken %v, want %v", b.TakenAt.Time, *when)
+		}
+	}
+	after, _ := os.ReadFile(e.disk(n))
+	if !bytes.Equal(before, after) {
+		t.Fatal("the file was rewritten with tags nobody reads")
+	}
+	if _, err := os.Stat(e.disk(n) + ".xmp"); err != nil {
+		t.Fatalf("no sidecar: %v", err)
 	}
 }
 

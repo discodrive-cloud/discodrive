@@ -399,6 +399,9 @@ func (e *Editor) prepare(ctx context.Context, dir string, a db.PhotoAsset, ed Ed
 			return nil, false, err
 		}
 		changed, err := e.exiftool(ctx, append(exifArgs(p.c), tmp))
+		if err == nil {
+			err = e.readsBack(ctx, tmp, p.c)
+		}
 		switch {
 		case err == nil:
 			wroteFile = true
@@ -467,6 +470,53 @@ func (e *Editor) findSidecar(ctx context.Context, node db.Node) (*db.Node, error
 		}
 	}
 	return nil, nil
+}
+
+// readsBack re-reads the written copy the way the indexer does. exiftool can write tags it
+// then does not read: EXIF in a PNG behind a C2PA manifest (ChatGPT images) is taken for
+// a loop and skipped. Such a write is an errExiftool, so the sidecar takes the edit.
+func (e *Editor) readsBack(ctx context.Context, path string, c change) error {
+	if e.ix == nil || e.ix.exif == nil {
+		return nil
+	}
+	m, err := e.ix.exif.Read(ctx, path)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil {
+		return fmt.Errorf("%w: re-read: %v", errExiftool, err)
+	}
+	if !holds(m, c) {
+		return fmt.Errorf("%w: the written values do not read back", errExiftool)
+	}
+	return nil
+}
+
+// holds reports whether metadata read from a file carries the change.
+func holds(m media.Meta, c change) bool {
+	if c.setDate {
+		if m.TakenAt == nil {
+			return false
+		}
+		wall := *m.TakenAt
+		if m.TZOffsetMin != nil {
+			wall = wall.Add(time.Duration(*m.TZOffsetMin) * time.Minute)
+		}
+		if exifDate(wall) != exifDate(c.wall) {
+			return false
+		}
+		if c.offset != nil && (m.TZOffsetMin == nil || *m.TZOffsetMin != *c.offset) {
+			return false
+		}
+	}
+	if c.setPlace {
+		if c.lat == nil || c.lon == nil {
+			return m.Lat == nil && m.Lon == nil
+		}
+		near := func(a *float64, b float64) bool { return a != nil && math.Abs(*a-b) < 1e-5 }
+		return near(m.Lat, *c.lat) && near(m.Lon, *c.lon)
+	}
+	return true
 }
 
 // errExiftool marks a failure of the tool itself (the format cannot be written, the
