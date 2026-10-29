@@ -117,3 +117,25 @@ func TestGroup_EditedPair(t *testing.T) {
 	wantLink(t, plan, 3, 4, roleOriginal)
 	wantNone(t, plan, 2, 4, 5, 6, 7, 8, 9)
 }
+
+// A trimmed or filtered video goes up as <stem>_E.MOV beside <stem>.MOV. A Live Photo's
+// videos keep to their still: IMG_E1234.MOV of an edited Live Photo is its motion.
+func TestGroup_EditedVideo(t *testing.T) {
+	plan := planGroups(rows(
+		cand{name: "IMG_0100.MOV", kind: "video", at: 0},               // 1 → 2
+		cand{name: "IMG_0100_E.MOV", kind: "video", at: time.Hour},     // 2
+		cand{name: "IMG_0200.HEIC", kind: "photo", cid: "L"},           // 3 → 4
+		cand{name: "IMG_E0200.HEIC", kind: "photo", cid: "L"},          // 4
+		cand{name: "IMG_0200.MOV", kind: "video", cid: "L"},            // 5: Live of 4
+		cand{name: "IMG_E0200.MOV", kind: "video", cid: "L"},           // 6: Live of 4
+		cand{name: "IMG_0300.HEIC", kind: "photo"},                     // 7
+		cand{name: "IMG_0300_E.MOV", kind: "video", at: 2 * time.Hour}, // 8: not its edit
+		cand{name: "clip.mp4", kind: "video", at: 0},                   // 9
+		cand{name: "clip_E.jpg", kind: "photo"},                        // 10: not its edit
+	))
+	wantLink(t, plan, 1, 2, roleOriginal)
+	wantLink(t, plan, 3, 4, roleOriginal)
+	wantLink(t, plan, 5, 4, roleLiveVideo)
+	wantLink(t, plan, 6, 4, roleLiveVideo)
+	wantNone(t, plan, 2, 4, 7, 8, 9, 10)
+}

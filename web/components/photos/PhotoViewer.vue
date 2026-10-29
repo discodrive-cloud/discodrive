@@ -182,11 +182,18 @@ const subtitle = computed(() => {
 function toggleOriginal() {
   const a = asset.value
   if (!a?.originalId) return
-  if (original.value) { original.value = null; return }
+  // A video's original plays instead of the edit; a photo's shows as a still.
+  const isVideo = current.value?.kind === 'video'
+  if (original.value) {
+    original.value = null
+    if (isVideo) startVideo(a.id)
+    return
+  }
   api.asset(a.originalId).then((o) => {
     if (asset.value?.id !== a.id) return
     origKey.value = `p:${o.id}:${o.thumb}`
     original.value = { id: o.id, thumb: o.thumb }
+    if (isVideo) startVideo(o.id)
   }).catch(() => {})
 }
 

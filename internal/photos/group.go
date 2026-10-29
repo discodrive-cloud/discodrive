@@ -34,7 +34,9 @@ type link struct {
 //   - a video with the same Live Photo content identifier as a photo, or else in the same
 //     folder with the same stem and taken within 3 s, becomes the photo's child (role
 //     "live-video"); when that photo is an original, the child goes to its edit, so the
-//     card that shows keeps its Live video.
+//     card that shows keeps its Live video;
+//   - an edited video (<stem>_E.MOV next to <stem>.MOV), when neither is a Live Photo's,
+//     becomes the parent of its original the same way.
 //
 // Trashed and live assets pair only among themselves: the trash view and the feed each
 // show whole groups.
@@ -218,6 +220,33 @@ func planPartition(rows []*db.ListPhotoGroupCandidatesRow, want map[pgtype.UUID]
 		}
 		if best != nil {
 			want[v.ID] = link{parent: shown(best.ID), role: roleLiveVideo}
+		}
+	}
+
+	// Edited videos, among the videos no Live Photo took: IMG_E1234.MOV of an edited Live
+	// Photo is its motion, not an edit of IMG_1234.MOV.
+	videosByStem := map[folderStem][]*db.ListPhotoGroupCandidatesRow{}
+	for _, r := range rows {
+		if r.Kind == "video" && want[r.ID].role == "" {
+			k := folderStem{r.FolderID, stemOf(r.Name)}
+			videosByStem[k] = append(videosByStem[k], r)
+		}
+	}
+	taken := map[pgtype.UUID]bool{}
+	for _, r := range rows {
+		if r.Kind != "video" || want[r.ID].role != "" {
+			continue
+		}
+		orig, ok := editedStem(stemOf(r.Name))
+		if !ok {
+			continue
+		}
+		for _, o := range videosByStem[folderStem{r.FolderID, orig}] {
+			if _, edit := editedStem(stemOf(o.Name)); edit || o.ID == r.ID || taken[o.ID] {
+				continue
+			}
+			taken[o.ID] = true
+			want[o.ID] = link{parent: r.ID, role: roleOriginal}
 		}
 	}
 }
