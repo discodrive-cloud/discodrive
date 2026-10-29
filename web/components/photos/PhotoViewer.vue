@@ -8,10 +8,9 @@
 // loader belongs to the grid). Until it arrives the square thumbnail is shown stretched
 // over the photo's box. Video plays through POST play (an h264 copy may need preparing);
 // a Live photo plays its video part, muted, while hovered or long-pressed.
-import type { PhotoAsset, PhotoRow, PlayInfo } from '~/composables/usePhotos'
-import { previewURL, thumbURL, thumbKey, takenLabel, formatDuration, cameraName } from '~/composables/usePhotos'
+import type { PhotoAsset, PhotoRow, PlayInfo, PhotoViewSource } from '~/composables/usePhotos'
+import { previewURL, thumbURL, thumbKey, takenLabel, formatDuration, cameraName, galleryViewSource } from '~/composables/usePhotos'
 import { step, around, type Pos, type Seq } from '~/lib/photos/viewerSeq'
-import { photosHiddenHeaders } from '~/lib/photos/hidden'
 import InfoPanel from '~/components/photos/InfoPanel.vue'
 
 const props = withDefaults(defineProps<{
@@ -21,7 +20,12 @@ const props = withDefaults(defineProps<{
   initialRows?: Map<string, PhotoRow[]>
   // the Hidden tab: "hide" becomes "show again"
   hiddenMode?: boolean
-}>(), { hiddenMode: false })
+  // where the cards come from: the gallery API unless given (the public album page)
+  source?: PhotoViewSource
+  canDownload?: boolean
+  // an album opened by link: no account, so no albums, no info edits, no maps
+  publicMode?: boolean
+}>(), { hiddenMode: false, canDownload: true, publicMode: false })
 
 const emit = defineEmits<{
   close: []
@@ -31,10 +35,11 @@ const emit = defineEmits<{
   download: [id: string]
   'edit-date': [id: string]
   'edit-place': [id: string]
+  album: [id: string]
 }>()
 
 const { t, locale } = useI18n()
-const api = usePhotosApi()
+const src = props.source ?? galleryViewSource()
 
 // ---- the walk ----
 const rows = shallowReactive(new Map<string, PhotoRow[]>(props.initialRows ?? []))
@@ -94,8 +99,8 @@ onMounted(async () => {
 const strip = computed(() => around(seq, pos.value, 7))
 
 // ---- images ----
-const previews = makeThumbLoader(photosHiddenHeaders, { concurrency: 3, capacity: 8 })
-const thumbs = makeThumbLoader(photosHiddenHeaders, { concurrency: 4, capacity: 80 })
+const previews = src.loader({ concurrency: 3, capacity: 8 })
+const thumbs = src.loader({ concurrency: 4, capacity: 80 })
 const tick = ref(0)
 let raf = 0
 function bump() {
@@ -138,7 +143,7 @@ async function loadAsset(id: string) {
   const n = ++assetSeq
   assetFailed.value = false
   try {
-    const a = await api.asset(id)
+    const a = await src.asset(id)
     if (n === assetSeq) asset.value = a
   } catch {
     if (n === assetSeq) assetFailed.value = true
@@ -189,7 +194,7 @@ function toggleOriginal() {
     if (isVideo) startVideo(a.id)
     return
   }
-  api.asset(a.originalId).then((o) => {
+  src.asset(a.originalId).then((o) => {
     if (asset.value?.id !== a.id) return
     origKey.value = `p:${o.id}:${o.thumb}`
     original.value = { id: o.id, thumb: o.thumb }
@@ -218,7 +223,7 @@ async function startVideo(id: string) {
   video.value = { state: 'loading', url: '' }
   const poll = async () => {
     let r: PlayInfo
-    try { r = await api.play(id, hevc) } catch {
+    try { r = await src.play(id, hevc) } catch {
       if (videoFor === id) video.value = { state: 'error', url: '' }
       return
     }
@@ -245,7 +250,7 @@ async function startLive() {
   let url = liveCache.get(a.liveVideoId)
   if (!url) {
     try {
-      const r = await api.play(a.liveVideoId, hevc)
+      const r = await src.play(a.liveVideoId, hevc)
       if (!r.ready || !r.url) return
       url = r.url
       liveCache.set(a.liveVideoId, url)
@@ -289,7 +294,7 @@ watch(() => current.value?.id, (id) => {
 }, { immediate: true })
 
 const mapsReady = ref(false)
-onMounted(() => { photosMapsReady().then((v) => { mapsReady.value = v }) })
+onMounted(() => { if (!props.publicMode) photosMapsReady().then((v) => { mapsReady.value = v }) })
 
 // ---- gestures & keys ----
 let swipe: { x: number; y: number; id: number } | null = null
@@ -367,6 +372,8 @@ onBeforeUnmount(() => {
 })
 
 const fav = computed(() => current.value?.favorite ?? false)
+// Somebody else's card (a partner's, an album's): look, download, put in an album.
+const own = computed(() => current.value?.own !== false)
 </script>
 
 <template>
@@ -387,22 +394,25 @@ const fav = computed(() => current.value?.favorite ?? false)
           <button v-if="asset?.edited && asset.originalId" type="button" class="act text-xs" :class="original ? 'text-[#7ab8ff]' : ''" @click="toggleOriginal">
             {{ original ? t('photos.show_edited') : t('photos.show_original') }}
           </button>
-          <button type="button" class="act" :title="fav ? t('photos.unfavorite') : t('photos.favorite')" :aria-pressed="fav" @click="emit('favorite', current.id, !fav)">
+          <button v-if="!publicMode && !hiddenMode" type="button" class="act" :title="t('photos.add_to_album')" :aria-label="t('photos.add_to_album')" @click="emit('album', current.id)">
+            <Icon name="lucide:book-image" size="20" />
+          </button>
+          <button v-if="own" type="button" class="act" :title="fav ? t('photos.unfavorite') : t('photos.favorite')" :aria-pressed="fav" @click="emit('favorite', current.id, !fav)">
             <svg v-if="fav" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" class="text-[#ff6b81]" aria-hidden="true">
               <path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 2.9 4.5 6.6 4.1c2.1-.2 3.9.9 5.4 2.7 1.5-1.8 3.3-2.9 5.4-2.7 3.7.4 5.7 4.3 4.2 7.7C19.5 16.4 12 21 12 21z" />
             </svg>
             <Icon v-else name="lucide:heart" size="20" />
           </button>
-          <button type="button" class="act" :title="t('photos.download_original')" @click="emit('download', current.id)">
+          <button v-if="canDownload" type="button" class="act" :title="t('photos.download_original')" @click="emit('download', current.id)">
             <Icon name="lucide:download" size="20" />
           </button>
-          <button type="button" class="act" :title="hiddenMode ? t('photos.unhide') : t('photos.hide')" @click="emit('hide', current.id, !hiddenMode)">
+          <button v-if="own" type="button" class="act" :title="hiddenMode ? t('photos.unhide') : t('photos.hide')" @click="emit('hide', current.id, !hiddenMode)">
             <Icon :name="hiddenMode ? 'lucide:eye' : 'lucide:eye-off'" size="20" />
           </button>
-          <button type="button" class="act" :title="t('common.delete')" @click="emit('delete', current.id)">
+          <button v-if="own" type="button" class="act" :title="t('common.delete')" @click="emit('delete', current.id)">
             <Icon name="lucide:trash-2" size="20" />
           </button>
-          <button type="button" class="act" :class="showInfo ? 'text-[#7ab8ff]' : ''" :title="t('photos.info')" :aria-pressed="showInfo" @click="showInfo = !showInfo">
+          <button v-if="!publicMode" type="button" class="act" :class="showInfo ? 'text-[#7ab8ff]' : ''" :title="t('photos.info')" :aria-pressed="showInfo" @click="showInfo = !showInfo">
             <Icon name="lucide:info" size="20" />
           </button>
         </div>
@@ -449,7 +459,7 @@ const fav = computed(() => current.value?.favorite ?? false)
                   <template v-else-if="video.state === 'unsupported' || video.state === 'error'">
                     <Icon name="lucide:film" size="28" class="opacity-70" />
                     <span>{{ video.state === 'unsupported' ? t('photos.video_unsupported') : t('photos.video_error') }}</span>
-                    <button type="button" class="mt-1 rounded-md bg-white/15 px-3 py-1.5 hover:bg-white/25" @click="emit('download', current.id)">
+                    <button v-if="canDownload" type="button" class="mt-1 rounded-md bg-white/15 px-3 py-1.5 hover:bg-white/25" @click="emit('download', current.id)">
                       <Icon name="lucide:download" size="16" /> {{ t('photos.download_original') }}
                     </button>
                   </template>
@@ -517,6 +527,7 @@ const fav = computed(() => current.value?.favorite ?? false)
       <InfoPanel
         :asset="asset"
         :maps-ready="mapsReady"
+        :readonly="!own"
         @close="showInfo = false"
         @edit-date="current && emit('edit-date', current.id)"
         @edit-place="current && emit('edit-place', current.id)"

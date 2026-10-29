@@ -9,6 +9,10 @@ describe('photosNavVisible', () => {
     expect(photosNavVisible({ enabled: false, available: true })).toBe(false)
     expect(photosNavVisible(null)).toBe(false)
   })
+  it('shows for galleries and albums others opened, with one\'s own off', () => {
+    expect(photosNavVisible({ enabled: false, available: true, sharedWithMe: true })).toBe(true)
+    expect(photosNavVisible({ enabled: false, available: false, sharedWithMe: true })).toBe(false)
+  })
 })
 
 describe('indexingRunning', () => {

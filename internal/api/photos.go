@@ -50,10 +50,13 @@ type photoSourceDTO struct {
 }
 
 type photoSettingsResponse struct {
-	Available bool             `json:"available"`
-	Enabled   bool             `json:"enabled"`
-	Sources   []photoSourceDTO `json:"sources"`
-	Indexing  struct {
+	Available bool `json:"available"`
+	Enabled   bool `json:"enabled"`
+	// SharedWithMe: a gallery or an album somebody opened to the user, which «Фото» shows
+	// even with the user's own gallery off.
+	SharedWithMe bool             `json:"sharedWithMe"`
+	Sources      []photoSourceDTO `json:"sources"`
+	Indexing     struct {
 		// Total counts the files read so far plus Pending: those a running full pass has
 		// found and not read yet (hours of them on a first run over a big archive).
 		Total   int64 `json:"total"`
@@ -74,6 +77,9 @@ func (s *Server) photoSettings(r *http.Request, uid pgtype.UUID) (photoSettingsR
 		return resp, err
 	}
 	resp.Enabled = ps.Enabled
+	if resp.SharedWithMe, err = s.q.HasPhotoSharesFor(r.Context(), uid); err != nil {
+		return resp, err
+	}
 	sources, err := s.q.ListPhotoSources(r.Context(), uid)
 	if err != nil {
 		return resp, err
@@ -366,6 +372,7 @@ type photoRowDTO struct {
 	Favorite    bool    `json:"favorite"`
 	Thumb       string  `json:"thumb"`
 	Place       *string `json:"place"`
+	Own         bool    `json:"own"` // the viewer's card; a partner's or an album's otherwise
 }
 
 // photoThumbEtag is the stable identity of an asset's thumbnail: it changes when the
@@ -440,6 +447,7 @@ func (s *Server) photoRows(r *http.Request, assets []db.PhotoAsset) ([]photoRowD
 	if err != nil {
 		return nil, err
 	}
+	viewer, _ := db.ParseUUID(auth.UserID(r.Context())) // none on a public album page
 	rows := make([]photoRowDTO, 0, len(assets))
 	for _, a := range assets {
 		var dur *int64
@@ -451,7 +459,8 @@ func (s *Server) photoRows(r *http.Request, assets []db.PhotoAsset) ([]photoRowD
 		rows = append(rows, photoRowDTO{
 			ID: db.UUIDString(a.ID), TakenAt: photoTakenAt(a), TzOffsetMin: int4p(a.TzOffsetMin), Kind: a.Kind,
 			W: int4p(a.Width), H: int4p(a.Height), DurationMs: dur, Live: live, Edited: edited,
-			Favorite: a.Favorite, Thumb: photoThumbEtag(a), Place: s.photoPlace(r, a),
+			Favorite: a.Favorite && a.UserID == viewer, Thumb: photoThumbEtag(a), Place: s.photoPlace(r, a),
+			Own: viewer.Valid && a.UserID == viewer,
 		})
 	}
 	return rows, nil
@@ -534,14 +543,25 @@ func (s *Server) handlePhotoBuckets(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.photosOn(r, uid) {
-		writeJSON(w, http.StatusOK, []any{})
+	sc, ok := s.photoScope(w, r, uid)
+	if !ok {
 		return
 	}
-	rows, err := s.q.ListPhotoMonthBuckets(r.Context(), db.ListPhotoMonthBucketsParams{
-		UserID: uid, Kind: f.kind, Live: f.live, Raw: f.raw, Favorite: f.favorite, SourceID: f.source,
-		AreaZ: f.areaZ, AreaKeys: f.areaKeys,
-	})
+	var rows []db.ListPhotoMonthBucketsRow
+	var err error
+	switch {
+	case sc.album.Valid:
+		var ab []db.ListPhotoAlbumMonthBucketsRow
+		ab, err = s.q.ListPhotoAlbumMonthBuckets(r.Context(), sc.album)
+		for _, b := range ab {
+			rows = append(rows, db.ListPhotoMonthBucketsRow{Month: b.Month, Count: b.Count})
+		}
+	case len(sc.owners) > 0:
+		rows, err = s.q.ListPhotoMonthBuckets(r.Context(), db.ListPhotoMonthBucketsParams{
+			ViewerID: uid, UserIds: sc.owners, Kind: f.kind, Live: f.live, Raw: f.raw, Favorite: f.favorite,
+			SourceID: f.source, AreaZ: f.areaZ, AreaKeys: f.areaKeys,
+		})
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -571,15 +591,22 @@ func (s *Server) handlePhotoMonth(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.photosOn(r, uid) {
-		writeJSON(w, http.StatusOK, []any{})
+	sc, ok := s.photoScope(w, r, uid)
+	if !ok {
 		return
 	}
-	assets, err := s.q.ListPhotoAssetsInMonth(r.Context(), db.ListPhotoAssetsInMonthParams{
-		UserID: uid, Month: pgtype.Timestamp{Time: month, Valid: true},
-		Kind: f.kind, Live: f.live, Raw: f.raw, Favorite: f.favorite, SourceID: f.source,
-		AreaZ: f.areaZ, AreaKeys: f.areaKeys,
-	})
+	m := pgtype.Timestamp{Time: month, Valid: true}
+	assets := []db.PhotoAsset{}
+	switch {
+	case sc.album.Valid:
+		assets, err = s.q.ListPhotoAlbumAssetsInMonth(r.Context(), db.ListPhotoAlbumAssetsInMonthParams{AlbumID: sc.album, Month: m})
+	case len(sc.owners) > 0:
+		assets, err = s.q.ListPhotoAssetsInMonth(r.Context(), db.ListPhotoAssetsInMonthParams{
+			ViewerID: uid, UserIds: sc.owners, Month: m,
+			Kind: f.kind, Live: f.live, Raw: f.raw, Favorite: f.favorite, SourceID: f.source,
+			AreaZ: f.areaZ, AreaKeys: f.areaKeys,
+		})
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -697,7 +724,7 @@ func (s *Server) handleGetPhotoAsset(w http.ResponseWriter, r *http.Request) {
 	if !s.photosReady(w) {
 		return
 	}
-	a, ok := s.ownAsset(w, r)
+	a, own, ok := s.viewAsset(w, r, false)
 	if !ok {
 		return
 	}
@@ -725,10 +752,13 @@ func (s *Server) handleGetPhotoAsset(w http.ResponseWriter, r *http.Request) {
 		v := db.UUIDString(c.ID)
 		origID = &v
 	}
-	copies, err := s.q.CountPhotoCopies(r.Context(), db.CountPhotoCopiesParams{UserID: a.UserID, ID: a.ID})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
+	var copies int64
+	if own {
+		copies, err = s.q.CountPhotoCopies(r.Context(), db.CountPhotoCopiesParams{UserID: a.UserID, ID: a.ID})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 	var lat, lon *float64
 	if a.Lat.Valid && a.Lon.Valid {
@@ -755,18 +785,33 @@ func (s *Server) handleGetPhotoAsset(w http.ResponseWriter, r *http.Request) {
 		v := db.UUIDString(node.ParentID)
 		folderID = &v
 	}
+	file := map[string]any{"name": node.Name, "size": size, "nodeId": db.UUIDString(node.ID), "folderPath": folder, "folderId": folderID}
+	var owner *string
+	if !own {
+		// Where it lies is the owner's business: a partner sees the photo, not their Files.
+		file = map[string]any{"name": node.Name, "size": size}
+		// The owner's address to their partner only: an album member may see a photo of
+		// somebody they do not know at all.
+		viewer, _ := db.ParseUUID(auth.UserID(r.Context()))
+		if p, err := s.q.IsPhotoPartner(r.Context(), db.IsPhotoPartnerParams{OwnerID: a.UserID, ViewerID: viewer}); err == nil && p {
+			if u, err := s.q.GetUserByID(r.Context(), a.UserID); err == nil {
+				owner = &u.Email
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"own": own, "owner": owner,
 		"id": row[0].ID, "kind": a.Kind, "takenAt": row[0].TakenAt, "tzOffsetMin": row[0].TzOffsetMin,
 		"dateSource": a.DateSource, "w": row[0].W, "h": row[0].H, "durationMs": row[0].DurationMs,
 		"videoCodec": textp(a.VideoCodec), "isHdr": a.IsHdr,
-		"live": row[0].Live, "edited": row[0].Edited, "favorite": a.Favorite, "thumb": row[0].Thumb,
+		"live": row[0].Live, "edited": row[0].Edited, "favorite": row[0].Favorite, "thumb": row[0].Thumb,
 		// country is an ISO code: the client names it in its own language.
 		"place": row[0].Place, "country": textp(a.CountryCode), "lat": lat, "lon": lon,
 		"camera": map[string]any{
 			"make": textp(a.Make), "model": textp(a.Model), "lens": textp(a.Lens),
 			"fNumber": fnum, "focalMm": focal, "exposure": textp(a.Exposure), "iso": int4p(a.Iso),
 		},
-		"file":        map[string]any{"name": node.Name, "size": size, "nodeId": db.UUIDString(node.ID), "folderPath": folder, "folderId": folderID},
+		"file":        file,
 		"liveVideoId": liveID, "originalId": origID,
 		"hidden": a.Hidden, "copies": copies,
 	})

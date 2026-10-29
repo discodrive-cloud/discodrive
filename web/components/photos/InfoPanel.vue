@@ -63,7 +63,7 @@ const fileLine = computed(() => {
 
 const whereLink = computed(() => {
   const f = a.value?.file
-  if (!f) return null
+  if (!f?.nodeId) return null // somebody else's card: where it lies is theirs
   const path = f.folderPath ? `${f.folderPath}/${f.name}` : f.name
   const query: Record<string, string> = {}
   if (f.folderId) { query.folder = f.folderId; query.name = f.folderPath }
@@ -107,6 +107,11 @@ const whereLink = computed(() => {
         <div v-if="camera.body">{{ camera.body }}</div>
         <div v-if="camera.lens" class="opacity-70">{{ camera.lens }}</div>
         <div v-if="camera.shot" class="opacity-70">{{ camera.shot }}</div>
+      </section>
+
+      <section v-if="a.owner" class="row">
+        <div class="k">{{ t('photos.info_owner') }}</div>
+        <div class="break-all">{{ a.owner }}</div>
       </section>
 
       <section class="row">

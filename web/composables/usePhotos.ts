@@ -22,6 +22,8 @@ export interface PhotoRow {
   favorite: boolean
   thumb: string
   place: string | null
+  // false: a partner's card or an album's — look, download, put in an album; nothing more
+  own?: boolean
 }
 
 export interface PhotoSource { id: string; name: string; path: string }
@@ -43,11 +45,54 @@ export interface PhotoAsset extends PhotoRow {
     exposure: string | null
     iso: number | null
   }
-  file: { name: string; size: number | null; nodeId: string; folderPath: string; folderId: string | null }
+  // nodeId and the folder only on one's own cards: where a partner keeps a file is theirs
+  file: { name: string; size: number | null; nodeId?: string; folderPath?: string; folderId?: string | null }
   liveVideoId: string | null
   originalId: string | null
   hidden: boolean
   copies: number
+  owner?: string | null // the owner's email on somebody else's card
+}
+
+// Where the viewer gets a card, its video and its pictures: the gallery API by default, an
+// album link on the public page.
+export interface PhotoViewSource {
+  asset(id: string): Promise<PhotoAsset>
+  play(id: string, hevc: boolean): Promise<PlayInfo>
+  loader(opts?: ThumbLoaderOptions): ThumbLoader
+}
+
+export interface PhotoPartner { userId: string; email: string; inFeed?: boolean }
+export interface PhotoPartners { sharing: PhotoPartner[]; sharedWithMe: PhotoPartner[] }
+
+export interface PhotoAlbum {
+  id: string
+  name: string
+  own: boolean
+  ownerEmail: string
+  count: number
+  members: number
+  cover: PhotoRow | null
+  updatedAt: string
+}
+
+export interface PhotoAlbumDetail {
+  id: string
+  name: string
+  own: boolean
+  ownerEmail: string
+  members: PhotoPartner[]
+  me: string
+}
+
+export interface PhotoAlbumLink {
+  id: string
+  token: string
+  url: string
+  hasPassword: boolean
+  expiresAt: string | null
+  allowDownload: boolean
+  createdAt: string
 }
 
 export interface TrashRow extends PhotoRow { trashedAt: string }
@@ -65,6 +110,7 @@ export interface MetadataEdit {
 export interface PhotoSettings {
   available: boolean
   enabled: boolean
+  sharedWithMe?: boolean // a gallery or an album somebody opened to the user
   sources: PhotoSource[]
   indexing: { total: number; ready: number; failed: number; pending: number; scanning: boolean; failedFiles: number }
 }
@@ -82,6 +128,8 @@ export interface PhotoFilter {
   favorite: boolean
   source: string // '' = every source
   area?: string // the map's cells, "z/x.y,…" (lib/photos/mapClusters)
+  owner?: string // a partner's gallery instead of one's own
+  album?: string // an album's cards
 }
 
 export interface MetadataResult {
@@ -122,6 +170,8 @@ export function filterQuery(f: PhotoFilter): string {
   if (f.favorite) p.set('favorite', 'true')
   if (f.source) p.set('source', f.source)
   if (f.area) p.set('area', f.area)
+  if (f.owner) p.set('owner', f.owner)
+  if (f.album) p.set('album', f.album)
   const s = p.toString()
   return s ? `?${s}` : ''
 }
@@ -240,6 +290,43 @@ export function usePhotosApi() {
       request<Cluster<PhotoRow>[]>(`${PHOTOS_API}/map/clusters?${clustersQuery(z, box)}`, { signal }),
     mapBounds: () => request<BBox | null>(`${PHOTOS_API}/map/bounds`),
     asset: (id: string) => request<PhotoAsset>(`${PHOTOS_API}/assets/${id}`, { headers: h() }),
+    original: (id: string) => request<Blob>(`${PHOTOS_API}/assets/${id}/original`, { headers: h(), responseType: 'blob' }),
+    partners: () => request<PhotoPartners>(`${PHOTOS_API}/partners`),
+    addPartner: (email: string) => request<PhotoPartner>(`${PHOTOS_API}/partners`, { method: 'POST', body: { email } }),
+    revokePartner: (userId: string) => request(`${PHOTOS_API}/partners/${userId}`, { method: 'DELETE' }),
+    leavePartner: (userId: string) => request(`${PHOTOS_API}/partners/${userId}/received`, { method: 'DELETE' }),
+    setPartnerFeed: (userId: string, inFeed: boolean) =>
+      request(`${PHOTOS_API}/partners/${userId}/feed`, { method: 'PUT', body: { inFeed } }),
+    albums: () => request<PhotoAlbum[]>(`${PHOTOS_API}/albums`),
+    album: (id: string) => request<PhotoAlbumDetail>(`${PHOTOS_API}/albums/${id}`),
+    createAlbum: (name: string, assetIds: string[] = []) =>
+      request<{ id: string; name: string; added: number }>(`${PHOTOS_API}/albums`, { method: 'POST', body: { name, assetIds } }),
+    renameAlbum: (id: string, name: string) => request(`${PHOTOS_API}/albums/${id}`, { method: 'PATCH', body: { name } }),
+    // The owner deletes the album; a member leaves it.
+    deleteAlbum: (id: string) => request(`${PHOTOS_API}/albums/${id}`, { method: 'DELETE' }),
+    async addToAlbum(id: string, assetIds: string[]) {
+      let added = 0
+      for (const part of chunk(assetIds, PHOTO_BATCH)) {
+        added += (await request<{ added: number }>(`${PHOTOS_API}/albums/${id}/items`, { method: 'POST', body: { assetIds: part } })).added
+      }
+      return added
+    },
+    async removeFromAlbum(id: string, assetIds: string[]) {
+      const out = { removed: 0, kept: 0 }
+      for (const part of chunk(assetIds, PHOTO_BATCH)) {
+        const r = await request<{ removed: number; kept: number }>(`${PHOTOS_API}/albums/${id}/items/remove`, { method: 'POST', body: { assetIds: part } })
+        out.removed += r.removed
+        out.kept += r.kept
+      }
+      return out
+    },
+    addAlbumMember: (id: string, email: string) =>
+      request<PhotoPartner>(`${PHOTOS_API}/albums/${id}/members`, { method: 'POST', body: { email } }),
+    removeAlbumMember: (id: string, userId: string) => request(`${PHOTOS_API}/albums/${id}/members/${userId}`, { method: 'DELETE' }),
+    albumLinks: (id: string) => request<PhotoAlbumLink[]>(`${PHOTOS_API}/albums/${id}/links`),
+    createAlbumLink: (id: string, body: { password?: string; expiresAt?: string; allowDownload: boolean }) =>
+      request<PhotoAlbumLink>(`${PHOTOS_API}/albums/${id}/links`, { method: 'POST', body }),
+    deleteAlbumLink: (id: string, linkId: string) => request(`${PHOTOS_API}/albums/${id}/links/${linkId}`, { method: 'DELETE' }),
     async patch(ids: string[], patch: { favorite?: boolean; hidden?: boolean }) {
       for (const part of chunk(ids, PHOTO_BATCH)) {
         await request(`${PHOTOS_API}/assets`, { method: 'PATCH', body: { ids: part, ...patch }, headers: h() })
@@ -293,5 +380,15 @@ export function usePhotosApi() {
       }
       return result
     },
+  }
+}
+
+// The gallery's own source for the viewer: the user's cards and the ones shared with them.
+export function galleryViewSource(): PhotoViewSource {
+  const api = usePhotosApi()
+  return {
+    asset: api.asset,
+    play: api.play,
+    loader: (opts) => makeThumbLoader(photosHiddenHeaders, opts),
   }
 }

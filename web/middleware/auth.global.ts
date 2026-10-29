@@ -2,6 +2,8 @@
 // admin and user sections. Initial setup status is resolved here
 // (once, cached in useState) — independent of plugin initialization order.
 export default defineNuxtRouteMiddleware(async (to) => {
+  // An album opened by link is for anyone, signed in or not.
+  if (to.path.startsWith('/a/')) return
   const sess = useSession()
   const authed = !!sess.value.token
   const setupState = useSetupNeeded()

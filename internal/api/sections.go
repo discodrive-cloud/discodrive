@@ -38,7 +38,7 @@ func sectionOf(p string) string {
 		return "music"
 	case under("/me/ebooks"), under("/opds"), under("/users"), under("/syncs"):
 		return "books"
-	case under("/me/photos"), under("/admin/photos"):
+	case under("/me/photos"), under("/admin/photos"), under("/public/photos"):
 		return "photos"
 	}
 	return ""

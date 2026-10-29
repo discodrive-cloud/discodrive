@@ -135,17 +135,26 @@ ORDER BY n.modified_at DESC, n.id;
 -- Buckets dedup with one window pass over the filtered rows instead of a per-row twin
 -- lookup (same result as the month query's NOT EXISTS, several times faster on a big library).
 -- name: ListPhotoMonthBuckets :many
+-- The feed of user_ids as viewer_id sees it: their own cards, and partners' whose file is
+-- the partner's own (not a folder a third person shared with them). Favourites are the
+-- viewer's; a file in several galleries counts once, the viewer's copy first — and in the
+-- viewer's own feed a partner's copy of a file the viewer has (hidden or trashed too)
+-- never shows.
 WITH f AS (
-    SELECT a.id, a.taken_local, a.content_hash
+    SELECT a.id, a.taken_local, a.content_hash, a.user_id
     FROM photo_assets a
     JOIN nodes n ON n.id = a.node_id
-    WHERE a.user_id = sqlc.arg(user_id)
+    WHERE a.user_id = ANY(sqlc.arg(user_ids)::uuid[])
+  AND (a.user_id = sqlc.arg(viewer_id) OR n.user_id = a.user_id)
+  AND (a.user_id = sqlc.arg(viewer_id) OR sqlc.arg(viewer_id) <> ALL(sqlc.arg(user_ids)::uuid[])
+       OR a.content_hash IS NULL OR NOT EXISTS (
+        SELECT 1 FROM photo_assets o WHERE o.user_id = sqlc.arg(viewer_id) AND o.content_hash = a.content_hash))
   AND a.parent_id IS NULL AND NOT a.hidden AND a.trashed_at IS NULL
   AND (sqlc.narg(kind)::text IS NULL OR a.kind = sqlc.narg(kind)::text)
   AND (sqlc.narg(live)::bool IS NULL OR sqlc.narg(live)::bool = EXISTS (
         SELECT 1 FROM photo_assets c WHERE c.parent_id = a.id AND c.role = 'live-video'))
   AND (sqlc.narg(raw)::bool IS NULL OR sqlc.narg(raw)::bool = (n.name ~* '\.(dng|nef|cr2|arw)$'))
-  AND (sqlc.narg(favorite)::bool IS NULL OR a.favorite = sqlc.narg(favorite)::bool)
+  AND (sqlc.narg(favorite)::bool IS NULL OR (a.favorite AND a.user_id = sqlc.arg(viewer_id)) = sqlc.narg(favorite)::bool)
   AND (sqlc.narg(source_id)::uuid IS NULL OR EXISTS (
         SELECT 1 FROM photo_sources ps JOIN nodes fn ON fn.id = ps.folder_node_id
         WHERE ps.id = sqlc.narg(source_id)::uuid AND ps.user_id = a.user_id
@@ -154,7 +163,7 @@ WITH f AS (
         AND photo_map_key(a.lat, a.lon, sqlc.narg(area_z)::int) = ANY(sqlc.narg(area_keys)::bigint[])))
 ), ranked AS (
     SELECT taken_local, content_hash,
-           row_number() OVER (PARTITION BY content_hash ORDER BY id) AS rn
+           row_number() OVER (PARTITION BY content_hash ORDER BY user_id <> sqlc.arg(viewer_id), id) AS rn
     FROM f
 )
 SELECT date_trunc('month', taken_local)::date AS month, count(*)::bigint AS count
@@ -164,9 +173,14 @@ GROUP BY 1
 ORDER BY 1 DESC;
 
 -- name: ListPhotoAssetsInMonth :many
+-- One month of ListPhotoMonthBuckets' feed.
 SELECT a.* FROM photo_assets a
 JOIN nodes n ON n.id = a.node_id
-WHERE a.user_id = sqlc.arg(user_id)
+WHERE a.user_id = ANY(sqlc.arg(user_ids)::uuid[])
+  AND (a.user_id = sqlc.arg(viewer_id) OR n.user_id = a.user_id)
+  AND (a.user_id = sqlc.arg(viewer_id) OR sqlc.arg(viewer_id) <> ALL(sqlc.arg(user_ids)::uuid[])
+       OR a.content_hash IS NULL OR NOT EXISTS (
+        SELECT 1 FROM photo_assets o WHERE o.user_id = sqlc.arg(viewer_id) AND o.content_hash = a.content_hash))
   AND a.taken_local >= sqlc.arg(month)::timestamp
   AND a.taken_local < sqlc.arg(month)::timestamp + interval '1 month'
   AND a.parent_id IS NULL AND NOT a.hidden AND a.trashed_at IS NULL
@@ -174,7 +188,7 @@ WHERE a.user_id = sqlc.arg(user_id)
   AND (sqlc.narg(live)::bool IS NULL OR sqlc.narg(live)::bool = EXISTS (
         SELECT 1 FROM photo_assets c WHERE c.parent_id = a.id AND c.role = 'live-video'))
   AND (sqlc.narg(raw)::bool IS NULL OR sqlc.narg(raw)::bool = (n.name ~* '\.(dng|nef|cr2|arw)$'))
-  AND (sqlc.narg(favorite)::bool IS NULL OR a.favorite = sqlc.narg(favorite)::bool)
+  AND (sqlc.narg(favorite)::bool IS NULL OR (a.favorite AND a.user_id = sqlc.arg(viewer_id)) = sqlc.narg(favorite)::bool)
   AND (sqlc.narg(source_id)::uuid IS NULL OR EXISTS (
         SELECT 1 FROM photo_sources ps JOIN nodes fn ON fn.id = ps.folder_node_id
         WHERE ps.id = sqlc.narg(source_id)::uuid AND ps.user_id = a.user_id
@@ -183,13 +197,16 @@ WHERE a.user_id = sqlc.arg(user_id)
         AND photo_map_key(a.lat, a.lon, sqlc.narg(area_z)::int) = ANY(sqlc.narg(area_keys)::bigint[])))
   AND (a.content_hash IS NULL OR NOT EXISTS (
         SELECT 1 FROM photo_assets d JOIN nodes dn ON dn.id = d.node_id
-        WHERE d.user_id = a.user_id AND d.content_hash = a.content_hash AND d.id < a.id
+        WHERE d.user_id = ANY(sqlc.arg(user_ids)::uuid[]) AND d.content_hash = a.content_hash
+  AND (d.user_id = sqlc.arg(viewer_id) OR dn.user_id = d.user_id)
+  AND ((d.user_id = sqlc.arg(viewer_id)) > (a.user_id = sqlc.arg(viewer_id))
+       OR ((d.user_id = sqlc.arg(viewer_id)) = (a.user_id = sqlc.arg(viewer_id)) AND d.id < a.id))
   AND d.parent_id IS NULL AND NOT d.hidden AND d.trashed_at IS NULL
   AND (sqlc.narg(kind)::text IS NULL OR d.kind = sqlc.narg(kind)::text)
   AND (sqlc.narg(live)::bool IS NULL OR sqlc.narg(live)::bool = EXISTS (
         SELECT 1 FROM photo_assets c WHERE c.parent_id = d.id AND c.role = 'live-video'))
   AND (sqlc.narg(raw)::bool IS NULL OR sqlc.narg(raw)::bool = (dn.name ~* '\.(dng|nef|cr2|arw)$'))
-  AND (sqlc.narg(favorite)::bool IS NULL OR d.favorite = sqlc.narg(favorite)::bool)
+  AND (sqlc.narg(favorite)::bool IS NULL OR (d.favorite AND d.user_id = sqlc.arg(viewer_id)) = sqlc.narg(favorite)::bool)
   AND (sqlc.narg(source_id)::uuid IS NULL OR EXISTS (
         SELECT 1 FROM photo_sources ps JOIN nodes fn ON fn.id = ps.folder_node_id
         WHERE ps.id = sqlc.narg(source_id)::uuid AND ps.user_id = d.user_id

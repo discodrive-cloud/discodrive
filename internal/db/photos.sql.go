@@ -850,41 +850,49 @@ func (q *Queries) ListPhotoAssetIDs(ctx context.Context, userID pgtype.UUID) ([]
 const listPhotoAssetsInMonth = `-- name: ListPhotoAssetsInMonth :many
 SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version FROM photo_assets a
 JOIN nodes n ON n.id = a.node_id
-WHERE a.user_id = $1
-  AND a.taken_local >= $2::timestamp
-  AND a.taken_local < $2::timestamp + interval '1 month'
+WHERE a.user_id = ANY($1::uuid[])
+  AND (a.user_id = $2 OR n.user_id = a.user_id)
+  AND (a.user_id = $2 OR $2 <> ALL($1::uuid[])
+       OR a.content_hash IS NULL OR NOT EXISTS (
+        SELECT 1 FROM photo_assets o WHERE o.user_id = $2 AND o.content_hash = a.content_hash))
+  AND a.taken_local >= $3::timestamp
+  AND a.taken_local < $3::timestamp + interval '1 month'
   AND a.parent_id IS NULL AND NOT a.hidden AND a.trashed_at IS NULL
-  AND ($3::text IS NULL OR a.kind = $3::text)
-  AND ($4::bool IS NULL OR $4::bool = EXISTS (
+  AND ($4::text IS NULL OR a.kind = $4::text)
+  AND ($5::bool IS NULL OR $5::bool = EXISTS (
         SELECT 1 FROM photo_assets c WHERE c.parent_id = a.id AND c.role = 'live-video'))
-  AND ($5::bool IS NULL OR $5::bool = (n.name ~* '\.(dng|nef|cr2|arw)$'))
-  AND ($6::bool IS NULL OR a.favorite = $6::bool)
-  AND ($7::uuid IS NULL OR EXISTS (
+  AND ($6::bool IS NULL OR $6::bool = (n.name ~* '\.(dng|nef|cr2|arw)$'))
+  AND ($7::bool IS NULL OR (a.favorite AND a.user_id = $2) = $7::bool)
+  AND ($8::uuid IS NULL OR EXISTS (
         SELECT 1 FROM photo_sources ps JOIN nodes fn ON fn.id = ps.folder_node_id
-        WHERE ps.id = $7::uuid AND ps.user_id = a.user_id
+        WHERE ps.id = $8::uuid AND ps.user_id = a.user_id
           AND starts_with(n.disk_path, fn.disk_path || '/')))
-  AND ($8::int IS NULL OR (a.lat IS NOT NULL AND a.lon IS NOT NULL
-        AND photo_map_key(a.lat, a.lon, $8::int) = ANY($9::bigint[])))
+  AND ($9::int IS NULL OR (a.lat IS NOT NULL AND a.lon IS NOT NULL
+        AND photo_map_key(a.lat, a.lon, $9::int) = ANY($10::bigint[])))
   AND (a.content_hash IS NULL OR NOT EXISTS (
         SELECT 1 FROM photo_assets d JOIN nodes dn ON dn.id = d.node_id
-        WHERE d.user_id = a.user_id AND d.content_hash = a.content_hash AND d.id < a.id
+        WHERE d.user_id = ANY($1::uuid[]) AND d.content_hash = a.content_hash
+  AND (d.user_id = $2 OR dn.user_id = d.user_id)
+  AND ((d.user_id = $2) > (a.user_id = $2)
+       OR ((d.user_id = $2) = (a.user_id = $2) AND d.id < a.id))
   AND d.parent_id IS NULL AND NOT d.hidden AND d.trashed_at IS NULL
-  AND ($3::text IS NULL OR d.kind = $3::text)
-  AND ($4::bool IS NULL OR $4::bool = EXISTS (
+  AND ($4::text IS NULL OR d.kind = $4::text)
+  AND ($5::bool IS NULL OR $5::bool = EXISTS (
         SELECT 1 FROM photo_assets c WHERE c.parent_id = d.id AND c.role = 'live-video'))
-  AND ($5::bool IS NULL OR $5::bool = (dn.name ~* '\.(dng|nef|cr2|arw)$'))
-  AND ($6::bool IS NULL OR d.favorite = $6::bool)
-  AND ($7::uuid IS NULL OR EXISTS (
+  AND ($6::bool IS NULL OR $6::bool = (dn.name ~* '\.(dng|nef|cr2|arw)$'))
+  AND ($7::bool IS NULL OR (d.favorite AND d.user_id = $2) = $7::bool)
+  AND ($8::uuid IS NULL OR EXISTS (
         SELECT 1 FROM photo_sources ps JOIN nodes fn ON fn.id = ps.folder_node_id
-        WHERE ps.id = $7::uuid AND ps.user_id = d.user_id
+        WHERE ps.id = $8::uuid AND ps.user_id = d.user_id
           AND starts_with(dn.disk_path, fn.disk_path || '/')))
-  AND ($8::int IS NULL OR (d.lat IS NOT NULL AND d.lon IS NOT NULL
-        AND photo_map_key(d.lat, d.lon, $8::int) = ANY($9::bigint[])))))
+  AND ($9::int IS NULL OR (d.lat IS NOT NULL AND d.lon IS NOT NULL
+        AND photo_map_key(d.lat, d.lon, $9::int) = ANY($10::bigint[])))))
 ORDER BY a.taken_at DESC, a.id
 `
 
 type ListPhotoAssetsInMonthParams struct {
-	UserID   pgtype.UUID      `json:"user_id"`
+	UserIds  []pgtype.UUID    `json:"user_ids"`
+	ViewerID pgtype.UUID      `json:"viewer_id"`
 	Month    pgtype.Timestamp `json:"month"`
 	Kind     pgtype.Text      `json:"kind"`
 	Live     pgtype.Bool      `json:"live"`
@@ -895,9 +903,11 @@ type ListPhotoAssetsInMonthParams struct {
 	AreaKeys []int64          `json:"area_keys"`
 }
 
+// One month of ListPhotoMonthBuckets' feed.
 func (q *Queries) ListPhotoAssetsInMonth(ctx context.Context, arg ListPhotoAssetsInMonthParams) ([]PhotoAsset, error) {
 	rows, err := q.db.Query(ctx, listPhotoAssetsInMonth,
-		arg.UserID,
+		arg.UserIds,
+		arg.ViewerID,
 		arg.Month,
 		arg.Kind,
 		arg.Live,
@@ -1351,25 +1361,29 @@ func (q *Queries) ListPhotoMapClusters(ctx context.Context, arg ListPhotoMapClus
 
 const listPhotoMonthBuckets = `-- name: ListPhotoMonthBuckets :many
 WITH f AS (
-    SELECT a.id, a.taken_local, a.content_hash
+    SELECT a.id, a.taken_local, a.content_hash, a.user_id
     FROM photo_assets a
     JOIN nodes n ON n.id = a.node_id
-    WHERE a.user_id = $1
+    WHERE a.user_id = ANY($1::uuid[])
+  AND (a.user_id = $2 OR n.user_id = a.user_id)
+  AND (a.user_id = $2 OR $2 <> ALL($1::uuid[])
+       OR a.content_hash IS NULL OR NOT EXISTS (
+        SELECT 1 FROM photo_assets o WHERE o.user_id = $2 AND o.content_hash = a.content_hash))
   AND a.parent_id IS NULL AND NOT a.hidden AND a.trashed_at IS NULL
-  AND ($2::text IS NULL OR a.kind = $2::text)
-  AND ($3::bool IS NULL OR $3::bool = EXISTS (
+  AND ($3::text IS NULL OR a.kind = $3::text)
+  AND ($4::bool IS NULL OR $4::bool = EXISTS (
         SELECT 1 FROM photo_assets c WHERE c.parent_id = a.id AND c.role = 'live-video'))
-  AND ($4::bool IS NULL OR $4::bool = (n.name ~* '\.(dng|nef|cr2|arw)$'))
-  AND ($5::bool IS NULL OR a.favorite = $5::bool)
-  AND ($6::uuid IS NULL OR EXISTS (
+  AND ($5::bool IS NULL OR $5::bool = (n.name ~* '\.(dng|nef|cr2|arw)$'))
+  AND ($6::bool IS NULL OR (a.favorite AND a.user_id = $2) = $6::bool)
+  AND ($7::uuid IS NULL OR EXISTS (
         SELECT 1 FROM photo_sources ps JOIN nodes fn ON fn.id = ps.folder_node_id
-        WHERE ps.id = $6::uuid AND ps.user_id = a.user_id
+        WHERE ps.id = $7::uuid AND ps.user_id = a.user_id
           AND starts_with(n.disk_path, fn.disk_path || '/')))
-  AND ($7::int IS NULL OR (a.lat IS NOT NULL AND a.lon IS NOT NULL
-        AND photo_map_key(a.lat, a.lon, $7::int) = ANY($8::bigint[])))
+  AND ($8::int IS NULL OR (a.lat IS NOT NULL AND a.lon IS NOT NULL
+        AND photo_map_key(a.lat, a.lon, $8::int) = ANY($9::bigint[])))
 ), ranked AS (
     SELECT taken_local, content_hash,
-           row_number() OVER (PARTITION BY content_hash ORDER BY id) AS rn
+           row_number() OVER (PARTITION BY content_hash ORDER BY user_id <> $2, id) AS rn
     FROM f
 )
 SELECT date_trunc('month', taken_local)::date AS month, count(*)::bigint AS count
@@ -1380,14 +1394,15 @@ ORDER BY 1 DESC
 `
 
 type ListPhotoMonthBucketsParams struct {
-	UserID   pgtype.UUID `json:"user_id"`
-	Kind     pgtype.Text `json:"kind"`
-	Live     pgtype.Bool `json:"live"`
-	Raw      pgtype.Bool `json:"raw"`
-	Favorite pgtype.Bool `json:"favorite"`
-	SourceID pgtype.UUID `json:"source_id"`
-	AreaZ    pgtype.Int4 `json:"area_z"`
-	AreaKeys []int64     `json:"area_keys"`
+	UserIds  []pgtype.UUID `json:"user_ids"`
+	ViewerID pgtype.UUID   `json:"viewer_id"`
+	Kind     pgtype.Text   `json:"kind"`
+	Live     pgtype.Bool   `json:"live"`
+	Raw      pgtype.Bool   `json:"raw"`
+	Favorite pgtype.Bool   `json:"favorite"`
+	SourceID pgtype.UUID   `json:"source_id"`
+	AreaZ    pgtype.Int4   `json:"area_z"`
+	AreaKeys []int64       `json:"area_keys"`
 }
 
 type ListPhotoMonthBucketsRow struct {
@@ -1402,9 +1417,15 @@ type ListPhotoMonthBucketsRow struct {
 // The area filter (the map) keeps the cards whose photo_map_key at area_z is in area_keys.
 // Buckets dedup with one window pass over the filtered rows instead of a per-row twin
 // lookup (same result as the month query's NOT EXISTS, several times faster on a big library).
+// The feed of user_ids as viewer_id sees it: their own cards, and partners' whose file is
+// the partner's own (not a folder a third person shared with them). Favourites are the
+// viewer's; a file in several galleries counts once, the viewer's copy first — and in the
+// viewer's own feed a partner's copy of a file the viewer has (hidden or trashed too)
+// never shows.
 func (q *Queries) ListPhotoMonthBuckets(ctx context.Context, arg ListPhotoMonthBucketsParams) ([]ListPhotoMonthBucketsRow, error) {
 	rows, err := q.db.Query(ctx, listPhotoMonthBuckets,
-		arg.UserID,
+		arg.UserIds,
+		arg.ViewerID,
 		arg.Kind,
 		arg.Live,
 		arg.Raw,

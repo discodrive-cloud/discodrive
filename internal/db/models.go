@@ -278,6 +278,43 @@ type NotificationPref struct {
 	Enabled  bool        `json:"enabled"`
 }
 
+type PhotoAlbum struct {
+	ID        pgtype.UUID        `json:"id"`
+	OwnerID   pgtype.UUID        `json:"owner_id"`
+	Name      string             `json:"name"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+type PhotoAlbumItem struct {
+	AlbumID pgtype.UUID        `json:"album_id"`
+	AssetID pgtype.UUID        `json:"asset_id"`
+	AddedBy pgtype.UUID        `json:"added_by"`
+	AddedAt pgtype.Timestamptz `json:"added_at"`
+}
+
+type PhotoAlbumLink struct {
+	ID            pgtype.UUID        `json:"id"`
+	AlbumID       pgtype.UUID        `json:"album_id"`
+	Token         string             `json:"token"`
+	PasswordHash  pgtype.Text        `json:"password_hash"`
+	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
+	AllowDownload bool               `json:"allow_download"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type PhotoAlbumMember struct {
+	AlbumID   pgtype.UUID        `json:"album_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type PhotoAlbumVisibleItem struct {
+	AlbumID pgtype.UUID `json:"album_id"`
+	AssetID pgtype.UUID `json:"asset_id"`
+	AddedBy pgtype.UUID `json:"added_by"`
+}
+
 type PhotoAsset struct {
 	ID             pgtype.UUID        `json:"id"`
 	UserID         pgtype.UUID        `json:"user_id"`
@@ -317,6 +354,13 @@ type PhotoAsset struct {
 	TranscodeState pgtype.Text        `json:"transcode_state"`
 	IndexedAt      pgtype.Timestamptz `json:"indexed_at"`
 	NodeVersion    pgtype.Int8        `json:"node_version"`
+}
+
+type PhotoPartner struct {
+	OwnerID   pgtype.UUID        `json:"owner_id"`
+	ViewerID  pgtype.UUID        `json:"viewer_id"`
+	InFeed    bool               `json:"in_feed"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type PhotoSetting struct {

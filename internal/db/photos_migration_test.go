@@ -139,7 +139,7 @@ func TestPhotoQueries_BucketsDedupAndFilters(t *testing.T) {
 	}
 
 	count := func(p db.ListPhotoMonthBucketsParams) map[string]int64 {
-		p.UserID = u.ID
+		p.ViewerID, p.UserIds = u.ID, []pgtype.UUID{u.ID}
 		rows, err := q.ListPhotoMonthBuckets(ctx, p)
 		if err != nil {
 			t.Fatalf("ListPhotoMonthBuckets: %v", err)
@@ -206,7 +206,7 @@ func TestPhotoQueries_BucketsDedupAndFilters(t *testing.T) {
 	eq("favorite twin", count(db.ListPhotoMonthBucketsParams{Favorite: pgtype.Bool{Bool: true, Valid: true}}),
 		map[string]int64{"2024-01": 2})
 	favRows, err := q.ListPhotoAssetsInMonth(ctx, db.ListPhotoAssetsInMonthParams{
-		UserID: u.ID, Month: pgtype.Timestamp{Time: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Valid: true},
+		ViewerID: u.ID, UserIds: []pgtype.UUID{u.ID}, Month: pgtype.Timestamp{Time: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Valid: true},
 		Favorite: pgtype.Bool{Bool: true, Valid: true},
 	})
 	if err != nil || len(favRows) != 2 {
@@ -224,7 +224,7 @@ func TestPhotoQueries_BucketsDedupAndFilters(t *testing.T) {
 
 	// The month list agrees with the bucket: the smallest id of the duplicate pair wins.
 	rows, err := q.ListPhotoAssetsInMonth(ctx, db.ListPhotoAssetsInMonthParams{
-		UserID: u.ID, Month: pgtype.Timestamp{Time: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Valid: true},
+		ViewerID: u.ID, UserIds: []pgtype.UUID{u.ID}, Month: pgtype.Timestamp{Time: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Valid: true},
 	})
 	if err != nil {
 		t.Fatal(err)

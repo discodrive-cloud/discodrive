@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // «Фото»: the gallery. Sections are tabs driven by ?tab= (as on the settings page):
-// Фото (the timeline) · В этот день · Карта · Скрытое · Корзина. Albums and shared come in
-// later stages and are not shown. «Карта» shows only when the server has map tiles; a pin
-// opens its area (?area=) as the timeline's grid narrowed to those cells.
+// Фото (the timeline) · В этот день · Альбомы · Общие · Карта · Скрытое · Корзина. «Карта»
+// shows only when the server has map tiles. Three of them open a grid of their own over
+// the list: a map pin its area (?area=), an album its cards (?album=), «Общие» a partner's
+// gallery (?owner=); «←» goes back to the list.
 import PhotoGrid from '~/components/photos/PhotoGrid.vue'
 import PhotoFilters from '~/components/photos/PhotoFilters.vue'
 import SelectionBar from '~/components/photos/SelectionBar.vue'
@@ -13,7 +14,11 @@ import PhotoMap from '~/components/photos/PhotoMap.vue'
 import HiddenUnlock from '~/components/photos/HiddenUnlock.vue'
 import EditDateDialog from '~/components/photos/EditDateDialog.vue'
 import EditPlaceDialog from '~/components/photos/EditPlaceDialog.vue'
-import type { Bucket, PhotoFilter, PhotoRow, PhotoSettings } from '~/composables/usePhotos'
+import PhotoAlbums from '~/components/photos/PhotoAlbums.vue'
+import PhotoShared from '~/components/photos/PhotoShared.vue'
+import AddToAlbumDialog from '~/components/photos/AddToAlbumDialog.vue'
+import AlbumShareDialog from '~/components/photos/AlbumShareDialog.vue'
+import type { Bucket, PhotoAlbumDetail, PhotoFilter, PhotoRow, PhotoSettings } from '~/composables/usePhotos'
 import { mapConcurrent } from '~/lib/mapConcurrent'
 import { photosHiddenHeaders, photosHiddenUnlocked, lockPhotosHidden } from '~/lib/photos/hidden'
 import { photosNavVisible } from '~/lib/photos/settings'
@@ -26,26 +31,30 @@ const { t, locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const api = usePhotosApi()
-const { request } = useApi()
-const { confirm } = useDialog()
+const { confirm, prompt } = useDialog()
 const photosEnabled = usePhotosEnabled()
 
 // ---- sections ----
-const tabs = ['photos', 'memories', 'map', 'hidden', 'trash'] as const
+const tabs = ['photos', 'memories', 'albums', 'shared', 'map', 'hidden', 'trash'] as const
 type Tab = (typeof tabs)[number]
+const settings = ref<PhotoSettings | null>(null)
+// With one's own gallery off, «Фото» is what others opened: «Альбомы» and «Общие».
+const ownOff = computed(() => !!settings.value && !settings.value.enabled)
 const tab = computed<Tab>(() => {
   const q = route.query.tab
-  return typeof q === 'string' && (tabs as readonly string[]).includes(q) ? (q as Tab) : 'photos'
+  if (typeof q === 'string' && (tabs as readonly string[]).includes(q)) return q as Tab
+  return ownOff.value && settings.value?.sharedWithMe ? 'shared' : 'photos'
 })
 function selectTab(id: Tab) {
   selection.value = new Set()
   viewer.value = null
-  router.replace({ query: { ...route.query, tab: id === 'photos' ? undefined : id, area: undefined } })
+  router.replace({ query: { ...route.query, tab: id === 'photos' ? undefined : id, area: undefined, album: undefined, owner: undefined } })
 }
 
 // ---- Карта ----
 const mapsReady = ref(false)
-const shownTabs = computed(() => tabs.filter((id) => id !== 'map' || mapsReady.value))
+const shownTabs = computed(() => tabs.filter((id) =>
+  ownOff.value ? id === 'albums' || id === 'shared' : id !== 'map' || mapsReady.value))
 // The open area of the map: its grid replaces the map until «← Карта».
 const area = computed(() => {
   const q = route.query.area
@@ -68,8 +77,53 @@ function closeArea() {
 }
 const areaCount = computed(() => buckets.value.reduce((n, b) => n + b.count, 0))
 
+// ---- Альбомы, Общие: an album's grid, a partner's gallery ----
+const album = computed(() => {
+  const q = route.query.album
+  return tab.value === 'albums' && typeof q === 'string' ? q : ''
+})
+const owner = computed(() => {
+  const q = route.query.owner
+  return tab.value === 'shared' && typeof q === 'string' ? q : ''
+})
+const albumInfo = ref<PhotoAlbumDetail | null>(null)
+const ownerEmail = ref('')
+const albumsRef = ref<InstanceType<typeof PhotoAlbums> | null>(null)
+let scopeFromList = false
+function openAlbum(id: string) {
+  scopeFromList = true
+  router.push({ query: { ...route.query, tab: 'albums', album: id } })
+}
+function openPartner(id: string, email: string) {
+  ownerEmail.value = email
+  scopeFromList = true
+  router.push({ query: { ...route.query, tab: 'shared', owner: id } })
+}
+async function loadAlbumInfo() {
+  albumInfo.value = null
+  if (!album.value) return
+  try { albumInfo.value = await api.album(album.value) } catch (e: any) {
+    loadError.value = e?.data?.error || t('common.error_load')
+  }
+}
+async function loadOwnerEmail() {
+  if (!owner.value || ownerEmail.value) return
+  try {
+    const p = await api.partners()
+    ownerEmail.value = p.sharedWithMe.find((x) => x.userId === owner.value)?.email ?? ''
+  } catch { /* the title stays empty */ }
+}
+// The grid over a list: which one, its title and the way back.
+const scoped = computed(() => (tab.value === 'map' && !!area.value) || !!album.value || !!owner.value)
+const scopeTitle = computed(() => album.value ? (albumInfo.value?.name ?? '') : owner.value ? ownerEmail.value : areaTitle.value)
+const backLabel = computed(() => album.value ? t('photos.albums_back') : owner.value ? t('photos.shared_back') : t('photos.map_back'))
+function closeScope() {
+  if (tab.value === 'map') return closeArea()
+  if (scopeFromList) { scopeFromList = false; router.back() }
+  else router.replace({ query: { ...route.query, album: undefined, owner: undefined } })
+}
+
 // ---- settings & buckets ----
-const settings = ref<PhotoSettings | null>(null)
 const loadError = ref('')
 const filter = ref<PhotoFilter>({ kind: 'all', favorite: false, source: '' })
 const buckets = ref<Bucket[]>([])
@@ -87,8 +141,11 @@ async function loadSettings() {
 let bucketsSeq = 0
 async function loadBuckets() {
   if (tab.value === 'hidden') return loadHiddenBuckets()
-  if (!settings.value?.enabled || !settings.value.available) return
+  if (!settings.value?.available) return
+  if (!settings.value.enabled && !album.value && !owner.value) return
   if (tab.value === 'map' && !area.value) return
+  if (tab.value === 'albums' && !album.value) return
+  if (tab.value === 'shared' && !owner.value) return
   const seq = ++bucketsSeq
   try {
     const b = await api.buckets(activeFilter.value)
@@ -103,9 +160,14 @@ async function loadBuckets() {
   }
 }
 
-// The map's area replaces the timeline's filters: the map shows every card.
-const activeFilter = computed<PhotoFilter>(() =>
-  tab.value === 'map' ? { kind: 'all', favorite: false, source: '', area: area.value } : filter.value)
+// The map's area, an album and a partner's gallery replace the timeline's filters.
+const activeFilter = computed<PhotoFilter>(() => {
+  const all: PhotoFilter = { kind: 'all', favorite: false, source: '' }
+  if (tab.value === 'map') return { ...all, area: area.value }
+  if (tab.value === 'albums') return { ...all, album: album.value }
+  if (tab.value === 'shared') return { ...all, owner: owner.value }
+  return filter.value
+})
 
 // One fetcher per filter: a new function tells the grid to start over.
 const fetchMonth = computed(() => {
@@ -188,20 +250,25 @@ watch(tab, (v) => {
   if (v === 'hidden') loadHiddenBuckets()
   else if (v === 'photos') loadBuckets()
 })
-// A new area (or none: back on the map) starts its grid over.
-watch(area, (a) => {
+// A new area, album or partner (or none: back on the list) starts its grid over.
+watch([area, album, owner], ([a, al, o], [pa]) => {
   selection.value = new Set()
   viewer.value = null
   bucketsLoaded.value = false
   buckets.value = []
-  if (a) loadBuckets()
-  else nextTick(() => mapRef.value?.resize())
+  loadError.value = ''
+  if (a || al || o) loadBuckets()
+  else if (pa) nextTick(() => mapRef.value?.resize())
+  if (al) loadAlbumInfo()
+  if (o) loadOwnerEmail()
 })
 
 onMounted(async () => {
   photosMapsReady().then((v) => { mapsReady.value = v })
   await loadSettings()
   await loadBuckets()
+  if (album.value) loadAlbumInfo()
+  if (owner.value) loadOwnerEmail()
   if (tab.value === 'hidden') loadHiddenBuckets()
   if (indexing.value || (settings.value?.enabled && settings.value.sources.length && !settings.value.indexing.total)) startPolling()
   window.addEventListener('keydown', onKey)
@@ -231,6 +298,13 @@ function onKey(e: KeyboardEvent) {
 }
 
 const selectedIds = computed(() => [...selection.value])
+// Somebody else's card in the selection (a partner's, an album's): only the album and
+// the download apply.
+const readonlySelection = computed(() => {
+  if (!grid.value) return false
+  for (const id of selection.value) if (grid.value.getItem(id)?.own === false) return true
+  return false
+})
 const allFavorite = computed(() => {
   if (!selection.value.size || !grid.value) return false
   for (const id of selection.value) if (!grid.value.getItem(id)?.favorite) return false
@@ -327,7 +401,7 @@ function downloadIds(ids: string[]) {
     for (const id of ids) {
       try {
         const a = await api.asset(id)
-        const blob = await request<Blob>(`/files/${a.file.nodeId}/content`, { responseType: 'blob' })
+        const blob = await api.original(id)
         const url = URL.createObjectURL(blob)
         const link = document.createElement('a')
         link.href = url
@@ -341,6 +415,53 @@ function downloadIds(ids: string[]) {
 }
 function download() {
   return downloadIds(selectedIds.value)
+}
+
+// «В альбом» from the selection or the viewer; «Убрать из альбома» inside one.
+const albumIds = ref<string[] | null>(null)
+function toAlbum() { albumIds.value = selectedIds.value }
+async function albumDone(id: string, name: string, added: number) {
+  albumIds.value = null
+  if (!viewer.value) selection.value = new Set()
+  say(t('photos.album_added', { n: added, name }))
+  if (album.value === id) { await loadBuckets(); grid.value?.invalidate() }
+}
+function removeFromAlbum() {
+  const ids = selectedIds.value
+  return act(async () => {
+    const r = await api.removeFromAlbum(album.value, ids)
+    selection.value = new Set()
+    say(r.kept ? t('photos.album_removed_some', { n: r.removed, kept: r.kept }) : t('photos.album_removed', { n: r.removed }))
+    await loadBuckets()
+    grid.value?.invalidate()
+  })
+}
+
+// The album's own actions (its header).
+const sharing = ref(false)
+async function renameAlbum() {
+  const a = albumInfo.value
+  if (!a) return
+  const name = (await prompt(t('photos.album_rename'), a.name))?.trim()
+  if (!name || name === a.name) return
+  return act(async () => {
+    await api.renameAlbum(a.id, name)
+    a.name = name
+  })
+}
+async function deleteAlbum() {
+  const a = albumInfo.value
+  if (!a) return
+  const ok = await confirm(a.own ? t('photos.album_delete_title', { name: a.name }) : t('photos.album_leave_title', { name: a.name }), {
+    message: a.own ? t('photos.album_delete_message') : undefined,
+    confirmText: a.own ? t('common.delete') : t('photos.album_leave'),
+    danger: true,
+  })
+  if (!ok) return
+  return act(async () => {
+    await api.deleteAlbum(a.id)
+    closeScope()
+  })
 }
 
 // ---- the viewer ----
@@ -428,7 +549,7 @@ async function afterEdit(r: EditResult) {
     <!-- states before the timeline -->
     <div v-if="!settings && !loadError" class="p-6 text-sm text-muted">{{ t('common.loading') }}</div>
     <div v-else-if="!settings" class="p-6 text-sm text-danger">{{ loadError }}</div>
-    <div v-else-if="!settings.available || !settings.enabled" class="p-6">
+    <div v-else-if="!settings.available || (ownOff && !(settings.sharedWithMe && (tab === 'albums' || tab === 'shared')))" class="p-6">
       <div class="card max-w-lg p-5 text-sm">
         <Icon name="lucide:image" size="22" class="mb-2 text-muted" />
         <p v-if="!settings.available">{{ t('settings.photos_unavailable') }}</p>
@@ -479,6 +600,7 @@ async function afterEdit(r: EditResult) {
             :count="selection.size"
             :all-favorite="allFavorite"
             :busy="busy"
+            :readonly="readonlySelection"
             @clear="selection = new Set()"
             @favorite="toggleFavorite"
             @hide="hide"
@@ -486,6 +608,7 @@ async function afterEdit(r: EditResult) {
             @download="download"
             @edit-date="editDate"
             @edit-place="editPlace"
+            @album="toAlbum"
           />
           <div
             v-if="notice"
@@ -500,6 +623,10 @@ async function afterEdit(r: EditResult) {
 
       <!-- В этот день -->
       <PhotoMemories v-else-if="tab === 'memories'" ref="memories" @open="openMemory" />
+
+      <!-- Альбомы, Общие: the lists; an album or a partner opens below -->
+      <PhotoAlbums v-else-if="tab === 'albums' && !album" ref="albumsRef" @open="openAlbum" />
+      <PhotoShared v-else-if="tab === 'shared' && !owner" @open="openPartner" />
 
 
       <!-- Скрытое: unlock first, then the grid of hidden cards -->
@@ -544,15 +671,27 @@ async function afterEdit(r: EditResult) {
       <!-- Корзина -->
       <PhotoTrash v-else-if="tab === 'trash'" @restored="(n) => say(t('photos.restored_done', { n }))" />
 
-      <!-- Карта: the map, or the grid of the area a pin opened -->
-      <div v-if="tab === 'map' && area" class="relative flex min-h-0 flex-1 flex-col">
+      <!-- the grid over a list: a map pin's area, an album, a partner's gallery -->
+      <div v-if="scoped" class="relative flex min-h-0 flex-1 flex-col">
         <div class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 md:px-6">
-          <button type="button" class="btn-ghost px-2 py-1.5 text-sm" @click="closeArea">
-            <Icon name="lucide:arrow-left" size="16" /> {{ t('photos.map_back') }}
+          <button type="button" class="btn-ghost px-2 py-1.5 text-sm" @click="closeScope">
+            <Icon name="lucide:arrow-left" size="16" /> {{ backLabel }}
           </button>
-          <span v-if="areaTitle" class="font-medium">{{ areaTitle }}</span>
+          <span v-if="scopeTitle" class="min-w-0 truncate font-medium">{{ scopeTitle }}</span>
           <span v-if="bucketsLoaded" class="text-sm text-muted">{{ t('photos.map_count', { n: areaCount }) }}</span>
+          <span v-if="albumInfo && !albumInfo.own" class="text-xs text-muted">{{ t('photos.album_by', { email: albumInfo.ownerEmail }) }}</span>
           <span v-if="loadError" class="text-xs text-danger">{{ loadError }}</span>
+          <div v-if="albumInfo" class="ml-auto flex items-center gap-1">
+            <button v-if="albumInfo.own" type="button" class="btn-ghost px-2 py-1.5 text-sm" @click="sharing = true">
+              <Icon name="lucide:share-2" size="16" /> <span class="hidden sm:inline">{{ t('photos.album_share') }}</span>
+            </button>
+            <button v-if="albumInfo.own" type="button" class="btn-ghost px-2 py-1.5 text-sm" :title="t('photos.album_rename')" @click="renameAlbum">
+              <Icon name="lucide:pencil" size="16" />
+            </button>
+            <button type="button" class="btn-ghost px-2 py-1.5 text-sm hover:!text-danger" :title="albumInfo.own ? t('photos.album_delete') : t('photos.album_leave')" @click="deleteAlbum">
+              <Icon :name="albumInfo.own ? 'lucide:trash-2' : 'lucide:log-out'" size="16" />
+            </button>
+          </div>
         </div>
         <div class="relative min-h-0 flex-1 pl-2 md:pl-4">
           <PhotoGrid
@@ -566,13 +705,17 @@ async function afterEdit(r: EditResult) {
             @range-failed="say(t('photos.range_failed'))"
           />
           <div v-else-if="bucketsLoaded" class="flex h-full items-center justify-center p-6 text-center text-sm text-muted">
-            {{ t('photos.empty_filtered') }}
+            {{ album ? t('photos.album_empty') : owner ? t('photos.partner_empty') : t('photos.empty_filtered') }}
           </div>
           <SelectionBar
             v-if="selection.size"
             :count="selection.size"
             :all-favorite="allFavorite"
             :busy="busy"
+            :readonly="readonlySelection"
+            :album-mode="!!album"
+            @album="toAlbum"
+            @remove-from-album="removeFromAlbum"
             @clear="selection = new Set()"
             @favorite="toggleFavorite"
             @hide="hide"
@@ -606,11 +749,14 @@ async function afterEdit(r: EditResult) {
       @download="(id) => downloadIds([id])"
       @edit-date="(id) => (editDateIds = [id])"
       @edit-place="(id) => (editPlaceIds = [id])"
+      @album="(id) => (albumIds = [id])"
     />
-    <div v-if="notice && (viewer || tab === 'memories' || tab === 'trash')" class="pointer-events-none fixed inset-x-0 bottom-20 z-[55] flex justify-center px-4" role="status">
+    <div v-if="notice && (viewer || tab === 'memories' || tab === 'trash' || (tab === 'albums' && !album) || (tab === 'shared' && !owner))" class="pointer-events-none fixed inset-x-0 bottom-20 z-[55] flex justify-center px-4" role="status">
       <span class="rounded-full bg-black/75 px-3 py-1.5 text-xs text-white">{{ notice }}</span>
     </div>
     <EditDateDialog v-if="editDateIds" :ids="editDateIds" @close="editDateIds = null" @done="afterEdit" />
     <EditPlaceDialog v-if="editPlaceIds" :ids="editPlaceIds" @close="editPlaceIds = null" @done="afterEdit" />
+    <AddToAlbumDialog v-if="albumIds" :ids="albumIds" @close="albumIds = null" @done="albumDone" />
+    <AlbumShareDialog v-if="sharing && albumInfo" :album="albumInfo" @close="sharing = false" />
   </div>
 </template>

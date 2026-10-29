@@ -9,9 +9,12 @@ export interface IndexingState {
   failedFiles?: number
 }
 
-/** The nav shows «Фото» only where the gallery works: on and in a build that has it. */
-export function photosNavVisible(s: { enabled: boolean; available: boolean } | null | undefined): boolean {
-  return !!s && s.enabled && s.available
+/**
+ * The nav shows «Фото» only where the gallery works: in a build that has it, switched on —
+ * or with a gallery or an album somebody opened to the user.
+ */
+export function photosNavVisible(s: { enabled: boolean; available: boolean; sharedWithMe?: boolean } | null | undefined): boolean {
+  return !!s && s.available && (s.enabled || !!s.sharedWithMe)
 }
 
 /**

@@ -6,6 +6,10 @@ const props = defineProps<{
   busy?: boolean
   // the Hidden tab: "hide" becomes "show again"
   hiddenMode?: boolean
+  // somebody else's cards among the selection: only what one may do with those
+  readonly?: boolean
+  // inside an album: "take out of the album"
+  albumMode?: boolean
 }>()
 const emit = defineEmits<{
   favorite: []
@@ -14,22 +18,36 @@ const emit = defineEmits<{
   download: []
   'edit-date': []
   'edit-place': []
+  album: []
+  'remove-from-album': []
   clear: []
 }>()
 const { t } = useI18n()
 
-const actions = computed(() => [
-  { id: 'favorite', icon: 'lucide:heart', label: props.allFavorite ? t('photos.unfavorite') : t('photos.favorite'), filled: props.allFavorite },
-  { id: 'download', icon: 'lucide:download', label: t('common.download') },
-  { id: 'edit-date', icon: 'lucide:calendar-clock', label: t('photos.edit_date') },
-  { id: 'edit-place', icon: 'lucide:map-pin', label: t('photos.edit_place') },
-  { id: 'hide', icon: props.hiddenMode ? 'lucide:eye' : 'lucide:eye-off', label: props.hiddenMode ? t('photos.unhide') : t('photos.hide') },
-  { id: 'delete', icon: 'lucide:trash-2', label: t('common.delete'), danger: true },
-] as const)
+type Action = { id: 'favorite' | 'download' | 'edit-date' | 'edit-place' | 'hide' | 'delete' | 'album' | 'remove-from-album'; icon: string; label: string; filled?: boolean; danger?: boolean }
 
-function run(id: (typeof actions.value)[number]['id']) {
+const actions = computed<Action[]>(() => {
+  const list: Action[] = []
+  if (!props.hiddenMode) list.push({ id: 'album', icon: 'lucide:book-image', label: t('photos.add_to_album') })
+  if (props.albumMode) list.push({ id: 'remove-from-album', icon: 'lucide:book-x', label: t('photos.remove_from_album') })
+  if (!props.readonly) list.push({ id: 'favorite', icon: 'lucide:heart', label: props.allFavorite ? t('photos.unfavorite') : t('photos.favorite'), filled: props.allFavorite })
+  list.push({ id: 'download', icon: 'lucide:download', label: t('common.download') })
+  if (!props.readonly) {
+    list.push(
+      { id: 'edit-date', icon: 'lucide:calendar-clock', label: t('photos.edit_date') },
+      { id: 'edit-place', icon: 'lucide:map-pin', label: t('photos.edit_place') },
+      { id: 'hide', icon: props.hiddenMode ? 'lucide:eye' : 'lucide:eye-off', label: props.hiddenMode ? t('photos.unhide') : t('photos.hide') },
+      { id: 'delete', icon: 'lucide:trash-2', label: t('common.delete'), danger: true },
+    )
+  }
+  return list
+})
+
+function run(id: Action['id']) {
   if (props.busy) return
   switch (id) {
+    case 'album': emit('album'); break
+    case 'remove-from-album': emit('remove-from-album'); break
     case 'favorite': emit('favorite'); break
     case 'download': emit('download'); break
     case 'edit-date': emit('edit-date'); break
@@ -54,13 +72,13 @@ function run(id: (typeof actions.value)[number]['id']) {
         :key="a.id"
         type="button"
         class="btn-ghost px-2 py-1.5"
-        :class="'danger' in a && a.danger ? 'hover:!text-danger' : ''"
+        :class="a.danger ? 'hover:!text-danger' : ''"
         :title="a.label"
         :aria-label="a.label"
         :disabled="busy"
         @click="run(a.id)"
       >
-        <Icon :name="a.icon" size="16" :class="'filled' in a && a.filled ? 'text-accent' : ''" />
+        <Icon :name="a.icon" size="16" :class="a.filled ? 'text-accent' : ''" />
         <span class="hidden xl:inline">{{ a.label }}</span>
       </button>
     </div>

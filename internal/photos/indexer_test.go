@@ -419,7 +419,7 @@ func TestIndexer_DuplicateAcrossSources(t *testing.T) {
 	if n := e.count(); n != 2 {
 		t.Fatalf("%d assets, want 2", n)
 	}
-	buckets, err := e.q.ListPhotoMonthBuckets(ctx, db.ListPhotoMonthBucketsParams{UserID: e.uid})
+	buckets, err := e.q.ListPhotoMonthBuckets(ctx, db.ListPhotoMonthBucketsParams{ViewerID: e.uid, UserIds: []pgtype.UUID{e.uid}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func TestGroup_LiveByCID(t *testing.T) {
 	if v.ParentID != s.ID || v.Role.String != roleLiveVideo || s.ParentID.Valid {
 		t.Fatalf("video parent %v role %v; still parent %v", v.ParentID, v.Role, s.ParentID)
 	}
-	buckets, err := e.q.ListPhotoMonthBuckets(ctx, db.ListPhotoMonthBucketsParams{UserID: e.uid, Live: pgtype.Bool{Bool: true, Valid: true}})
+	buckets, err := e.q.ListPhotoMonthBuckets(ctx, db.ListPhotoMonthBucketsParams{ViewerID: e.uid, UserIds: []pgtype.UUID{e.uid}, Live: pgtype.Bool{Bool: true, Valid: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

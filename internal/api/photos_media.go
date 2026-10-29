@@ -37,10 +37,17 @@ func (s *Server) photoDerivative(kind string) http.HandlerFunc {
 			return
 		}
 		// The gallery trash shows thumbnails, so trashed cards are served here (only).
-		a, ok := s.ownAssetState(w, r, true)
+		a, _, ok := s.viewAsset(w, r, true)
 		if !ok {
 			return
 		}
+		s.serveAssetDerivative(w, r, a, kind)
+	}
+}
+
+// serveAssetDerivative sends a card's thumbnail or preview, rendering it on first ask.
+func (s *Server) serveAssetDerivative(w http.ResponseWriter, r *http.Request, a db.PhotoAsset, kind string) {
+	{
 		etag := `"` + photoThumbEtag(a) + `"`
 		w.Header().Set("ETag", etag)
 		w.Header().Set("Cache-Control", photoCacheControl)
@@ -91,7 +98,7 @@ func (s *Server) handlePhotoPlay(w http.ResponseWriter, r *http.Request) {
 	if !s.photosReady(w) {
 		return
 	}
-	a, ok := s.ownAsset(w, r)
+	a, own, ok := s.viewAsset(w, r, false)
 	if !ok {
 		return
 	}
@@ -119,9 +126,21 @@ func (s *Server) handlePhotoPlay(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	video := "/me/photos/v1/assets/" + db.UUIDString(a.ID) + "/video?t=" + tok
+	direct := "/files/" + nodeID + "/stream?t=" + tok
+	if !own {
+		// Somebody else's file is not the viewer's to open in Files: the gallery serves it.
+		direct = video + "&src=original"
+	}
+	s.answerPlay(w, r, a, req.Hevc, direct, video)
+}
+
+// answerPlay tells the player where the video is: the file itself when the browser plays
+// its codec, the h264 copy once it is made (queuing it otherwise).
+func (s *Server) answerPlay(w http.ResponseWriter, r *http.Request, a db.PhotoAsset, hevc bool, direct, copied string) {
 	codec := strings.ToLower(a.VideoCodec.String)
-	if codec == "h264" || (codec == "hevc" && req.Hevc) {
-		writeJSON(w, http.StatusOK, map[string]any{"url": "/files/" + nodeID + "/stream?t=" + tok, "ready": true})
+	if codec == "h264" || (codec == "hevc" && hevc) {
+		writeJSON(w, http.StatusOK, map[string]any{"url": direct, "ready": true})
 		return
 	}
 	unsupported := map[string]any{"url": nil, "ready": false, "unsupported": true}
@@ -129,7 +148,7 @@ func (s *Server) handlePhotoPlay(w http.ResponseWriter, r *http.Request) {
 	case "ready":
 		dst := photos.AssetDerivPath(s.storageRoot, a, "h264")
 		if _, err := os.Stat(dst); err == nil {
-			writeJSON(w, http.StatusOK, map[string]any{"url": "/me/photos/v1/assets/" + db.UUIDString(a.ID) + "/video?t=" + tok, "ready": true})
+			writeJSON(w, http.StatusOK, map[string]any{"url": copied, "ready": true})
 			return
 		}
 		// The copy is gone: queue it again.
@@ -176,13 +195,29 @@ func (s *Server) handlePhotoVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if userID != db.UUIDString(a.UserID) {
-		writeError(w, http.StatusNotFound, "not found")
-		return
+		// A partner or an album member: the token is theirs, the card has to still be shared.
+		viewer, err := db.ParseUUID(userID)
+		if err == nil {
+			_, err = s.q.GetViewablePhotoAsset(r.Context(), db.GetViewablePhotoAssetParams{ID: a.ID, ViewerID: viewer})
+		}
+		if err != nil {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 	}
 	// A hidden video is served too: its stream token was minted by play, which already
 	// required the unlock, and a <video> element cannot send the X-Photos-Hidden header.
 	if a.TrashedAt.Valid || a.Kind != "video" {
 		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	s.serveVideo(w, r, a)
+}
+
+// serveVideo sends a video card: its own file (?src=original) or the h264 copy.
+func (s *Server) serveVideo(w http.ResponseWriter, r *http.Request, a db.PhotoAsset) {
+	if r.URL.Query().Get("src") == "original" {
+		s.serveOriginal(w, r, a, false)
 		return
 	}
 	f, err := os.Open(photos.AssetDerivPath(s.storageRoot, a, "h264"))
