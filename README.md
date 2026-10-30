@@ -6,9 +6,9 @@
 
 [**English**](README.md) · [Deutsch](docs/README.de.md) · [Українська](docs/README.uk.md) · [Français](docs/README.fr.md) · [Español](docs/README.es.md) · [Русский](docs/README.ru.md) · [Српски](docs/README.sr.md)
 
-**Your own cloud. One server, one login — files, calendars, contacts, tasks, music and books.**
+**Your own cloud. One server, one login — files, photos, calendars, contacts, tasks, music and books.**
 
-DiscoDrive is a self-hosted replacement for the bundle of subscriptions and disconnected tools you normally glue together to move off iCloud, Google or Dropbox. Instead of running File Browser, Radicale, a Subsonic server *and* Calibre-web — each with its own quirks and its own login — you run one thing. Everything below lives behind a single account, on your hardware, under your control.
+DiscoDrive is a self-hosted replacement for the bundle of subscriptions and disconnected tools you normally glue together to move off iCloud, Google or Dropbox. Instead of running File Browser, Immich, Radicale, a Subsonic server *and* Calibre-web — each with its own quirks and its own login — you run one thing. Everything below lives behind a single account, on your hardware, under your control.
 
 Your files are stored as ordinary files in ordinary folders on disk. If you ever need to move off DiscoDrive to another storage solution, you just open the folder and find your data exactly where you left it. No proprietary chunk store, no database you can't read, no vendor lock-in.
 
@@ -69,6 +69,20 @@ Cross-platform by design: Apple, Windows, Linux and Android.
 - **Every format that matters** — EPUB, FB2, PDF, MOBI, CBZ and CBR, with cover thumbnails and search across the whole catalog.
 - **Reading progress sync** — start a book on one device and continue exactly where you stopped on another.
 - **Metadata editor** — edit titles, authors, series, tags and descriptions from the web: per book or in bulk across a folder.
+
+### 📷 Photos — your own gallery
+
+- **Your whole photo history in one timeline** — photos and videos from the folders you choose: phone auto-upload, an imported archive, folders shared with you.
+- **iPhone photos look right** — HEIC, HDR and Apple ProRAW look the way they do on the phone, Live Photos come alive, and videos play in any browser.
+- **Phone edits are kept along with the original** — the iOS app uploads both the original and the edited version, and you can view either one in the gallery.
+- **On this day** — photos taken on this date in earlier years.
+- **Favorites and filters** — mark your best shots, and show only favorites, only videos, only Live Photos or only RAW.
+- **Map** — every photo with a location on a map; zoom into an area and see just its photos.
+- **Fix the date and the place** — for one photo or a whole selection, or shift a batch by hours when the camera clock was wrong. The change stays with the file.
+- **Hidden** — move private photos out of the main timeline into a separate section that opens only after you confirm it's you. Deleted photos go to the trash and can be restored.
+- **Share** — open your whole gallery to your partner (they can mix it into their own timeline), make shared albums with other users, or send a public album link with an optional password, expiry date and original downloads.
+
+The gallery needs the default server image; the `-lite` image (`latest-lite`) is a smaller build without it.
 
 ### 🔖 Saved — bookmarks, articles and downloads
 

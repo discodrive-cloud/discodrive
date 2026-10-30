@@ -6,9 +6,9 @@
 
 [English](../README.md) · [Deutsch](README.de.md) · [Українська](README.uk.md) · [**Français**](README.fr.md) · [Español](README.es.md) · [Русский](README.ru.md) · [Српски](README.sr.md)
 
-**Votre propre cloud. Un serveur, un seul identifiant — fichiers, agendas, contacts, tâches, musique et livres.**
+**Votre propre cloud. Un serveur, un seul identifiant — fichiers, photos, agendas, contacts, tâches, musique et livres.**
 
-DiscoDrive est un remplaçant auto-hébergé du paquet d'abonnements et du zoo d'outils qu'on assemble d'habitude pour quitter iCloud, Google ou Dropbox. Au lieu de faire tourner File Browser, Radicale, un serveur Subsonic *et* Calibre-web — chacun avec ses propres difficultés et particularités — vous ne faites tourner qu'une seule application. Tout ce qui suit vit derrière un seul compte, sur votre matériel, sous votre contrôle.
+DiscoDrive est un remplaçant auto-hébergé du paquet d'abonnements et du zoo d'outils qu'on assemble d'habitude pour quitter iCloud, Google ou Dropbox. Au lieu de faire tourner File Browser, Immich, Radicale, un serveur Subsonic *et* Calibre-web — chacun avec ses propres difficultés et particularités — vous ne faites tourner qu'une seule application. Tout ce qui suit vit derrière un seul compte, sur votre matériel, sous votre contrôle.
 
 Vos fichiers sont stockés comme des fichiers ordinaires, dans des dossiers ordinaires sur le disque. Si un jour vous devez quitter DiscoDrive pour un autre stockage, vous ouvrez simplement le dossier et retrouvez vos données exactement là où vous les aviez laissées. Pas de stockage propriétaire par fragments, pas de base de données illisible, pas de vendor lock-in.
 
@@ -69,6 +69,20 @@ Multiplateforme par conception : Apple, Windows, Linux et Android.
 - **Tous les formats qui comptent** — EPUB, FB2, PDF, MOBI, CBZ et CBR, avec miniatures de couverture et recherche sur tout le catalogue.
 - **Synchronisation de la progression de lecture** — commencez un livre sur un appareil et continuez exactement au même endroit sur un autre.
 - **Éditeur de métadonnées** — modifiez titres, auteurs, séries, tags et descriptions dans le navigateur : livre par livre ou en masse sur un dossier.
+
+### 📷 Photos — votre propre galerie
+
+- **Toute votre histoire en photos sur une seule frise** — photos et vidéos des dossiers que vous choisissez : envoi automatique depuis le téléphone, archive importée, dossiers partagés avec vous.
+- **Les photos d'iPhone s'affichent correctement** — HEIC, HDR et Apple ProRAW rendus comme sur le téléphone, Live Photos animées, vidéos lisibles dans n'importe quel navigateur.
+- **Les retouches du téléphone sont gardées avec l'original** — l'app iOS envoie l'original et la version retouchée, et la galerie permet de voir l'une ou l'autre.
+- **Ce jour-là** — les photos prises à cette date les années précédentes.
+- **Favoris et filtres** — marquez vos meilleures photos et n'affichez que les favoris, que les vidéos, que les Live Photos ou que les RAW.
+- **Carte** — chaque photo localisée sur une carte ; zoomez sur une zone pour ne voir que ses photos.
+- **Corriger la date et le lieu** — pour une photo ou toute une sélection, ou décaler une série de quelques heures quand l'horloge de l'appareil se trompait. La modification reste avec le fichier.
+- **Masquées** — retirez vos photos privées de la frise principale vers une section à part, qui ne s'ouvre qu'après confirmation de votre identité. Les photos supprimées vont à la corbeille et peuvent être restaurées.
+- **Partager** — ouvrez toute votre galerie à votre partenaire (qui peut la mêler à sa propre frise), créez des albums partagés avec d'autres utilisateurs ou envoyez un lien public vers un album, avec mot de passe, date d'expiration et téléchargement des originaux en option.
+
+La galerie demande l'image serveur par défaut ; l'image `-lite` (`latest-lite`) est une version plus légère sans galerie.
 
 ### 🔖 Enregistrés — signets, articles et téléchargements
 

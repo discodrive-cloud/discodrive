@@ -6,9 +6,9 @@
 
 [English](../README.md) · [Deutsch](README.de.md) · [Українська](README.uk.md) · [Français](README.fr.md) · [**Español**](README.es.md) · [Русский](README.ru.md) · [Српски](README.sr.md)
 
-**Tu propia nube. Un servidor, un solo inicio de sesión — archivos, calendarios, contactos, tareas, música y libros.**
+**Tu propia nube. Un servidor, un solo inicio de sesión — archivos, fotos, calendarios, contactos, tareas, música y libros.**
 
-DiscoDrive es un reemplazo autoalojado del montón de suscripciones y del zoo de herramientas que normalmente hay que pegar entre sí para dejar iCloud, Google o Dropbox. En lugar de mantener File Browser, Radicale, un servidor Subsonic *y* Calibre-web — cada uno con sus propias complicaciones y peculiaridades — ejecutas una sola cosa. Todo lo de abajo vive tras una única cuenta, en tu hardware, bajo tu control.
+DiscoDrive es un reemplazo autoalojado del montón de suscripciones y del zoo de herramientas que normalmente hay que pegar entre sí para dejar iCloud, Google o Dropbox. En lugar de mantener File Browser, Immich, Radicale, un servidor Subsonic *y* Calibre-web — cada uno con sus propias complicaciones y peculiaridades — ejecutas una sola cosa. Todo lo de abajo vive tras una única cuenta, en tu hardware, bajo tu control.
 
 Tus archivos se guardan como archivos normales, en carpetas normales del disco. Si alguna vez necesitas dejar DiscoDrive por otro almacenamiento, basta con abrir la carpeta y encontrar tus datos justo donde los dejaste. Sin almacenamiento propietario por bloques, sin una base de datos que no se pueda leer, sin bloqueo de proveedor (vendor lock-in).
 
@@ -69,6 +69,20 @@ Multiplataforma desde el diseño: Apple, Windows, Linux y Android.
 - **Todos los formatos que importan** — EPUB, FB2, PDF, MOBI, CBZ y CBR, con miniaturas de portada y búsqueda en todo el catálogo.
 - **Sincronización del progreso de lectura** — empieza un libro en un dispositivo y continúa exactamente en el mismo punto en otro.
 - **Editor de metadatos** — edita títulos, autores, series, etiquetas y descripciones desde la web: libro a libro o en bloque por carpeta.
+
+### 📷 Fotos — tu propia galería
+
+- **Toda tu historia en fotos en una sola línea de tiempo** — fotos y vídeos de las carpetas que elijas: subida automática desde el móvil, un archivo importado, carpetas compartidas contigo.
+- **Las fotos del iPhone se ven bien** — HEIC, HDR y Apple ProRAW se ven como en el teléfono, las Live Photos cobran vida y los vídeos se reproducen en cualquier navegador.
+- **Las ediciones del móvil se guardan junto con el original** — la app de iOS sube el original y la versión editada, y en la galería puedes ver cualquiera de las dos.
+- **Tal día como hoy** — fotos hechas en esta misma fecha en años anteriores.
+- **Favoritos y filtros** — marca tus mejores fotos y muestra solo favoritos, solo vídeos, solo Live Photos o solo RAW.
+- **Mapa** — cada foto con ubicación en un mapa; acerca una zona y ve solo sus fotos.
+- **Corrige la fecha y el lugar** — de una foto o de toda una selección, o desplaza una serie unas horas si el reloj de la cámara iba mal. El cambio se queda con el archivo.
+- **Ocultas** — saca tus fotos privadas de la línea de tiempo a una sección aparte que solo se abre tras confirmar que eres tú. Las fotos borradas van a la papelera y se pueden restaurar.
+- **Comparte** — abre toda tu galería a tu pareja (puede mezclarla en su propia línea de tiempo), crea álbumes compartidos con otros usuarios o envía un enlace público a un álbum con contraseña, caducidad y descarga de originales opcionales.
+
+La galería necesita la imagen de servidor por defecto; la imagen `-lite` (`latest-lite`) es una versión más ligera sin ella.
 
 ### 🔖 Guardado — marcadores, artículos y descargas
 

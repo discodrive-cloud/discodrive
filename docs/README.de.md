@@ -6,9 +6,9 @@
 
 [English](../README.md) · [**Deutsch**](README.de.md) · [Українська](README.uk.md) · [Français](README.fr.md) · [Español](README.es.md) · [Русский](README.ru.md) · [Српски](README.sr.md)
 
-**Deine eigene Cloud. Ein Server, ein Login — Dateien, Kalender, Kontakte, Aufgaben, Musik und Bücher.**
+**Deine eigene Cloud. Ein Server, ein Login — Dateien, Fotos, Kalender, Kontakte, Aufgaben, Musik und Bücher.**
 
-DiscoDrive ist ein selbstgehosteter Ersatz für das Bündel an Abos und den Zoo an Tools, die man sonst zusammenstückeln muss, um von iCloud, Google oder Dropbox wegzukommen. Statt File Browser, Radicale, einen Subsonic-Server *und* Calibre-web zu betreiben — jedes mit seinen eigenen Tücken und Eigenheiten — betreibst du eine einzige Anwendung. Alles, was unten beschrieben wird, steckt hinter einem einzigen Konto, auf deiner Hardware, unter deiner Kontrolle.
+DiscoDrive ist ein selbstgehosteter Ersatz für das Bündel an Abos und den Zoo an Tools, die man sonst zusammenstückeln muss, um von iCloud, Google oder Dropbox wegzukommen. Statt File Browser, Immich, Radicale, einen Subsonic-Server *und* Calibre-web zu betreiben — jedes mit seinen eigenen Tücken und Eigenheiten — betreibst du eine einzige Anwendung. Alles, was unten beschrieben wird, steckt hinter einem einzigen Konto, auf deiner Hardware, unter deiner Kontrolle.
 
 Dateien werden als ganz normale Dateien in ganz normalen Ordnern auf der Festplatte gespeichert. Falls du jemals von DiscoDrive auf einen anderen Speicher umziehen musst, öffnest du einfach den Ordner und findest deine Daten genau dort, wo du sie gelassen hast. Kein proprietärer Chunk-Speicher, keine Datenbank, die man nicht lesen kann, kein Vendor-Lock-in.
 
@@ -69,6 +69,20 @@ Plattformübergreifend von Grund auf: Apple, Windows, Linux und Android.
 - **Alle wichtigen Formate** — EPUB, FB2, PDF, MOBI, CBZ und CBR, mit Cover-Vorschaubildern und Suche über den gesamten Katalog.
 - **Sync des Lesefortschritts** — beginne ein Buch auf einem Gerät und fahre auf einem anderen genau an derselben Stelle fort.
 - **Metadaten-Editor** — bearbeite Titel, Autoren, Reihen, Tags und Beschreibungen im Browser: pro Buch oder gesammelt für einen ganzen Ordner.
+
+### 📷 Fotos — deine eigene Galerie
+
+- **Deine ganze Fotogeschichte in einer Zeitleiste** — Fotos und Videos aus den Ordnern, die du auswählst: Auto-Upload vom Handy, ein importiertes Archiv, mit dir geteilte Ordner.
+- **iPhone-Fotos sehen richtig aus** — HEIC, HDR und Apple ProRAW wirken wie auf dem Handy, Live Photos werden lebendig, Videos laufen in jedem Browser.
+- **Bearbeitungen vom Handy bleiben samt Original erhalten** — die iOS-App lädt Original und bearbeitete Version hoch, in der Galerie kannst du dir beide ansehen.
+- **An diesem Tag** — Fotos, die an diesem Datum in früheren Jahren entstanden sind.
+- **Favoriten und Filter** — markiere deine besten Aufnahmen und zeige nur Favoriten, nur Videos, nur Live Photos oder nur RAW.
+- **Karte** — jedes Foto mit Ort auf der Karte; zoome in eine Gegend und sieh nur ihre Fotos.
+- **Datum und Ort korrigieren** — für ein Foto oder eine ganze Auswahl, oder verschiebe eine Serie um Stunden, wenn die Kamerauhr falsch ging. Die Änderung bleibt bei der Datei.
+- **Ausgeblendet** — private Fotos verschwinden aus der Zeitleiste in einen eigenen Bereich, der sich erst nach erneuter Bestätigung öffnet. Gelöschte Fotos landen im Papierkorb und lassen sich wiederherstellen.
+- **Teilen** — öffne deine ganze Galerie für deinen Partner (er kann sie in seine Zeitleiste mischen), lege geteilte Alben mit anderen Nutzern an oder verschicke einen öffentlichen Albumlink mit optionalem Passwort, Ablaufdatum und Download der Originale.
+
+Die Galerie braucht das Standard-Server-Image; das `-lite`-Image (`latest-lite`) ist eine kleinere Variante ohne sie.
 
 ### 🔖 Gespeichert — Lesezeichen, Artikel und Downloads
 
