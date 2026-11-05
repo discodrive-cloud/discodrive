@@ -724,6 +724,7 @@ type Querier interface {
 	SetPhotoNodeVersion(ctx context.Context, arg SetPhotoNodeVersionParams) error
 	SetPhotoParent(ctx context.Context, arg SetPhotoParentParams) error
 	SetPhotoPartnerFeed(ctx context.Context, arg SetPhotoPartnerFeedParams) (int64, error)
+	SetPhotoPersonsHidden(ctx context.Context, arg SetPhotoPersonsHiddenParams) (int64, error)
 	SetPhotoPlace(ctx context.Context, arg SetPhotoPlaceParams) error
 	// The user erased (true) or set (false) the position by hand; erasing also clears what is
 	// stored, so the row is right before the next re-read.

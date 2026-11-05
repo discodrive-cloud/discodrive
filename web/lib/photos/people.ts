@@ -23,3 +23,19 @@ export function ageLabel(n: number, locale: string, forms: Partial<Record<Intl.L
   const cat = new Intl.PluralRules(locale).select(n)
   return (forms[cat] ?? forms.other ?? '{n}').replace('{n}', String(n))
 }
+
+// pickPeople is the selection after a click on id in the list ids (in screen order): a
+// plain click toggles that person, a shift-click adds everyone from the last clicked one
+// (anchor) to it, the way file managers do.
+export function pickPeople(sel: Set<string>, ids: string[], id: string, anchor: string | null, shift: boolean): Set<string> {
+  const out = new Set(sel)
+  const from = shift && anchor ? ids.indexOf(anchor) : -1
+  const to = ids.indexOf(id)
+  if (from < 0 || to < 0) {
+    if (out.has(id)) out.delete(id)
+    else out.add(id)
+    return out
+  }
+  for (let i = Math.min(from, to); i <= Math.max(from, to); i++) out.add(ids[i])
+  return out
+}

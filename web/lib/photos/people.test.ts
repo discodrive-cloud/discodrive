@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ageLabel, findSameName, personLabel } from './people'
+import { ageLabel, findSameName, personLabel, pickPeople } from './people'
 
 const people = [
   { id: 'a', name: 'Аня' },
@@ -38,5 +38,21 @@ describe('ageLabel', () => {
   })
   it('falls back to other', () => {
     expect(ageLabel(2, 'en', { one: '{n} year', other: '{n} years' })).toBe('2 years')
+  })
+})
+
+describe('pickPeople', () => {
+  const ids = ['a', 'b', 'c', 'd', 'e']
+  it('toggles one person on a plain click', () => {
+    expect([...pickPeople(new Set(['a']), ids, 'c', null, false)]).toEqual(['a', 'c'])
+    expect([...pickPeople(new Set(['a', 'c']), ids, 'c', null, false)]).toEqual(['a'])
+  })
+  it('adds the run from the last clicked one on shift, both ways', () => {
+    expect([...pickPeople(new Set(['b']), ids, 'd', 'b', true)].sort()).toEqual(['b', 'c', 'd'])
+    expect([...pickPeople(new Set(), ids, 'a', 'c', true)].sort()).toEqual(['a', 'b', 'c'])
+  })
+  it('falls back to a toggle on shift without a known anchor', () => {
+    expect([...pickPeople(new Set(), ids, 'c', 'gone', true)]).toEqual(['c'])
+    expect([...pickPeople(new Set(), ids, 'c', null, true)]).toEqual(['c'])
   })
 })

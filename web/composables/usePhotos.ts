@@ -339,6 +339,9 @@ export function usePhotosApi() {
     // «Кто это?»: a face to one of the user's people, or to a new person of that name.
     assignFace: (faceId: string, body: { personId?: string; name?: string }) =>
       request<PhotoPerson>(`${PHOTOS_API}/people/faces/${faceId}/assign`, { method: 'POST', body }),
+    // Hides (or shows again) many people at once.
+    hidePeople: (ids: string[], hidden: boolean) =>
+      request<{ updated: number }>(`${PHOTOS_API}/people/hide`, { method: 'POST', body: { ids, hidden } }),
     // The faces of ids move to id; those persons are gone afterwards.
     mergePeople: (id: string, ids: string[]) =>
       request<PhotoPerson>(`${PHOTOS_API}/people/${id}/merge`, { method: 'POST', body: { ids } }),

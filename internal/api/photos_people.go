@@ -255,6 +255,41 @@ func (s *Server) handlePatchPhotoPerson(w http.ResponseWriter, r *http.Request) 
 	s.writePerson(w, r, uid, p.ID)
 }
 
+// POST /me/photos/v1/people/hide {"ids":[…], "hidden":bool} — hides (or shows again) many
+// people at once; the ones not the user's are skipped. Answers how many changed.
+func (s *Server) handleHidePhotoPeople(w http.ResponseWriter, r *http.Request) {
+	if !s.facesReady(w) {
+		return
+	}
+	uid, ok := photosUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		IDs    []string `json:"ids"`
+		Hidden *bool    `json:"hidden"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Hidden == nil || len(req.IDs) == 0 || len(req.IDs) > 10000 {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	ids := make([]pgtype.UUID, 0, len(req.IDs))
+	for _, raw := range req.IDs {
+		id, err := db.ParseUUID(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid ids")
+			return
+		}
+		ids = append(ids, id)
+	}
+	n, err := s.q.SetPhotoPersonsHidden(r.Context(), db.SetPhotoPersonsHiddenParams{UserID: uid, Ids: ids, Hidden: *req.Hidden})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"updated": n})
+}
+
 // POST /me/photos/v1/people/{id}/merge {"ids":[…]} — the faces of the persons ids move to
 // {id} and those persons are deleted; a person without a name takes the first name among
 // them.

@@ -97,6 +97,10 @@ UPDATE photo_persons SET
     updated_at = now()
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id);
 
+-- name: SetPhotoPersonsHidden :execrows
+UPDATE photo_persons SET hidden = sqlc.arg(hidden), updated_at = now()
+WHERE user_id = sqlc.arg(user_id) AND id = ANY(sqlc.arg(ids)::uuid[]) AND hidden <> sqlc.arg(hidden);
+
 -- name: MoveFacesToPerson :exec
 UPDATE photo_faces SET person_id = sqlc.arg(target)
 WHERE user_id = sqlc.arg(user_id) AND person_id = ANY(sqlc.arg(sources)::uuid[]);

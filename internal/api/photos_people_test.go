@@ -158,6 +158,51 @@ func TestPeopleRenameHideMerge(t *testing.T) {
 	}
 }
 
+func TestPeopleHideMany(t *testing.T) {
+	e := newPhotosEnv(t, true, 0)
+	e.withFaces(nil)
+	a1, a2, a3 := e.asset(e.user, assetOpts{}), e.asset(e.user, assetOpts{}), e.asset(e.user, assetOpts{})
+	p1, p2, keep := e.person(e.user, ""), e.person(e.user, ""), e.person(e.user, "Аня")
+	e.face(a1, p1, 0.2)
+	e.face(a2, p2, 0.2)
+	e.face(a3, keep, 0.2)
+	ids := []string{db.UUIDString(p1), db.UUIDString(p2), db.UUIDString(p1)}
+
+	var res struct {
+		Updated int `json:"updated"`
+	}
+	e.json(e.do(e.tok, "POST", "/me/photos/v1/people/hide", map[string]any{"ids": ids, "hidden": true}), 200, &res)
+	if res.Updated != 2 {
+		t.Fatalf("updated %d", res.Updated)
+	}
+	if got := e.people(e.tok, ""); len(got) != 1 || got[0].ID != db.UUIDString(keep) {
+		t.Fatalf("visible after hide %+v", got)
+	}
+	if got := e.people(e.tok, "?hidden=true"); len(got) != 2 {
+		t.Fatalf("hidden after hide %+v", got)
+	}
+	e.json(e.do(e.tok, "POST", "/me/photos/v1/people/hide", map[string]any{"ids": ids[:1], "hidden": false}), 200, &res)
+	if got := e.people(e.tok, ""); len(got) != 2 {
+		t.Fatalf("visible after show %+v", got)
+	}
+
+	// Somebody else's person is not touched; bad input is refused.
+	other := e.person(e.user2, "")
+	e.json(e.do(e.tok, "POST", "/me/photos/v1/people/hide", map[string]any{"ids": []string{db.UUIDString(other)}, "hidden": true}), 200, &res)
+	if res.Updated != 0 {
+		t.Fatalf("hid somebody else's person: %d", res.Updated)
+	}
+	for _, body := range []map[string]any{
+		{"ids": []string{}, "hidden": true},
+		{"ids": []string{"nope"}, "hidden": true},
+		{"ids": ids},
+	} {
+		if rec := e.do(e.tok, "POST", "/me/photos/v1/people/hide", body); rec.Code != 400 {
+			t.Fatalf("%v: %d", body, rec.Code)
+		}
+	}
+}
+
 func TestPeoplePrivate(t *testing.T) {
 	e := newPhotosEnv(t, true, 0)
 	e.withFaces(nil)

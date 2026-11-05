@@ -751,6 +751,25 @@ func (q *Queries) SetFacesEnabled(ctx context.Context, arg SetFacesEnabledParams
 	return result.RowsAffected(), nil
 }
 
+const setPhotoPersonsHidden = `-- name: SetPhotoPersonsHidden :execrows
+UPDATE photo_persons SET hidden = $1, updated_at = now()
+WHERE user_id = $2 AND id = ANY($3::uuid[]) AND hidden <> $1
+`
+
+type SetPhotoPersonsHiddenParams struct {
+	Hidden bool          `json:"hidden"`
+	UserID pgtype.UUID   `json:"user_id"`
+	Ids    []pgtype.UUID `json:"ids"`
+}
+
+func (q *Queries) SetPhotoPersonsHidden(ctx context.Context, arg SetPhotoPersonsHiddenParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setPhotoPersonsHidden, arg.Hidden, arg.UserID, arg.Ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const unassignUnnamedPersons = `-- name: UnassignUnnamedPersons :exec
 UPDATE photo_faces f SET person_id = NULL, clustered = false
 WHERE f.user_id = $1 AND f.model = $2::text AND (f.person_id IS NULL OR f.person_id IN (
