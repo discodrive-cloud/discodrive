@@ -373,6 +373,7 @@ type PhotoFace struct {
 	Model     string             `json:"model"`
 	Clustered bool               `json:"clustered"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	Manual    bool               `json:"manual"`
 }
 
 type PhotoPartner struct {

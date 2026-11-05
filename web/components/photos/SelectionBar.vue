@@ -10,6 +10,9 @@ const props = defineProps<{
   readonly?: boolean
   // inside an album: "take out of the album"
   albumMode?: boolean
+  // inside a person: "not them" (personName is theirs, empty when unnamed)
+  personMode?: boolean
+  personName?: string
 }>()
 const emit = defineEmits<{
   favorite: []
@@ -20,16 +23,20 @@ const emit = defineEmits<{
   'edit-place': []
   album: []
   'remove-from-album': []
+  'not-person': []
   clear: []
 }>()
 const { t } = useI18n()
 
-type Action = { id: 'favorite' | 'download' | 'edit-date' | 'edit-place' | 'hide' | 'delete' | 'album' | 'remove-from-album'; icon: string; label: string; filled?: boolean; danger?: boolean }
+type Action = { id: 'favorite' | 'download' | 'edit-date' | 'edit-place' | 'hide' | 'delete' | 'album' | 'remove-from-album' | 'not-person'; icon: string; label: string; filled?: boolean; danger?: boolean }
 
 const actions = computed<Action[]>(() => {
   const list: Action[] = []
   if (!props.hiddenMode) list.push({ id: 'album', icon: 'lucide:book-image', label: t('photos.add_to_album') })
   if (props.albumMode) list.push({ id: 'remove-from-album', icon: 'lucide:book-x', label: t('photos.remove_from_album') })
+  if (props.personMode && !props.readonly) {
+    list.push({ id: 'not-person', icon: 'lucide:user-x', label: props.personName ? t('photos.face_not_title', { name: props.personName }) : t('photos.face_not_other') })
+  }
   if (!props.readonly) list.push({ id: 'favorite', icon: 'lucide:heart', label: props.allFavorite ? t('photos.unfavorite') : t('photos.favorite'), filled: props.allFavorite })
   list.push({ id: 'download', icon: 'lucide:download', label: t('common.download') })
   if (!props.readonly) {
@@ -48,6 +55,7 @@ function run(id: Action['id']) {
   switch (id) {
     case 'album': emit('album'); break
     case 'remove-from-album': emit('remove-from-album'); break
+    case 'not-person': emit('not-person'); break
     case 'favorite': emit('favorite'); break
     case 'download': emit('download'); break
     case 'edit-date': emit('edit-date'); break

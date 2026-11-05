@@ -240,6 +240,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("GET /me/photos/v1/people/{id}", prot(http.HandlerFunc(s.handleGetPhotoPerson)))
 	mux.Handle("PATCH /me/photos/v1/people/{id}", prot(http.HandlerFunc(s.handlePatchPhotoPerson)))
 	mux.Handle("POST /me/photos/v1/people/hide", prot(http.HandlerFunc(s.handleHidePhotoPeople)))
+	mux.Handle("POST /me/photos/v1/people/{id}/faces/move", prot(http.HandlerFunc(s.handleMovePersonFaces)))
 	mux.Handle("POST /me/photos/v1/people/{id}/merge", prot(http.HandlerFunc(s.handleMergePhotoPeople)))
 	mux.Handle("GET /me/photos/v1/people/faces/{faceId}/thumb", prot(http.HandlerFunc(s.handlePhotoFaceThumb)))
 	mux.Handle("POST /me/photos/v1/people/faces/{faceId}/assign", prot(http.HandlerFunc(s.handleAssignPhotoFace)))

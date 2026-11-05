@@ -620,6 +620,8 @@ type Querier interface {
 	// visited adds no new row, so even a corrupted, cyclic tree ends the recursion.
 	MoveBrowserBookmark(ctx context.Context, arg MoveBrowserBookmarkParams) (BrowserBookmark, error)
 	MoveFacesToPerson(ctx context.Context, arg MoveFacesToPersonParams) error
+	// The faces of one person on the given cards go to another person, or to nobody.
+	MovePersonFaces(ctx context.Context, arg MovePersonFacesParams) (int64, error)
 	NextBookmarkSeq(ctx context.Context, id pgtype.UUID) (int64, error)
 	NextChangeSeq(ctx context.Context, id pgtype.UUID) (int64, error)
 	NotificationPrefsForEvent(ctx context.Context, arg NotificationPrefsForEventParams) ([]NotificationPrefsForEventRow, error)
@@ -700,8 +702,8 @@ type Querier interface {
 	SetEbookIndexedSeq(ctx context.Context, arg SetEbookIndexedSeqParams) error
 	SetEpisodeDownloaded(ctx context.Context, arg SetEpisodeDownloadedParams) error
 	SetEpisodeStatus(ctx context.Context, arg SetEpisodeStatusParams) error
-	// The user said who it is: the face goes to that person, whatever it had (a pass never
-	// moves an assigned face, so the choice stays).
+	// The user said who it is: the face goes to that person, whatever it had, or to nobody
+	// (a pass never moves an assigned face, and leaves out one taken off, so the choice stays).
 	SetFacePerson(ctx context.Context, arg SetFacePersonParams) error
 	SetFaceState(ctx context.Context, arg SetFaceStateParams) error
 	SetFacesEnabled(ctx context.Context, arg SetFacesEnabledParams) (int64, error)

@@ -27,8 +27,8 @@ watch(() => [a.value?.people, a.value?.unknownFaces], () => {
   const ids = [...(a.value?.people ?? []).map((p) => p.faceId), ...(a.value?.unknownFaces ?? []).map((f) => f.faceId)]
   faceLoader.sync(ids.map((id, i) => ({ key: `face:${id}`, url: faceThumbURL(id), priority: i })))
 }, { immediate: true })
-// «Кто это?» on a face nobody was matched to.
-const assigning = ref<string | null>(null)
+// «Кто это?» on a face nobody was matched to; «Не тот человек?» (from) on a wrong match.
+const assigning = ref<{ faceId: string; from?: { id: string; name: string } } | null>(null)
 function assigned() {
   assigning.value = null
   emit('people-changed')
@@ -132,26 +132,33 @@ const whereLink = computed(() => {
       <section v-if="a.people?.length || a.unknownFaces?.length" class="row">
         <div class="k">{{ t('photos.info_people') }}</div>
         <div class="flex flex-wrap gap-x-2 gap-y-3 pt-1">
-          <NuxtLink
-            v-for="p in a.people"
-            :key="p.id"
-            :to="{ path: '/photos', query: { tab: 'people', person: p.id } }"
-            class="person"
-          >
-            <span class="face">
-              <img v-if="faceSrc(p.faceId)" :src="faceSrc(p.faceId)" alt="" draggable="false" />
-              <Icon v-else name="lucide:user" size="18" class="opacity-50" />
-            </span>
-            <span class="name" :class="p.name ? '' : 'opacity-60'">{{ p.name || t('photos.person_unnamed') }}</span>
-            <span v-if="p.age != null" class="age">{{ age(p.age) }}</span>
-          </NuxtLink>
+          <div v-for="p in a.people" :key="p.faceId" class="relative">
+            <NuxtLink :to="{ path: '/photos', query: { tab: 'people', person: p.id } }" class="person">
+              <span class="face">
+                <img v-if="faceSrc(p.faceId)" :src="faceSrc(p.faceId)" alt="" draggable="false" />
+                <Icon v-else name="lucide:user" size="18" class="opacity-50" />
+              </span>
+              <span class="name" :class="p.name ? '' : 'opacity-60'">{{ p.name || t('photos.person_unnamed') }}</span>
+              <span v-if="p.age != null" class="age">{{ age(p.age) }}</span>
+            </NuxtLink>
+            <button
+              v-if="!readonly"
+              type="button"
+              class="fix"
+              :title="t('photos.face_edit')"
+              :aria-label="t('photos.face_edit')"
+              @click="assigning = { faceId: p.faceId, from: { id: p.id, name: p.name } }"
+            >
+              <Icon name="lucide:pencil" size="11" />
+            </button>
+          </div>
           <button
             v-for="f in a.unknownFaces ?? []"
             :key="f.faceId"
             type="button"
             class="person"
             :title="t('photos.face_who')"
-            @click="assigning = f.faceId"
+            @click="assigning = { faceId: f.faceId }"
           >
             <span class="face unknown">
               <img v-if="faceSrc(f.faceId)" :src="faceSrc(f.faceId)" alt="" draggable="false" />
@@ -185,7 +192,7 @@ const whereLink = computed(() => {
         <NuxtLink :to="whereLink.to" class="edit break-all text-left">{{ whereLink.path }} →</NuxtLink>
       </section>
     </template>
-    <AssignFaceDialog v-if="assigning" :face-id="assigning" @close="assigning = null" @done="assigned" />
+    <AssignFaceDialog v-if="assigning" :face-id="assigning.faceId" :from="assigning.from" @close="assigning = null" @done="assigned" />
   </aside>
 </template>
 
@@ -203,4 +210,6 @@ const whereLink = computed(() => {
 .face.unknown img { opacity: 0.8; }
 .name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .age { opacity: 0.55; }
+.fix { position: absolute; top: -0.25rem; right: 0.125rem; display: flex; height: 1.25rem; width: 1.25rem; align-items: center; justify-content: center; border-radius: 9999px; background: #333; color: #ddd; box-shadow: 0 0 0 2px #1b1b1b; opacity: 0.75; transition: opacity 0.15s, background 0.15s; }
+.fix:hover, .fix:focus-visible { opacity: 1; background: #7ab8ff; color: #111; }
 </style>

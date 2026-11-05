@@ -21,6 +21,7 @@ import AddToAlbumDialog from '~/components/photos/AddToAlbumDialog.vue'
 import AlbumShareDialog from '~/components/photos/AlbumShareDialog.vue'
 import PhotoPeople from '~/components/photos/PhotoPeople.vue'
 import MergePeopleDialog from '~/components/photos/MergePeopleDialog.vue'
+import AssignFaceDialog from '~/components/photos/AssignFaceDialog.vue'
 import BirthdayDialog from '~/components/photos/BirthdayDialog.vue'
 import { findSameName, personLabel } from '~/lib/photos/people'
 import type { Bucket, PhotoAlbumDetail, PhotoFilter, PhotoPerson, PhotoRow, PhotoSettings } from '~/composables/usePhotos'
@@ -543,6 +544,23 @@ function togglePersonHidden() {
     say(personInfo.value.hidden ? t('photos.person_hidden_done') : t('photos.person_shown_done'))
   })
 }
+// «Это не …»: the person's faces on the picked cards go to somebody else, or nowhere.
+const movingFaces = ref<string[] | null>(null)
+async function facesMoved(to: PhotoPerson | null, n: number) {
+  movingFaces.value = null
+  selection.value = new Set()
+  say(to ? t('photos.faces_moved', { n }) : t('photos.faces_removed', { n }))
+  const id = person.value
+  try {
+    personInfo.value = await api.person(id)
+  } catch {
+    // An unnamed person left without faces is gone: back to the list.
+    if (person.value === id) closeScope()
+    return
+  }
+  await loadBuckets()
+  grid.value?.invalidate()
+}
 async function mergeDone(merged: PhotoPerson) {
   merging.value = false
   personInfo.value = merged
@@ -818,6 +836,9 @@ async function afterEdit(r: EditResult) {
             :busy="busy"
             :readonly="readonlySelection"
             :album-mode="!!album"
+            :person-mode="!!personInfo"
+            :person-name="personInfo?.name ?? ''"
+            @not-person="movingFaces = selectedIds"
             @album="toAlbum"
             @remove-from-album="removeFromAlbum"
             @clear="selection = new Set()"
@@ -864,5 +885,13 @@ async function afterEdit(r: EditResult) {
     <AlbumShareDialog v-if="sharing && albumInfo" :album="albumInfo" @close="sharing = false" />
     <BirthdayDialog v-if="birthday && personInfo" :person="personInfo" @close="birthday = false" @done="(p) => { personInfo = p; birthday = false }" />
     <MergePeopleDialog v-if="merging && personInfo" :person="personInfo" @close="merging = false" @done="mergeDone" />
+    <AssignFaceDialog
+      v-if="movingFaces && personInfo"
+      :face-id="personInfo.cover"
+      :from="{ id: personInfo.id, name: personInfo.name }"
+      :asset-ids="movingFaces"
+      @close="movingFaces = null"
+      @done="facesMoved"
+    />
   </div>
 </template>

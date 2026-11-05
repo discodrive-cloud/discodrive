@@ -61,6 +61,9 @@ export interface PhotoAsset extends PhotoRow {
 export interface PhotoAssetPerson { id: string; name: string; faceId: string; age: number | null; face: [number, number, number, number] }
 
 // «Люди»: a person of the user's; cover is a face id (faceThumbURL).
+// Where faces the user moves go: a person, a new one of that name, or nobody.
+export type FaceTarget = { personId: string } | { name: string } | { remove: true }
+
 export interface PhotoPerson {
   id: string
   name: string
@@ -336,9 +339,13 @@ export function usePhotosApi() {
     person: (id: string) => request<PhotoPerson>(`${PHOTOS_API}/people/${id}`),
     updatePerson: (id: string, patch: { name?: string; hidden?: boolean; birthDate?: string | null }) =>
       request<PhotoPerson>(`${PHOTOS_API}/people/${id}`, { method: 'PATCH', body: patch }),
-    // «Кто это?»: a face to one of the user's people, or to a new person of that name.
-    assignFace: (faceId: string, body: { personId?: string; name?: string }) =>
-      request<PhotoPerson>(`${PHOTOS_API}/people/faces/${faceId}/assign`, { method: 'POST', body }),
+    // «Кто это?» / «не тот человек»: a face to one of the user's people, a new person of
+    // that name, or nobody (it shows as unknown then).
+    assignFace: (faceId: string, body: FaceTarget) =>
+      request<PhotoPerson | Record<string, never>>(`${PHOTOS_API}/people/faces/${faceId}/assign`, { method: 'POST', body }),
+    // «Это не он» from the person's grid: their faces on those cards go elsewhere.
+    movePersonFaces: (id: string, assetIds: string[], body: FaceTarget) =>
+      request<{ moved: number; person: PhotoPerson | null }>(`${PHOTOS_API}/people/${id}/faces/move`, { method: 'POST', body: { ...body, assetIds } }),
     // Hides (or shows again) many people at once.
     hidePeople: (ids: string[], hidden: boolean) =>
       request<{ updated: number }>(`${PHOTOS_API}/people/hide`, { method: 'POST', body: { ids, hidden } }),

@@ -1153,6 +1153,14 @@
     "face_unknown": "Кто это?",
     "face_assign_hint": "Выберите человека или введите новое имя.",
     "face_name_placeholder": "Имя",
-    "face_new_person": "Новый человек: «{name}»"
+    "face_new_person": "Новый человек: «{name}»",
+    "face_not_title": "Это не {name}",
+    "face_not_other": "Это другой человек",
+    "face_move_hint": "Выберите, кто это на самом деле, или просто уберите лицо отсюда.",
+    "face_move_hint_many": "Фото: {n}. Выберите, кто на них на самом деле, или просто уберите отсюда.",
+    "face_remove": "Ни к кому — просто убрать",
+    "face_edit": "Не тот человек?",
+    "faces_moved": "Перенесено фото: {n}",
+    "faces_removed": "Убрано фото: {n}"
   }
 }

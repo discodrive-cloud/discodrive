@@ -353,7 +353,7 @@ func (q *Queries) InsertPhotoFace(ctx context.Context, arg InsertPhotoFaceParams
 }
 
 const listAssetFaces = `-- name: ListAssetFaces :many
-SELECT id, user_id, asset_id, person_id, x1, y1, x2, y2, score, embedding, model, clustered, created_at FROM photo_faces WHERE asset_id = $1 ORDER BY id
+SELECT id, user_id, asset_id, person_id, x1, y1, x2, y2, score, embedding, model, clustered, created_at, manual FROM photo_faces WHERE asset_id = $1 ORDER BY id
 `
 
 func (q *Queries) ListAssetFaces(ctx context.Context, assetID pgtype.UUID) ([]PhotoFace, error) {
@@ -379,6 +379,7 @@ func (q *Queries) ListAssetFaces(ctx context.Context, assetID pgtype.UUID) ([]Ph
 			&i.Model,
 			&i.Clustered,
 			&i.CreatedAt,
+			&i.Manual,
 		); err != nil {
 			return nil, err
 		}
@@ -602,6 +603,7 @@ const listUserFaceVectors = `-- name: ListUserFaceVectors :many
 SELECT f.id, f.person_id, f.embedding, f.clustered
 FROM photo_faces f
 WHERE f.user_id = $1 AND f.model = $2::text
+  AND NOT (f.manual AND f.person_id IS NULL)
 ORDER BY f.created_at, f.id
 `
 
@@ -668,6 +670,33 @@ func (q *Queries) MoveFacesToPerson(ctx context.Context, arg MoveFacesToPersonPa
 	return err
 }
 
+const movePersonFaces = `-- name: MovePersonFaces :execrows
+UPDATE photo_faces SET person_id = $1, clustered = true, manual = true
+WHERE user_id = $2 AND person_id = $3
+  AND asset_id = ANY($4::uuid[])
+`
+
+type MovePersonFacesParams struct {
+	Target   pgtype.UUID   `json:"target"`
+	UserID   pgtype.UUID   `json:"user_id"`
+	Source   pgtype.UUID   `json:"source"`
+	AssetIds []pgtype.UUID `json:"asset_ids"`
+}
+
+// The faces of one person on the given cards go to another person, or to nobody.
+func (q *Queries) MovePersonFaces(ctx context.Context, arg MovePersonFacesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, movePersonFaces,
+		arg.Target,
+		arg.UserID,
+		arg.Source,
+		arg.AssetIds,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const resetFaceState = `-- name: ResetFaceState :exec
 UPDATE photo_assets SET face_state = NULL, face_error = NULL WHERE user_id = $1 AND parent_id IS NULL
 `
@@ -694,7 +723,7 @@ func (q *Queries) ResetFacesOfOtherModel(ctx context.Context, model string) (int
 }
 
 const setFacePerson = `-- name: SetFacePerson :exec
-UPDATE photo_faces SET person_id = $1, clustered = true
+UPDATE photo_faces SET person_id = $1, clustered = true, manual = true
 WHERE id = $2 AND user_id = $3
 `
 
@@ -704,8 +733,8 @@ type SetFacePersonParams struct {
 	UserID   pgtype.UUID `json:"user_id"`
 }
 
-// The user said who it is: the face goes to that person, whatever it had (a pass never
-// moves an assigned face, so the choice stays).
+// The user said who it is: the face goes to that person, whatever it had, or to nobody
+// (a pass never moves an assigned face, and leaves out one taken off, so the choice stays).
 func (q *Queries) SetFacePerson(ctx context.Context, arg SetFacePersonParams) error {
 	_, err := q.db.Exec(ctx, setFacePerson, arg.PersonID, arg.ID, arg.UserID)
 	return err

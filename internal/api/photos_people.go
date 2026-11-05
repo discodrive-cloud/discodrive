@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -178,8 +179,12 @@ func (s *Server) writePerson(w http.ResponseWriter, r *http.Request, uid, id pgt
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, personDTO{ID: db.UUIDString(p.ID), Name: p.Name, Hidden: p.Hidden, BirthDate: datep(p.BirthDate),
-		Count: p.Count, Cover: uuidp(p.CoverFaceID)})
+	writeJSON(w, http.StatusOK, personDTOOf(p))
+}
+
+func personDTOOf(p db.GetPhotoPersonRow) personDTO {
+	return personDTO{ID: db.UUIDString(p.ID), Name: p.Name, Hidden: p.Hidden, BirthDate: datep(p.BirthDate),
+		Count: p.Count, Cover: uuidp(p.CoverFaceID)}
 }
 
 // GET /me/photos/v1/people/{id}
@@ -474,9 +479,50 @@ func (s *Server) assetUnknownFaces(r *http.Request, a db.PhotoAsset) ([]unknownF
 	return out, nil
 }
 
-// POST /me/photos/v1/people/faces/{faceId}/assign {"personId"} or {"name"} — the user says
-// who a face is: one of their people, or a new person of that name. A face that had a
-// person moves (a wrong match).
+// faceTarget is where faces the user moves go: one of the user's people (PersonID), a new
+// person of that name (Name), or nobody (Remove).
+type faceTarget struct {
+	PersonID string `json:"personId"`
+	Name     string `json:"name"`
+	Remove   bool   `json:"remove"`
+}
+
+// check answers 400 unless exactly one of the three is given, and 404 for a person not the
+// user's. It returns the person (invalid for a new one or for nobody) and the trimmed name.
+func (s *Server) checkFaceTarget(w http.ResponseWriter, r *http.Request, uid pgtype.UUID, t faceTarget) (pgtype.UUID, string, bool) {
+	name := strings.TrimSpace(t.Name)
+	given := 0
+	for _, b := range []bool{t.PersonID != "", name != "", t.Remove} {
+		if b {
+			given++
+		}
+	}
+	if given != 1 || utf8.RuneCountInString(name) > maxPersonName {
+		writeError(w, http.StatusBadRequest, "give personId, name or remove")
+		return pgtype.UUID{}, "", false
+	}
+	if t.PersonID == "" {
+		return pgtype.UUID{}, name, true
+	}
+	p, ok := s.person(w, r, uid, t.PersonID)
+	return p.ID, name, ok
+}
+
+// resolve creates the person of the name if one is to be made (under the user lock).
+func (s *Server) resolveFaceTarget(ctx context.Context, uid, target pgtype.UUID, name string) (pgtype.UUID, error) {
+	if target.Valid || name == "" {
+		return target, nil
+	}
+	id, err := s.q.CreatePhotoPerson(ctx, uid)
+	if err != nil {
+		return id, err
+	}
+	_, err = s.q.UpdatePhotoPerson(ctx, db.UpdatePhotoPersonParams{ID: id, UserID: uid, Name: pgtype.Text{String: name, Valid: true}})
+	return id, err
+}
+
+// POST /me/photos/v1/people/faces/{faceId}/assign {"personId"|"name"|"remove":true} — «Кто
+// это?» and «не он»: the face goes to a person, a new one, or nobody (it shows as unknown).
 func (s *Server) handleAssignPhotoFace(w http.ResponseWriter, r *http.Request) {
 	if !s.facesReady(w) {
 		return
@@ -490,17 +536,9 @@ func (s *Server) handleAssignPhotoFace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	var req struct {
-		PersonID string `json:"personId"`
-		Name     string `json:"name"`
-	}
+	var req faceTarget
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
-	name := strings.TrimSpace(req.Name)
-	if (req.PersonID == "") == (name == "") || utf8.RuneCountInString(name) > maxPersonName {
-		writeError(w, http.StatusBadRequest, "give personId or name")
 		return
 	}
 	ctx := r.Context()
@@ -511,33 +549,97 @@ func (s *Server) handleAssignPhotoFace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	var target pgtype.UUID
-	if req.PersonID != "" {
-		p, ok := s.person(w, r, uid, req.PersonID)
-		if !ok {
-			return
-		}
-		target = p.ID
+	target, name, ok := s.checkFaceTarget(w, r, uid, req)
+	if !ok {
+		return
 	}
 	err = s.faces.Locked(uid, func() error {
-		if !target.Valid {
-			id, err := s.q.CreatePhotoPerson(ctx, uid)
-			if err != nil {
-				return err
-			}
-			if _, err := s.q.UpdatePhotoPerson(ctx, db.UpdatePhotoPersonParams{ID: id, UserID: uid,
-				Name: pgtype.Text{String: name, Valid: true}}); err != nil {
-				return err
-			}
-			target = id
+		var err error
+		if target, err = s.resolveFaceTarget(ctx, uid, target, name); err != nil {
+			return err
 		}
-		return s.q.SetFacePerson(ctx, db.SetFacePersonParams{ID: faceID, UserID: uid, PersonID: target})
+		if err := s.q.SetFacePerson(ctx, db.SetFacePersonParams{ID: faceID, UserID: uid, PersonID: target}); err != nil {
+			return err
+		}
+		return s.q.DeleteEmptyPhotoPersons(ctx, uid)
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error") // a person merged away meanwhile, at worst
 		return
 	}
+	if !target.Valid {
+		writeJSON(w, http.StatusOK, map[string]any{})
+		return
+	}
 	s.writePerson(w, r, uid, target)
+}
+
+// POST /me/photos/v1/people/{id}/faces/move {"assetIds":[…], "personId"|"name"|"remove":true}
+// — «Это не он» from the person's grid: their faces on those cards go to another person, a
+// new one, or nobody. Answers how many moved and the person they went to (null for nobody).
+func (s *Server) handleMovePersonFaces(w http.ResponseWriter, r *http.Request) {
+	if !s.facesReady(w) {
+		return
+	}
+	uid, ok := photosUser(w, r)
+	if !ok {
+		return
+	}
+	src, ok := s.person(w, r, uid, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	var req struct {
+		faceTarget
+		AssetIDs []string `json:"assetIds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.AssetIDs) == 0 || len(req.AssetIDs) > 10000 {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	assets := make([]pgtype.UUID, 0, len(req.AssetIDs))
+	for _, raw := range req.AssetIDs {
+		id, err := db.ParseUUID(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid assetIds")
+			return
+		}
+		assets = append(assets, id)
+	}
+	target, name, ok := s.checkFaceTarget(w, r, uid, req.faceTarget)
+	if !ok {
+		return
+	}
+	if target == src.ID {
+		writeError(w, http.StatusBadRequest, "same person")
+		return
+	}
+	ctx := r.Context()
+	var moved int64
+	err := s.faces.Locked(uid, func() error {
+		var err error
+		if target, err = s.resolveFaceTarget(ctx, uid, target, name); err != nil {
+			return err
+		}
+		if moved, err = s.q.MovePersonFaces(ctx, db.MovePersonFacesParams{UserID: uid, Source: src.ID, Target: target, AssetIds: assets}); err != nil {
+			return err
+		}
+		return s.q.DeleteEmptyPhotoPersons(ctx, uid)
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	out := map[string]any{"moved": moved, "person": nil}
+	if target.Valid {
+		p, err := s.q.GetPhotoPerson(ctx, db.GetPhotoPersonParams{ID: target, UserID: uid})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		out["person"] = personDTOOf(p)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // parsePersonFilter reads ?person= for the feed: one of the user's persons, in the user's

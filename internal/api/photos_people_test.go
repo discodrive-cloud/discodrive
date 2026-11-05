@@ -410,3 +410,127 @@ func TestPeopleAssignFace(t *testing.T) {
 		}
 	}
 }
+
+// A wrong match fixed from the person's grid: their faces on the picked cards go to
+// somebody else, to a new person, or nowhere (and the next pass leaves them alone).
+func TestPeopleMoveFaces(t *testing.T) {
+	e := newPhotosEnv(t, true, 0)
+	e.withFaces(nil)
+	e.json(e.do(e.tok, "PUT", "/me/photos/v1/faces", map[string]any{"enabled": true}), 200, nil)
+	a1, a2, a3, a4 := e.asset(e.user, assetOpts{}), e.asset(e.user, assetOpts{}), e.asset(e.user, assetOpts{}), e.asset(e.user, assetOpts{})
+	mike, anya := e.person(e.user, "Mike"), e.person(e.user, "Аня")
+	e.face(a1, mike, 0.2)
+	e.face(a2, mike, 0.2)
+	f3 := e.face(a3, mike, 0.2)
+	e.face(a4, anya, 0.2)
+	e.face(a1, anya, 0.1) // Аня is on a1 too: she stays where she is
+	path := "/me/photos/v1/people/" + db.UUIDString(mike) + "/faces/move"
+	ids := func(as ...db.PhotoAsset) []string {
+		out := []string{}
+		for _, a := range as {
+			out = append(out, db.UUIDString(a.ID))
+		}
+		return out
+	}
+	count := func(id pgtype.UUID) int {
+		var p personResp
+		e.json(e.do(e.tok, "GET", "/me/photos/v1/people/"+db.UUIDString(id), nil), 200, &p)
+		return p.Count
+	}
+	var res struct {
+		Moved  int         `json:"moved"`
+		Person *personResp `json:"person"`
+	}
+
+	e.json(e.do(e.tok, "POST", path, map[string]any{"assetIds": ids(a1, a2), "personId": db.UUIDString(anya)}), 200, &res)
+	if res.Moved != 2 || res.Person == nil || res.Person.ID != db.UUIDString(anya) {
+		t.Fatalf("move to Аня: %+v", res)
+	}
+	if count(mike) != 1 || count(anya) != 3 {
+		t.Fatalf("after move: mike %d, anya %d", count(mike), count(anya))
+	}
+
+	// To a new person by name.
+	e.json(e.do(e.tok, "POST", "/me/photos/v1/people/"+db.UUIDString(anya)+"/faces/move",
+		map[string]any{"assetIds": ids(a2), "name": "Петя"}), 200, &res)
+	if res.Moved != 1 || res.Person == nil || res.Person.Name != "Петя" || res.Person.Count != 1 {
+		t.Fatalf("move to a new person: %+v", res)
+	}
+
+	// Nowhere: the face becomes «Кто это?» on its card and is kept out of the passes.
+	e.json(e.do(e.tok, "POST", path, map[string]any{"assetIds": ids(a3), "remove": true}), 200, &res)
+	if res.Moved != 1 || res.Person != nil {
+		t.Fatalf("remove: %+v", res)
+	}
+	var c struct {
+		UnknownFaces []struct {
+			FaceID string `json:"faceId"`
+		} `json:"unknownFaces"`
+	}
+	e.json(e.do(e.tok, "GET", "/me/photos/v1/assets/"+db.UUIDString(a3.ID), nil), 200, &c)
+	if len(c.UnknownFaces) != 1 || c.UnknownFaces[0].FaceID != db.UUIDString(f3) {
+		t.Fatalf("removed face on its card: %+v", c)
+	}
+	vecs, err := e.q.ListUserFaceVectors(e.ctx, db.ListUserFaceVectorsParams{UserID: e.user.ID, Model: "auraface"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range vecs {
+		if v.ID == f3 {
+			t.Fatal("a face the user took off a person goes back to the passes")
+		}
+	}
+
+	// Cards without the person's face, somebody else's cards: nothing moves.
+	e.json(e.do(e.tok, "POST", path, map[string]any{"assetIds": ids(a4), "remove": true}), 200, &res)
+	if res.Moved != 0 {
+		t.Fatalf("moved from a card without the person: %d", res.Moved)
+	}
+	theirs := e.asset(e.user2, assetOpts{})
+	e.json(e.do(e.tok, "POST", "/me/photos/v1/people/"+db.UUIDString(anya)+"/faces/move",
+		map[string]any{"assetIds": ids(theirs), "remove": true}), 200, &res)
+	if res.Moved != 0 {
+		t.Fatalf("moved on somebody else's card: %d", res.Moved)
+	}
+
+	// Refused: to itself, both or neither of target and remove, no cards, a bad id.
+	for _, body := range []map[string]any{
+		{"assetIds": ids(a1), "personId": db.UUIDString(mike)},
+		{"assetIds": ids(a1)},
+		{"assetIds": ids(a1), "name": "x", "remove": true},
+		{"assetIds": []string{}, "remove": true},
+		{"assetIds": []string{"nope"}, "remove": true},
+	} {
+		if rec := e.do(e.tok, "POST", path, body); rec.Code != 400 {
+			t.Fatalf("body %v: %d", body, rec.Code)
+		}
+	}
+	if rec := e.do(e.tok2, "POST", path, map[string]any{"assetIds": ids(a1), "remove": true}); rec.Code != 404 {
+		t.Fatalf("somebody else's person: %d", rec.Code)
+	}
+}
+
+// One face taken off its person from the info panel.
+func TestPeopleRemoveFace(t *testing.T) {
+	e := newPhotosEnv(t, true, 0)
+	e.withFaces(nil)
+	e.json(e.do(e.tok, "PUT", "/me/photos/v1/faces", map[string]any{"enabled": true}), 200, nil)
+	a := e.asset(e.user, assetOpts{})
+	mike := e.person(e.user, "Mike")
+	f := e.face(a, mike, 0.2)
+	path := "/me/photos/v1/people/faces/" + db.UUIDString(f) + "/assign"
+	e.json(e.do(e.tok, "POST", path, map[string]any{"remove": true}), 200, nil)
+	var c struct {
+		People       []struct{ ID string } `json:"people"`
+		UnknownFaces []struct {
+			FaceID string `json:"faceId"`
+		} `json:"unknownFaces"`
+	}
+	e.json(e.do(e.tok, "GET", "/me/photos/v1/assets/"+db.UUIDString(a.ID), nil), 200, &c)
+	if len(c.People) != 0 || len(c.UnknownFaces) != 1 {
+		t.Fatalf("after remove: %+v", c)
+	}
+	if rec := e.do(e.tok, "POST", path, map[string]any{"remove": true, "name": "x"}); rec.Code != 400 {
+		t.Fatalf("remove and a name: %d", rec.Code)
+	}
+}

@@ -1153,6 +1153,14 @@
     "face_unknown": "Ко је?",
     "face_assign_hint": "Изаберите особу или унесите ново име.",
     "face_name_placeholder": "Име",
-    "face_new_person": "Нова особа: „{name}“"
+    "face_new_person": "Нова особа: „{name}“",
+    "face_not_title": "Ово није {name}",
+    "face_not_other": "Ово је неко други",
+    "face_move_hint": "Изаберите ко је ово заправо или само уклоните лице одавде.",
+    "face_move_hint_many": "Фотографије: {n}. Изаберите ко је заправо на њима или их само уклоните одавде.",
+    "face_remove": "Никоме — само уклони",
+    "face_edit": "Погрешна особа?",
+    "faces_moved": "Премештено фотографија: {n}",
+    "faces_removed": "Уклоњено фотографија: {n}"
   }
 }

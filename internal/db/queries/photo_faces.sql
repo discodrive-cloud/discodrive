@@ -38,6 +38,7 @@ RETURNING id;
 SELECT f.id, f.person_id, f.embedding, f.clustered
 FROM photo_faces f
 WHERE f.user_id = sqlc.arg(user_id) AND f.model = sqlc.arg(model)::text
+  AND NOT (f.manual AND f.person_id IS NULL)
 ORDER BY f.created_at, f.id;
 
 -- name: CountUnclusteredFaces :one
@@ -164,8 +165,14 @@ ORDER BY x1, id;
 -- name: GetUserPhotoFace :one
 SELECT id, asset_id, person_id FROM photo_faces WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id);
 
--- The user said who it is: the face goes to that person, whatever it had (a pass never
--- moves an assigned face, so the choice stays).
+-- The user said who it is: the face goes to that person, whatever it had, or to nobody
+-- (a pass never moves an assigned face, and leaves out one taken off, so the choice stays).
 -- name: SetFacePerson :exec
-UPDATE photo_faces SET person_id = sqlc.arg(person_id), clustered = true
+UPDATE photo_faces SET person_id = sqlc.narg(person_id), clustered = true, manual = true
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id);
+
+-- The faces of one person on the given cards go to another person, or to nobody.
+-- name: MovePersonFaces :execrows
+UPDATE photo_faces SET person_id = sqlc.narg(target), clustered = true, manual = true
+WHERE user_id = sqlc.arg(user_id) AND person_id = sqlc.arg(source)
+  AND asset_id = ANY(sqlc.arg(asset_ids)::uuid[]);

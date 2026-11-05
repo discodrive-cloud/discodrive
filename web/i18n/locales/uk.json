@@ -1153,6 +1153,14 @@
     "face_unknown": "Хто це?",
     "face_assign_hint": "Оберіть людину або введіть нове ім’я.",
     "face_name_placeholder": "Ім’я",
-    "face_new_person": "Нова людина: «{name}»"
+    "face_new_person": "Нова людина: «{name}»",
+    "face_not_title": "Це не {name}",
+    "face_not_other": "Це інша людина",
+    "face_move_hint": "Виберіть, хто це насправді, або просто приберіть обличчя звідси.",
+    "face_move_hint_many": "Фото: {n}. Виберіть, хто на них насправді, або просто приберіть звідси.",
+    "face_remove": "Нікому — просто прибрати",
+    "face_edit": "Не та людина?",
+    "faces_moved": "Перенесено фото: {n}",
+    "faces_removed": "Прибрано фото: {n}"
   }
 }

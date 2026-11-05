@@ -1153,6 +1153,14 @@
     "face_unknown": "Wer?",
     "face_assign_hint": "Wählen Sie eine Person oder geben Sie einen neuen Namen ein.",
     "face_name_placeholder": "Name",
-    "face_new_person": "Neue Person: „{name}“"
+    "face_new_person": "Neue Person: „{name}“",
+    "face_not_title": "Nicht {name}",
+    "face_not_other": "Jemand anderes",
+    "face_move_hint": "Wähle, wer das wirklich ist, oder entferne das Gesicht hier einfach.",
+    "face_move_hint_many": "Fotos: {n}. Wähle, wer wirklich darauf ist, oder entferne sie hier einfach.",
+    "face_remove": "Niemand — nur entfernen",
+    "face_edit": "Falsche Person?",
+    "faces_moved": "Fotos verschoben: {n}",
+    "faces_removed": "Fotos entfernt: {n}"
   }
 }
