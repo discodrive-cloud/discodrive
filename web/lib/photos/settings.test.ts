@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { photosNavVisible, indexingRunning, indexingPercent } from './settings'
+import { photosNavVisible, indexingRunning, indexingPercent, facesPolling } from './settings'
 
 describe('photosNavVisible', () => {
   it('needs the gallery on and available', () => {
@@ -40,5 +40,21 @@ describe('indexingPercent', () => {
     expect(indexingPercent({ total: 200, ready: 50, failed: 0, pending: 100 })).toBe(25)
     expect(indexingPercent({ total: 3, ready: 2, failed: 0 })).toBe(66)
     expect(indexingPercent({ total: 0, ready: 0, failed: 0 })).toBe(0)
+  })
+})
+
+describe('facesPolling', () => {
+  const base = { available: true, enabled: true, mlOnline: true, done: 10, failed: 0, pending: 5, total: 15 }
+  it('follows a running pass', () => {
+    expect(facesPolling(base)).toBe(true)
+  })
+  it('keeps asking while the service is down, so the warning clears by itself', () => {
+    expect(facesPolling({ ...base, mlOnline: false })).toBe(true)
+    expect(facesPolling({ ...base, mlOnline: false, pending: 0 })).toBe(true)
+  })
+  it('stops when done or off', () => {
+    expect(facesPolling({ ...base, pending: 0 })).toBe(false)
+    expect(facesPolling({ ...base, enabled: false })).toBe(false)
+    expect(facesPolling(undefined)).toBe(false)
   })
 })

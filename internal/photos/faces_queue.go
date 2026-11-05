@@ -34,6 +34,7 @@ type Faces struct {
 	params  faces.Params
 	workers int
 	retry   time.Duration // pause after the service did not answer
+	idle    time.Duration // how often an idle worker looks for work (and at a service down)
 
 	kick   chan struct{}
 	online atomic.Bool
@@ -52,7 +53,7 @@ type Faces struct {
 
 // NewFaces creates the face queue. workers is how many pictures are in flight at once.
 func NewFaces(q *db.Queries, th *Thumbs, ml *MLClient, p faces.Params, workers int) *Faces {
-	f := &Faces{q: q, th: th, ml: ml, params: p, workers: max(workers, 1), retry: time.Minute,
+	f := &Faces{q: q, th: th, ml: ml, params: p, workers: max(workers, 1), retry: time.Minute, idle: pollInterval * 5,
 		kick: make(chan struct{}, 1), inflight: map[pgtype.UUID]bool{}, fresh: map[pgtype.UUID]int{},
 		strikes: map[pgtype.UUID]int{}, users: map[pgtype.UUID]*sync.Mutex{}, passes: map[pgtype.UUID]*sync.Mutex{}}
 	f.online.Store(true)
@@ -129,7 +130,7 @@ func (f *Faces) Run(ctx context.Context) {
 }
 
 func (f *Faces) work(ctx context.Context, wake chan struct{}) {
-	tick := time.NewTicker(pollInterval * 5)
+	tick := time.NewTicker(f.idle)
 	defer tick.Stop()
 	for {
 		for {
@@ -150,6 +151,11 @@ func (f *Faces) work(ctx context.Context, wake chan struct{}) {
 			}
 		}
 		f.passIdle(ctx)
+		// Down when last asked (at start, while the service was still starting): ask again,
+		// so the flag clears without waiting for a photo to look at.
+		if !f.Online() && f.ml.Ping(ctx) {
+			f.setOnline(true, nil)
+		}
 		select {
 		case <-ctx.Done():
 			return

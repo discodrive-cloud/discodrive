@@ -317,3 +317,18 @@ func TestCarryPerson(t *testing.T) {
 		t.Fatalf("one to one: %v", got)
 	}
 }
+
+func TestFacesQueueOfflineAtStartRecovers(t *testing.T) {
+	// The service was starting when the server asked: once it answers, the flag clears by
+	// itself, even with nothing in the queue (the settings must not say "unavailable" for good).
+	e, ml, f, _, _ := facesEnv(t)
+	if _, err := e.q.SetFacesEnabled(context.Background(), db.SetFacesEnabledParams{UserID: e.uid, FacesEnabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	ml.status.Store(503)
+	f.idle = 100 * time.Millisecond
+	go f.Run(context.Background())
+	waitFor(t, "offline", func() bool { return !f.Online() })
+	ml.status.Store(200)
+	waitFor(t, "online again with an empty queue", func() bool { return f.Online() })
+}

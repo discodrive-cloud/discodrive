@@ -34,3 +34,10 @@ export function indexingPercent(ix: IndexingState | null | undefined): number {
   if (!ix || !ix.total) return 0
   return Math.min(100, Math.floor(((ix.ready + ix.failed) / ix.total) * 100))
 }
+
+// facesPolling: the settings keep re-reading the face recognition state while a pass runs,
+// and while the service is reported down (so the warning goes by itself when it is back).
+export function facesPolling(f: { enabled: boolean; mlOnline: boolean; pending: number } | null | undefined): boolean {
+  if (!f?.enabled) return false
+  return f.pending > 0 || !f.mlOnline
+}

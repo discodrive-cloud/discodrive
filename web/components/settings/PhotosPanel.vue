@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // «Фото» settings: the switch, the source folders and the indexing progress.
 import type { PhotoFailedFile, PhotoSettings } from '~/composables/usePhotos'
-import { indexingPercent, indexingRunning, photosNavVisible } from '~/lib/photos/settings'
+import { facesPolling, indexingPercent, indexingRunning, photosNavVisible } from '~/lib/photos/settings'
 
 const { t } = useI18n()
 const api = usePhotosApi()
@@ -73,7 +73,7 @@ async function toggleFaces(e: Event) {
     box.checked = settings.value?.faces?.enabled ?? false
   }
 }
-const facesRunning = computed(() => !!faces.value?.enabled && faces.value.pending > 0 && faces.value.mlOnline)
+const facesRunning = computed(() => facesPolling(faces.value))
 const facesPercent = computed(() => {
   const f = faces.value
   return f && f.total ? Math.round(((f.done + f.failed) / f.total) * 100) : 0
