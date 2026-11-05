@@ -46,8 +46,6 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-func exists(p string) bool { _, err := os.Stat(p); return err == nil }
-
 func TestThumbs_WorkerProcessesPending(t *testing.T) {
 	e := newEnv(t)
 	src := e.source("Photos")

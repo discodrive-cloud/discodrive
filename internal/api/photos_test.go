@@ -42,6 +42,14 @@ type photosEnv struct {
 	seq   int
 	pool  *pgxpool.Pool
 	maps  *maps.Manager
+	idx   *photos.Indexer
+	th    *photos.Thumbs
+	files *storage.FileService
+}
+
+// router builds the handler again with extra options (people on, for one).
+func (e *photosEnv) router(opts ...Option) http.Handler {
+	return NewRouter(e.svc, e.q, e.files, nil, e.root, nil, nil, nil, nil, nil, nil, nil, false, nil, nil, nil, nil, nil, nil, nil, nil, e.idx, e.th, e.maps, opts...)
 }
 
 // newPhotosEnv starts a database and a router. With withPhotos the gallery services are
@@ -100,7 +108,8 @@ func newPhotosEnv(t *testing.T, withPhotos bool, workers int) *photosEnv {
 	files := storage.NewFileService(pool, storage.NewLocalDisk(e.root))
 	e.maps = maps.New(ctx, q, e.root, maps.Config{})
 	t.Cleanup(e.maps.Wait)
-	e.h = NewRouter(svc, q, files, nil, e.root, nil, nil, nil, nil, nil, nil, nil, false, nil, nil, nil, nil, nil, nil, nil, nil, idx, th, e.maps)
+	e.idx, e.th, e.files = idx, th, files
+	e.h = e.router()
 	return e
 }
 

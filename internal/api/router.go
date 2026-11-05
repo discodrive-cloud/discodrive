@@ -49,6 +49,7 @@ type Server struct {
 	bookmarks    *bookmarks.Service
 	photos       *photos.Indexer // nil in the lite build (no media tools)
 	thumbs       *photos.Thumbs
+	faces        *photos.Faces  // people; nil without a face service
 	photoEditor  *photos.Editor // nil in the lite build
 	maps         *maps.Manager  // nil in the lite build
 	sections     Sections       // optional sections the operator left on
@@ -234,6 +235,13 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("GET /me/photos/v1/months/{month}", prot(http.HandlerFunc(s.handlePhotoMonth)))
 	mux.Handle("GET /me/photos/v1/on-this-day", prot(http.HandlerFunc(s.handlePhotoOnThisDay)))
 	mux.Handle("GET /me/photos/v1/assets/{id}", prot(http.HandlerFunc(s.handleGetPhotoAsset)))
+	mux.Handle("PUT /me/photos/v1/faces", prot(http.HandlerFunc(s.handlePutPhotoFaces)))
+	mux.Handle("GET /me/photos/v1/people", prot(http.HandlerFunc(s.handleListPhotoPeople)))
+	mux.Handle("GET /me/photos/v1/people/{id}", prot(http.HandlerFunc(s.handleGetPhotoPerson)))
+	mux.Handle("PATCH /me/photos/v1/people/{id}", prot(http.HandlerFunc(s.handlePatchPhotoPerson)))
+	mux.Handle("POST /me/photos/v1/people/{id}/merge", prot(http.HandlerFunc(s.handleMergePhotoPeople)))
+	mux.Handle("GET /me/photos/v1/people/faces/{faceId}/thumb", prot(http.HandlerFunc(s.handlePhotoFaceThumb)))
+	mux.Handle("POST /me/photos/v1/people/faces/{faceId}/assign", prot(http.HandlerFunc(s.handleAssignPhotoFace)))
 	mux.Handle("GET /me/photos/v1/assets/{id}/thumb", prot(http.HandlerFunc(s.photoDerivative("thumb"))))
 	mux.Handle("GET /me/photos/v1/assets/{id}/preview", prot(http.HandlerFunc(s.photoDerivative("preview"))))
 	mux.Handle("POST /me/photos/v1/assets/{id}/play", prot(http.HandlerFunc(s.handlePhotoPlay)))

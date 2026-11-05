@@ -56,6 +56,29 @@ function removeSource(id: string) {
   save(settings.value.enabled, sourceIds.value.filter((x) => x !== id))
 }
 
+// «Люди»: face recognition, when the server has a face service.
+const faces = computed(() => settings.value?.faces)
+const facesBusy = ref(false)
+async function toggleFaces(e: Event) {
+  const box = e.target as HTMLInputElement
+  if (!settings.value) return
+  error.value = ''
+  facesBusy.value = true
+  try {
+    settings.value.faces = await api.setFacesEnabled(box.checked)
+  } catch (err: any) {
+    error.value = err?.data?.error || t('common.error_save')
+  } finally {
+    facesBusy.value = false
+    box.checked = settings.value?.faces?.enabled ?? false
+  }
+}
+const facesRunning = computed(() => !!faces.value?.enabled && faces.value.pending > 0 && faces.value.mlOnline)
+const facesPercent = computed(() => {
+  const f = faces.value
+  return f && f.total ? Math.round(((f.done + f.failed) / f.total) * 100) : 0
+})
+
 // Right after a change the server may not have started its pass yet: keep looking for a while.
 const waitingForRows = ref(0)
 const running = computed(() => {
@@ -88,7 +111,7 @@ function toggleFailed() {
 
 // Follow the progress while the index fills.
 let timer: ReturnType<typeof setInterval> | null = null
-watch(running, (on) => {
+watch(() => running.value || facesRunning.value, (on) => {
   if (on && !timer) {
     timer = setInterval(() => {
       if (waitingForRows.value > 0) waitingForRows.value--
@@ -184,6 +207,29 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
           <Icon v-if="failedLoading" name="lucide:loader-circle" class="ml-1 animate-spin text-muted" size="14" />
         </div>
       </div>
+    </template>
+
+    <!-- People -->
+    <template v-if="settings?.enabled && faces?.available">
+      <div class="mb-1 mt-5 text-xs font-medium text-muted">{{ t('settings.photos_people') }}</div>
+      <label class="mb-1 flex items-center gap-3 text-sm">
+        <input type="checkbox" class="h-5 w-5" :checked="faces.enabled" :disabled="facesBusy" @change="toggleFaces" />
+        <span>{{ t('settings.photos_faces_enabled') }}</span>
+        <Icon v-if="facesBusy" name="lucide:loader-circle" class="animate-spin text-muted" size="16" />
+      </label>
+      <p class="mb-2 ml-8 text-xs text-muted">{{ t('settings.photos_faces_hint') }}</p>
+      <template v-if="faces.enabled">
+        <div class="mb-1 h-1.5 w-full overflow-hidden rounded bg-ink/10">
+          <div class="h-full rounded bg-accent transition-all" :style="{ width: `${facesPercent}%` }" />
+        </div>
+        <p class="text-xs text-muted">
+          {{ t('settings.photos_faces_progress', { done: faces.done + faces.failed, total: faces.total }) }}
+          <span v-if="faces.failed"> · {{ t('settings.photos_faces_failed', { n: faces.failed }) }}</span>
+        </p>
+        <p v-if="!faces.mlOnline" class="mt-1 flex items-center gap-1 text-xs text-warn">
+          <Icon name="lucide:triangle-alert" size="14" /> {{ t('settings.photos_faces_offline') }}
+        </p>
+      </template>
     </template>
 
     <MusicFolderPicker

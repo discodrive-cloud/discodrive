@@ -81,6 +81,10 @@ ON CONFLICT (node_id) DO UPDATE SET
                        THEN NULL ELSE photo_assets.thumb_error END,
     transcode_state = CASE WHEN photo_assets.node_version IS DISTINCT FROM EXCLUDED.node_version
                            THEN NULL ELSE photo_assets.transcode_state END,
+    face_state = CASE WHEN photo_assets.node_version IS DISTINCT FROM EXCLUDED.node_version
+                      THEN NULL ELSE photo_assets.face_state END,
+    face_error = CASE WHEN photo_assets.node_version IS DISTINCT FROM EXCLUDED.node_version
+                      THEN NULL ELSE photo_assets.face_error END,
     indexed_at = now(),
     node_version = EXCLUDED.node_version,
     index_error = EXCLUDED.index_error
@@ -163,6 +167,8 @@ WITH f AS (
           AND starts_with(n.disk_path, fn.disk_path || '/')))
   AND (sqlc.narg(area_z)::int IS NULL OR (a.lat IS NOT NULL AND a.lon IS NOT NULL
         AND photo_map_key(a.lat, a.lon, sqlc.narg(area_z)::int) = ANY(sqlc.narg(area_keys)::bigint[])))
+  AND (sqlc.narg(person_id)::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM photo_faces pf WHERE pf.asset_id = a.id AND pf.person_id = sqlc.narg(person_id)::uuid))
 ), ranked AS (
     SELECT taken_local, content_hash,
            row_number() OVER (PARTITION BY content_hash ORDER BY user_id <> sqlc.arg(viewer_id), id) AS rn
@@ -199,6 +205,8 @@ WHERE a.user_id = ANY(sqlc.arg(user_ids)::uuid[])
           AND starts_with(n.disk_path, fn.disk_path || '/')))
   AND (sqlc.narg(area_z)::int IS NULL OR (a.lat IS NOT NULL AND a.lon IS NOT NULL
         AND photo_map_key(a.lat, a.lon, sqlc.narg(area_z)::int) = ANY(sqlc.narg(area_keys)::bigint[])))
+  AND (sqlc.narg(person_id)::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM photo_faces pf WHERE pf.asset_id = a.id AND pf.person_id = sqlc.narg(person_id)::uuid))
   AND (a.content_hash IS NULL OR NOT EXISTS (
         SELECT 1 FROM photo_assets d JOIN nodes dn ON dn.id = d.node_id
         WHERE d.user_id = ANY(sqlc.arg(user_ids)::uuid[]) AND d.content_hash = a.content_hash
@@ -216,7 +224,9 @@ WHERE a.user_id = ANY(sqlc.arg(user_ids)::uuid[])
         WHERE ps.id = sqlc.narg(source_id)::uuid AND ps.user_id = d.user_id
           AND starts_with(dn.disk_path, fn.disk_path || '/')))
   AND (sqlc.narg(area_z)::int IS NULL OR (d.lat IS NOT NULL AND d.lon IS NOT NULL
-        AND photo_map_key(d.lat, d.lon, sqlc.narg(area_z)::int) = ANY(sqlc.narg(area_keys)::bigint[])))))
+        AND photo_map_key(d.lat, d.lon, sqlc.narg(area_z)::int) = ANY(sqlc.narg(area_keys)::bigint[])))
+  AND (sqlc.narg(person_id)::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM photo_faces pf WHERE pf.asset_id = d.id AND pf.person_id = sqlc.narg(person_id)::uuid))))
 ORDER BY a.taken_at DESC, a.id;
 
 -- name: ListHiddenPhotoAssets :many

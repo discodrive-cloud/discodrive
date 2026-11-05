@@ -529,6 +529,7 @@ const own = computed(() => current.value?.own !== false)
         :maps-ready="mapsReady"
         :readonly="!own"
         @close="showInfo = false"
+        @people-changed="refresh()"
         @edit-date="current && emit('edit-date', current.id)"
         @edit-place="current && emit('edit-place', current.id)"
       />

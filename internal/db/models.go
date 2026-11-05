@@ -354,6 +354,25 @@ type PhotoAsset struct {
 	TranscodeState pgtype.Text        `json:"transcode_state"`
 	IndexedAt      pgtype.Timestamptz `json:"indexed_at"`
 	NodeVersion    pgtype.Int8        `json:"node_version"`
+	FaceState      pgtype.Text        `json:"face_state"`
+	FaceError      pgtype.Text        `json:"face_error"`
+	FaceModel      pgtype.Text        `json:"face_model"`
+}
+
+type PhotoFace struct {
+	ID        pgtype.UUID        `json:"id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	AssetID   pgtype.UUID        `json:"asset_id"`
+	PersonID  pgtype.UUID        `json:"person_id"`
+	X1        float32            `json:"x1"`
+	Y1        float32            `json:"y1"`
+	X2        float32            `json:"x2"`
+	Y2        float32            `json:"y2"`
+	Score     float32            `json:"score"`
+	Embedding []byte             `json:"embedding"`
+	Model     string             `json:"model"`
+	Clustered bool               `json:"clustered"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type PhotoPartner struct {
@@ -363,11 +382,22 @@ type PhotoPartner struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type PhotoPerson struct {
+	ID        pgtype.UUID        `json:"id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Name      string             `json:"name"`
+	Hidden    bool               `json:"hidden"`
+	BirthDate pgtype.Date        `json:"birth_date"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type PhotoSetting struct {
-	UserID     pgtype.UUID        `json:"user_id"`
-	Enabled    bool               `json:"enabled"`
-	IndexedSeq int64              `json:"indexed_seq"`
-	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+	UserID       pgtype.UUID        `json:"user_id"`
+	Enabled      bool               `json:"enabled"`
+	IndexedSeq   int64              `json:"indexed_seq"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	FacesEnabled bool               `json:"faces_enabled"`
 }
 
 type PhotoSource struct {

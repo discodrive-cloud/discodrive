@@ -71,5 +71,18 @@ services:
       init:
         condition: service_completed_successfully
 
+  # Face service for «People» in the gallery; off unless COMPOSE_PROFILES=faces, and the
+  # server uses it only with PHOTOS_ML_URL=http://ml:3003 (both in .env). ~600 MB image.
+  ml:
+    image: ghcr.io/discodrive-cloud/discodrive-ml:${DISCODRIVE_VERSION:-latest}
+    build: ./ml
+    profiles: ["faces"]
+    restart: unless-stopped
+    environment:
+      ML_THREADS: "${ML_THREADS:-2}"
+      ML_CONCURRENCY: "${ML_CONCURRENCY:-2}"
+    expose:
+      - "3003"
+
 volumes:
   pgdata:

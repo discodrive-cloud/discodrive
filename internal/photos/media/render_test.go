@@ -501,3 +501,18 @@ func TestRender_TruncatedHEICUsesEmbeddedThumbnail(t *testing.T) {
 		t.Fatalf("size = %dx%d", w, h)
 	}
 }
+
+func TestFaceSquare(t *testing.T) {
+	// a box in the middle: 1.8 × its larger side, centred
+	if l, tp, s := faceSquare(1000, 800, 0.4, 0.4, 0.5, 0.5); s != 180 || l != 360 || tp != 270 {
+		t.Fatalf("middle: %d %d %d", l, tp, s)
+	}
+	// at the corner: kept inside
+	if l, tp, s := faceSquare(1000, 800, 0, 0, 0.1, 0.1); l != 0 || tp != 0 || s != 180 {
+		t.Fatalf("corner: %d %d %d", l, tp, s)
+	}
+	// larger than the picture: the picture's shorter side
+	if _, _, s := faceSquare(100, 80, 0, 0, 1, 1); s != 80 {
+		t.Fatalf("whole: %d", s)
+	}
+}

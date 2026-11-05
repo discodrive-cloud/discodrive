@@ -52,6 +52,32 @@ export interface PhotoAsset extends PhotoRow {
   hidden: boolean
   copies: number
   owner?: string | null // the owner's email on somebody else's card
+  people?: PhotoAssetPerson[] // who is on one's own card (people on), hidden persons left out
+  unknownFaces?: { faceId: string; face: [number, number, number, number] }[] // faces of nobody yet
+}
+
+// A person on a card: the face box as fractions of the picture.
+// age: on the day of the photo, when the person's birthday is known.
+export interface PhotoAssetPerson { id: string; name: string; faceId: string; age: number | null; face: [number, number, number, number] }
+
+// «Люди»: a person of the user's; cover is a face id (faceThumbURL).
+export interface PhotoPerson {
+  id: string
+  name: string
+  hidden: boolean
+  birthDate: string | null // YYYY-MM-DD
+  count: number
+  cover: string | null
+}
+
+export interface PhotoFacesSettings {
+  available: boolean // the server has a face service
+  enabled: boolean
+  mlOnline: boolean
+  done: number
+  failed: number
+  pending: number
+  total: number
 }
 
 // Where the viewer gets a card, its video and its pictures: the gallery API by default, an
@@ -113,6 +139,7 @@ export interface PhotoSettings {
   sharedWithMe?: boolean // a gallery or an album somebody opened to the user
   sources: PhotoSource[]
   indexing: { total: number; ready: number; failed: number; pending: number; scanning: boolean; failedFiles: number }
+  faces?: PhotoFacesSettings
 }
 
 // GET failed: a file of the sources that could not be processed.
@@ -130,6 +157,7 @@ export interface PhotoFilter {
   area?: string // the map's cells, "z/x.y,…" (lib/photos/mapClusters)
   owner?: string // a partner's gallery instead of one's own
   album?: string // an album's cards
+  person?: string // the cards of one of the user's people
 }
 
 export interface MetadataResult {
@@ -172,8 +200,13 @@ export function filterQuery(f: PhotoFilter): string {
   if (f.area) p.set('area', f.area)
   if (f.owner) p.set('owner', f.owner)
   if (f.album) p.set('album', f.album)
+  if (f.person) p.set('person', f.person)
   const s = p.toString()
   return s ? `?${s}` : ''
+}
+
+export function faceThumbURL(faceId: string): string {
+  return `${PHOTOS_API}/people/faces/${faceId}/thumb`
 }
 
 export function thumbURL(row: Pick<PhotoRow, 'id' | 'thumb'>): string {
@@ -297,6 +330,18 @@ export function usePhotosApi() {
     leavePartner: (userId: string) => request(`${PHOTOS_API}/partners/${userId}/received`, { method: 'DELETE' }),
     setPartnerFeed: (userId: string, inFeed: boolean) =>
       request(`${PHOTOS_API}/partners/${userId}/feed`, { method: 'PUT', body: { inFeed } }),
+    setFacesEnabled: (enabled: boolean) =>
+      request<PhotoFacesSettings>(`${PHOTOS_API}/faces`, { method: 'PUT', body: { enabled } }),
+    people: (hidden = false) => request<PhotoPerson[]>(`${PHOTOS_API}/people${hidden ? '?hidden=true' : ''}`),
+    person: (id: string) => request<PhotoPerson>(`${PHOTOS_API}/people/${id}`),
+    updatePerson: (id: string, patch: { name?: string; hidden?: boolean; birthDate?: string | null }) =>
+      request<PhotoPerson>(`${PHOTOS_API}/people/${id}`, { method: 'PATCH', body: patch }),
+    // «Кто это?»: a face to one of the user's people, or to a new person of that name.
+    assignFace: (faceId: string, body: { personId?: string; name?: string }) =>
+      request<PhotoPerson>(`${PHOTOS_API}/people/faces/${faceId}/assign`, { method: 'POST', body }),
+    // The faces of ids move to id; those persons are gone afterwards.
+    mergePeople: (id: string, ids: string[]) =>
+      request<PhotoPerson>(`${PHOTOS_API}/people/${id}/merge`, { method: 'POST', body: { ids } }),
     albums: () => request<PhotoAlbum[]>(`${PHOTOS_API}/albums`),
     album: (id: string) => request<PhotoAlbumDetail>(`${PHOTOS_API}/albums/${id}`),
     createAlbum: (name: string, assetIds: string[] = []) =>

@@ -68,6 +68,7 @@ type photoSettingsResponse struct {
 		// FailedFiles counts the files GET /failed lists (thumbnail or metadata failed).
 		FailedFiles int64 `json:"failedFiles"`
 	} `json:"indexing"`
+	Faces facesSettingsDTO `json:"faces"`
 }
 
 func (s *Server) photoSettings(r *http.Request, uid pgtype.UUID) (photoSettingsResponse, error) {
@@ -77,6 +78,9 @@ func (s *Server) photoSettings(r *http.Request, uid pgtype.UUID) (photoSettingsR
 		return resp, err
 	}
 	resp.Enabled = ps.Enabled
+	if resp.Faces, err = s.facesSettings(r, uid, ps.FacesEnabled); err != nil {
+		return resp, err
+	}
 	if resp.SharedWithMe, err = s.q.HasPhotoSharesFor(r.Context(), uid); err != nil {
 		return resp, err
 	}
@@ -475,6 +479,7 @@ type photoFilter struct {
 	source   pgtype.UUID
 	areaZ    pgtype.Int4 // the map's area: cells at this zoom (see parseArea)
 	areaKeys []int64
+	person   pgtype.UUID // one of the user's people
 }
 
 func (s *Server) parsePhotoFilter(w http.ResponseWriter, r *http.Request, uid pgtype.UUID) (photoFilter, bool) {
@@ -497,6 +502,11 @@ func (s *Server) parsePhotoFilter(w http.ResponseWriter, r *http.Request, uid pg
 			*dst = pgtype.Bool{Bool: b, Valid: true}
 		}
 	}
+	person, ok := s.parsePersonFilter(w, r, uid)
+	if !ok {
+		return f, false
+	}
+	f.person = person
 	if v := q.Get("area"); v != "" {
 		z, keys, ok := parseArea(v)
 		if !ok {
@@ -559,7 +569,7 @@ func (s *Server) handlePhotoBuckets(w http.ResponseWriter, r *http.Request) {
 	case len(sc.owners) > 0:
 		rows, err = s.q.ListPhotoMonthBuckets(r.Context(), db.ListPhotoMonthBucketsParams{
 			ViewerID: uid, UserIds: sc.owners, Kind: f.kind, Live: f.live, Raw: f.raw, Favorite: f.favorite,
-			SourceID: f.source, AreaZ: f.areaZ, AreaKeys: f.areaKeys,
+			SourceID: f.source, AreaZ: f.areaZ, AreaKeys: f.areaKeys, PersonID: f.person,
 		})
 	}
 	if err != nil {
@@ -604,7 +614,7 @@ func (s *Server) handlePhotoMonth(w http.ResponseWriter, r *http.Request) {
 		assets, err = s.q.ListPhotoAssetsInMonth(r.Context(), db.ListPhotoAssetsInMonthParams{
 			ViewerID: uid, UserIds: sc.owners, Month: m,
 			Kind: f.kind, Live: f.live, Raw: f.raw, Favorite: f.favorite, SourceID: f.source,
-			AreaZ: f.areaZ, AreaKeys: f.areaKeys,
+			AreaZ: f.areaZ, AreaKeys: f.areaKeys, PersonID: f.person,
 		})
 	}
 	if err != nil {
@@ -753,7 +763,16 @@ func (s *Server) handleGetPhotoAsset(w http.ResponseWriter, r *http.Request) {
 		origID = &v
 	}
 	var copies int64
+	people := []assetPersonDTO{}
+	unknown := []unknownFaceDTO{}
 	if own {
+		if people, err = s.assetPeople(r, a); err == nil {
+			unknown, err = s.assetUnknownFaces(r, a)
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 		copies, err = s.q.CountPhotoCopies(r.Context(), db.CountPhotoCopiesParams{UserID: a.UserID, ID: a.ID})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
@@ -813,7 +832,7 @@ func (s *Server) handleGetPhotoAsset(w http.ResponseWriter, r *http.Request) {
 		},
 		"file":        file,
 		"liveVideoId": liveID, "originalId": origID,
-		"hidden": a.Hidden, "copies": copies,
+		"hidden": a.Hidden, "copies": copies, "people": people, "unknownFaces": unknown,
 	})
 }
 

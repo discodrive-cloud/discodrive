@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,6 +55,10 @@ type Thumbs struct {
 	claimMu  sync.Mutex           // claim + registering in inflight is one step
 
 	renders atomic.Int64 // renders started, for tests
+
+	// OnReady, when set (before Run), is called after a thumbnail was recorded as ready;
+	// it must not block (Faces.Kick: the card can be looked at for faces now).
+	OnReady func()
 }
 
 type flight struct {
@@ -325,24 +330,10 @@ func (t *Thumbs) renderLimited(ctx context.Context, a db.PhotoAsset, kind string
 
 func (t *Thumbs) render(ctx context.Context, a db.PhotoAsset, kind string) (string, error) {
 	t.renders.Add(1)
-	node, err := t.q.GetNodeAnyState(ctx, a.NodeID)
-	if err != nil {
-		return "", fmt.Errorf("node: %w", err)
-	}
-	if !node.DiskPath.Valid {
-		return "", errors.New("node has no file")
-	}
-	src := filepath.Join(t.storageRoot, node.DiskPath.String)
-	if node.DeletedAt.Valid && node.TrashPath.Valid {
-		src = filepath.Join(t.storageRoot, node.TrashPath.String) // the gallery trash shows thumbnails
-	}
-	// The renderers open the file by name; refuse a path that leaves the storage root
-	// through a symlink first, as the indexer does.
-	f, err := storage.NewLocalDisk(t.storageRoot).OpenAbsolute(src)
+	src, err := t.sourceOf(ctx, a)
 	if err != nil {
 		return "", err
 	}
-	_ = f.Close()
 	dst := AssetDerivPath(t.storageRoot, a, kind)
 
 	if kind == "h264" {
@@ -370,14 +361,83 @@ func (t *Thumbs) render(ctx context.Context, a db.PhotoAsset, kind string) (stri
 		// claimed and rendered again later), it must not mark a good file as failed.
 		if e := t.q.SetThumbState(ctx, db.SetThumbStateParams{ID: a.ID, ThumbState: "ready"}); e != nil && ctx.Err() == nil {
 			log.Printf("discodrive: photos: recording thumbnail of %s: %v", db.UUIDString(a.ID), e)
+		} else if e == nil && t.OnReady != nil {
+			t.OnReady()
 		}
 	}
 	return dst, nil
 }
+
+// sourceOf returns the absolute path of the asset's file (in the trash when it is
+// there: the gallery trash shows thumbnails). The renderers open the file by name, so a
+// path that leaves the storage root through a symlink is refused first, as the indexer does.
+func (t *Thumbs) sourceOf(ctx context.Context, a db.PhotoAsset) (string, error) {
+	node, err := t.q.GetNodeAnyState(ctx, a.NodeID)
+	if err != nil {
+		return "", fmt.Errorf("node: %w", err)
+	}
+	if !node.DiskPath.Valid {
+		return "", errors.New("node has no file")
+	}
+	src := filepath.Join(t.storageRoot, node.DiskPath.String)
+	if node.DeletedAt.Valid && node.TrashPath.Valid {
+		src = filepath.Join(t.storageRoot, node.TrashPath.String)
+	}
+	f, err := storage.NewLocalDisk(t.storageRoot).OpenAbsolute(src)
+	if err != nil {
+		return "", err
+	}
+	_ = f.Close()
+	return src, nil
+}
+
+// PreviewInto renders the asset's viewer preview into dst (a scratch file: the face
+// queue sends it to the face service and removes it), unless the kept preview exists, in
+// which case that path is returned and dst is not written.
+func (t *Thumbs) PreviewInto(ctx context.Context, a db.PhotoAsset, dst string) (string, error) {
+	if kept := AssetDerivPath(t.storageRoot, a, "preview"); exists(kept) {
+		return kept, nil
+	}
+	src, err := t.sourceOf(ctx, a)
+	if err != nil {
+		return "", err
+	}
+	meta, _ := t.exif.Read(ctx, src)
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if err := media.Preview(ctx, t.tools, src, meta, dst); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
+func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 func truncate(s string, n int) string {
 	if r := []rune(s); len(r) > n {
 		return string(r[:n])
 	}
 	return s
+}
+
+// FaceThumb returns the picture of a face of the asset (box in fractions of the viewer
+// preview), cut from the preview on first ask and kept under the face's id: a face row is
+// replaced, never changed, when the file's content changes.
+func (t *Thumbs) FaceThumb(ctx context.Context, a db.PhotoAsset, faceID string, x1, y1, x2, y2 float32) (string, error) {
+	if faceID == "" || strings.ContainsAny(faceID, `/\.`) {
+		return "", errors.New("photos: bad face id")
+	}
+	dst := filepath.Join(derivUserDir(t.storageRoot, db.UUIDString(a.UserID)), "faces", shard(faceID), faceID+".jpg")
+	if exists(dst) {
+		return dst, nil
+	}
+	preview, err := t.Ensure(ctx, a, "preview")
+	if err != nil {
+		return "", err
+	}
+	if err := media.FaceCrop(ctx, t.tools, preview, x1, y1, x2, y2, dst); err != nil {
+		return "", err
+	}
+	return dst, nil
 }

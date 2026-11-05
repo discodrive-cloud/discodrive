@@ -416,3 +416,53 @@ func tail(s string) string {
 	}
 	return s
 }
+
+// FaceSize is the side of the square picture of a face (people, covers).
+const FaceSize = 256
+
+// FaceCrop cuts the square around a face out of the JPEG src into dst: the box (fractions
+// of the picture) with 40% of its larger side added on every side, kept inside the
+// picture, scaled to FaceSize.
+func FaceCrop(ctx context.Context, t Tools, src string, x1, y1, x2, y2 float32, dst string) error {
+	if t.Vips == "" {
+		return errors.New("vips not found")
+	}
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	cfg, err := jpeg.DecodeConfig(f)
+	_ = f.Close()
+	if err != nil {
+		return fmt.Errorf("face crop: %w", err)
+	}
+	left, top, side := faceSquare(cfg.Width, cfg.Height, x1, y1, x2, y2)
+	work, err := os.MkdirTemp("", "face-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(work)
+	cut := filepath.Join(work, "cut.v")
+	if err := runCmd(ctx, t.Vips, "extract_area", src, cut,
+		strconv.Itoa(left), strconv.Itoa(top), strconv.Itoa(side), strconv.Itoa(side)); err != nil {
+		return err
+	}
+	s := strconv.Itoa(FaceSize)
+	return atomicWrite(dst, func(tmp string) error {
+		return runCmd(ctx, t.Vips, "thumbnail", cut, tmp+"[Q=85,strip]", s, "--height", s, "--crop", "centre")
+	})
+}
+
+// faceSquare is the square (in pixels of a w×h picture) cut around a face box.
+func faceSquare(w, h int, x1, y1, x2, y2 float32) (left, top, side int) {
+	bw, bh := float64(x2-x1)*float64(w), float64(y2-y1)*float64(h)
+	sd := math.Max(bw, bh) * 1.8
+	sd = math.Min(sd, float64(min(w, h)))
+	side = max(1, int(math.Round(sd)))
+	cx, cy := float64(x1+x2)/2*float64(w), float64(y1+y2)/2*float64(h)
+	left = int(math.Round(cx - sd/2))
+	top = int(math.Round(cy - sd/2))
+	left = min(max(left, 0), w-side)
+	top = min(max(top, 0), h-side)
+	return left, top, side
+}

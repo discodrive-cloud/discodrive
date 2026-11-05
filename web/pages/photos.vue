@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // «Фото»: the gallery. Sections are tabs driven by ?tab= (as on the settings page):
-// Фото (the timeline) · В этот день · Альбомы · Общие · Карта · Скрытое · Корзина. «Карта»
-// shows only when the server has map tiles. Three of them open a grid of their own over
-// the list: a map pin its area (?area=), an album its cards (?album=), «Общие» a partner's
-// gallery (?owner=); «←» goes back to the list.
+// Фото (the timeline) · В этот день · Альбомы · Люди · Общие · Карта · Скрытое · Корзина.
+// «Карта» shows only when the server has map tiles, «Люди» only with face recognition on.
+// Four of them open a grid of their own over the list: a map pin its area (?area=), an
+// album its cards (?album=), a person their photos (?person=), «Общие» a partner's gallery
+// (?owner=); «←» goes back to the list.
 import PhotoGrid from '~/components/photos/PhotoGrid.vue'
 import PhotoFilters from '~/components/photos/PhotoFilters.vue'
 import SelectionBar from '~/components/photos/SelectionBar.vue'
@@ -18,7 +19,11 @@ import PhotoAlbums from '~/components/photos/PhotoAlbums.vue'
 import PhotoShared from '~/components/photos/PhotoShared.vue'
 import AddToAlbumDialog from '~/components/photos/AddToAlbumDialog.vue'
 import AlbumShareDialog from '~/components/photos/AlbumShareDialog.vue'
-import type { Bucket, PhotoAlbumDetail, PhotoFilter, PhotoRow, PhotoSettings } from '~/composables/usePhotos'
+import PhotoPeople from '~/components/photos/PhotoPeople.vue'
+import MergePeopleDialog from '~/components/photos/MergePeopleDialog.vue'
+import BirthdayDialog from '~/components/photos/BirthdayDialog.vue'
+import { findSameName, personLabel } from '~/lib/photos/people'
+import type { Bucket, PhotoAlbumDetail, PhotoFilter, PhotoPerson, PhotoRow, PhotoSettings } from '~/composables/usePhotos'
 import { mapConcurrent } from '~/lib/mapConcurrent'
 import { photosHiddenHeaders, photosHiddenUnlocked, lockPhotosHidden } from '~/lib/photos/hidden'
 import { photosNavVisible } from '~/lib/photos/settings'
@@ -35,7 +40,7 @@ const { confirm, prompt } = useDialog()
 const photosEnabled = usePhotosEnabled()
 
 // ---- sections ----
-const tabs = ['photos', 'memories', 'albums', 'shared', 'map', 'hidden', 'trash'] as const
+const tabs = ['photos', 'memories', 'albums', 'people', 'shared', 'map', 'hidden', 'trash'] as const
 type Tab = (typeof tabs)[number]
 const settings = ref<PhotoSettings | null>(null)
 // With one's own gallery off, «Фото» is what others opened: «Альбомы» and «Общие».
@@ -48,13 +53,16 @@ const tab = computed<Tab>(() => {
 function selectTab(id: Tab) {
   selection.value = new Set()
   viewer.value = null
-  router.replace({ query: { ...route.query, tab: id === 'photos' ? undefined : id, area: undefined, album: undefined, owner: undefined } })
+  router.replace({ query: { ...route.query, tab: id === 'photos' ? undefined : id, area: undefined, album: undefined, owner: undefined, person: undefined } })
 }
 
 // ---- Карта ----
 const mapsReady = ref(false)
+const peopleOn = computed(() => !!settings.value?.faces?.available && !!settings.value.faces.enabled)
 const shownTabs = computed(() => tabs.filter((id) =>
-  ownOff.value ? id === 'albums' || id === 'shared' : id !== 'map' || mapsReady.value))
+  ownOff.value ? id === 'albums' || id === 'shared'
+    : id === 'map' ? mapsReady.value
+      : id === 'people' ? peopleOn.value : true))
 // The open area of the map: its grid replaces the map until «← Карта».
 const area = computed(() => {
   const q = route.query.area
@@ -86,6 +94,27 @@ const owner = computed(() => {
   const q = route.query.owner
   return tab.value === 'shared' && typeof q === 'string' ? q : ''
 })
+const person = computed(() => {
+  const q = route.query.person
+  return tab.value === 'people' && typeof q === 'string' ? q : ''
+})
+const personInfo = ref<PhotoPerson | null>(null)
+const peopleRef = ref<InstanceType<typeof PhotoPeople> | null>(null)
+// The person opened from the list: «←» goes back there. One opened otherwise (from a
+// photo's info) goes to the list instead of wherever the history leads.
+let personFromList = ''
+function openPerson(id: string) {
+  scopeFromList = true
+  personFromList = id
+  router.push({ query: { ...route.query, tab: 'people', person: id } })
+}
+async function loadPersonInfo() {
+  personInfo.value = null
+  if (!person.value) return
+  try { personInfo.value = await api.person(person.value) } catch (e: any) {
+    loadError.value = e?.data?.error || t('common.error_load')
+  }
+}
 const albumInfo = ref<PhotoAlbumDetail | null>(null)
 const ownerEmail = ref('')
 const albumsRef = ref<InstanceType<typeof PhotoAlbums> | null>(null)
@@ -114,13 +143,17 @@ async function loadOwnerEmail() {
   } catch { /* the title stays empty */ }
 }
 // The grid over a list: which one, its title and the way back.
-const scoped = computed(() => (tab.value === 'map' && !!area.value) || !!album.value || !!owner.value)
-const scopeTitle = computed(() => album.value ? (albumInfo.value?.name ?? '') : owner.value ? ownerEmail.value : areaTitle.value)
-const backLabel = computed(() => album.value ? t('photos.albums_back') : owner.value ? t('photos.shared_back') : t('photos.map_back'))
+const scoped = computed(() => (tab.value === 'map' && !!area.value) || !!album.value || !!owner.value || !!person.value)
+const scopeTitle = computed(() => album.value ? (albumInfo.value?.name ?? '')
+  : owner.value ? ownerEmail.value
+    : person.value ? (personInfo.value ? personLabel(personInfo.value, t('photos.person_unnamed')) : '')
+      : areaTitle.value)
+const backLabel = computed(() => album.value ? t('photos.albums_back') : owner.value ? t('photos.shared_back')
+  : person.value ? t('photos.people_back') : t('photos.map_back'))
 function closeScope() {
   if (tab.value === 'map') return closeArea()
   if (scopeFromList) { scopeFromList = false; router.back() }
-  else router.replace({ query: { ...route.query, album: undefined, owner: undefined } })
+  else router.replace({ query: { ...route.query, album: undefined, owner: undefined, person: undefined } })
 }
 
 // ---- settings & buckets ----
@@ -143,6 +176,7 @@ async function loadBuckets() {
   if (tab.value === 'hidden') return loadHiddenBuckets()
   if (!settings.value?.available) return
   if (!settings.value.enabled && !album.value && !owner.value) return
+  if (tab.value === 'people' && !person.value) return
   if (tab.value === 'map' && !area.value) return
   if (tab.value === 'albums' && !album.value) return
   if (tab.value === 'shared' && !owner.value) return
@@ -165,6 +199,7 @@ const activeFilter = computed<PhotoFilter>(() => {
   const all: PhotoFilter = { kind: 'all', favorite: false, source: '' }
   if (tab.value === 'map') return { ...all, area: area.value }
   if (tab.value === 'albums') return { ...all, album: album.value }
+  if (tab.value === 'people') return { ...all, person: person.value }
   if (tab.value === 'shared') return { ...all, owner: owner.value }
   return filter.value
 })
@@ -251,16 +286,21 @@ watch(tab, (v) => {
   else if (v === 'photos') loadBuckets()
 })
 // A new area, album or partner (or none: back on the list) starts its grid over.
-watch([area, album, owner], ([a, al, o], [pa]) => {
+watch([area, album, owner, person], ([a, al, o, pe], [pa]) => {
   selection.value = new Set()
   viewer.value = null
   bucketsLoaded.value = false
   buckets.value = []
   loadError.value = ''
-  if (a || al || o) loadBuckets()
+  if (a || al || o || pe) loadBuckets()
   else if (pa) nextTick(() => mapRef.value?.resize())
   if (al) loadAlbumInfo()
   if (o) loadOwnerEmail()
+  if (pe) {
+    if (pe !== personFromList) scopeFromList = false
+    personFromList = ''
+    loadPersonInfo()
+  }
 })
 
 onMounted(async () => {
@@ -269,6 +309,7 @@ onMounted(async () => {
   await loadBuckets()
   if (album.value) loadAlbumInfo()
   if (owner.value) loadOwnerEmail()
+  if (person.value) loadPersonInfo()
   if (tab.value === 'hidden') loadHiddenBuckets()
   if (indexing.value || (settings.value?.enabled && settings.value.sources.length && !settings.value.indexing.total)) startPolling()
   window.addEventListener('keydown', onKey)
@@ -464,6 +505,52 @@ async function deleteAlbum() {
   })
 }
 
+// The person's own actions (its header).
+const merging = ref(false)
+const birthday = ref(false)
+const personBorn = computed(() => {
+  const d = personInfo.value?.birthDate
+  if (!d) return ''
+  const [y, m, day] = d.split('-').map(Number)
+  return new Date(y, m - 1, day).toLocaleDateString(locale.value, { day: 'numeric', month: 'long', year: 'numeric' })
+})
+async function renamePerson() {
+  const p = personInfo.value
+  if (!p) return
+  const name = (await prompt(t('photos.person_rename'), p.name))?.trim()
+  if (name === undefined || name === p.name) return
+  return act(async () => {
+    // Somebody already called that: the same person split in two — offer to merge.
+    if (name) {
+      const same = findSameName(await api.people(), name, p.id)
+      if (same && await confirm(t('photos.person_same_name_title', { name: same.name }), {
+        message: t('photos.person_same_name_message'),
+        confirmText: t('photos.people_merge_do', { n: 1 }),
+      })) {
+        personInfo.value = await api.mergePeople(p.id, [same.id])
+        await loadBuckets()
+        grid.value?.invalidate()
+      }
+    }
+    personInfo.value = await api.updatePerson(p.id, { name })
+  })
+}
+function togglePersonHidden() {
+  const p = personInfo.value
+  if (!p) return
+  return act(async () => {
+    personInfo.value = await api.updatePerson(p.id, { hidden: !p.hidden })
+    say(personInfo.value.hidden ? t('photos.person_hidden_done') : t('photos.person_shown_done'))
+  })
+}
+async function mergeDone(merged: PhotoPerson) {
+  merging.value = false
+  personInfo.value = merged
+  say(t('photos.people_merged'))
+  await loadBuckets()
+  grid.value?.invalidate()
+}
+
 // ---- the viewer ----
 interface ViewerState {
   start: { id: string; month: string }
@@ -627,6 +714,7 @@ async function afterEdit(r: EditResult) {
       <!-- Альбомы, Общие: the lists; an album or a partner opens below -->
       <PhotoAlbums v-else-if="tab === 'albums' && !album" ref="albumsRef" @open="openAlbum" />
       <PhotoShared v-else-if="tab === 'shared' && !owner" @open="openPartner" />
+      <PhotoPeople v-else-if="tab === 'people' && !person" ref="peopleRef" @open="openPerson" />
 
 
       <!-- Скрытое: unlock first, then the grid of hidden cards -->
@@ -681,6 +769,22 @@ async function afterEdit(r: EditResult) {
           <span v-if="bucketsLoaded" class="text-sm text-muted">{{ t('photos.map_count', { n: areaCount }) }}</span>
           <span v-if="albumInfo && !albumInfo.own" class="text-xs text-muted">{{ t('photos.album_by', { email: albumInfo.ownerEmail }) }}</span>
           <span v-if="loadError" class="text-xs text-danger">{{ loadError }}</span>
+          <span v-if="personBorn" class="text-sm text-muted">{{ t('photos.person_born', { date: personBorn }) }}</span>
+          <span v-if="personInfo?.hidden" class="rounded-full bg-ink/10 px-2 py-0.5 text-xs text-muted">{{ t('photos.person_is_hidden') }}</span>
+          <div v-if="personInfo" class="ml-auto flex items-center gap-1">
+            <button type="button" class="btn-ghost px-2 py-1.5 text-sm" @click="renamePerson">
+              <Icon name="lucide:pencil" size="16" /> <span class="hidden sm:inline">{{ personInfo.name ? t('photos.person_rename') : t('photos.person_name') }}</span>
+            </button>
+            <button type="button" class="btn-ghost px-2 py-1.5 text-sm" :title="t('photos.person_birthday')" @click="birthday = true">
+              <Icon name="lucide:cake" size="16" /> <span class="hidden sm:inline">{{ t('photos.person_birthday') }}</span>
+            </button>
+            <button type="button" class="btn-ghost px-2 py-1.5 text-sm" @click="merging = true">
+              <Icon name="lucide:combine" size="16" /> <span class="hidden sm:inline">{{ t('photos.people_merge') }}</span>
+            </button>
+            <button type="button" class="btn-ghost px-2 py-1.5 text-sm" :title="personInfo.hidden ? t('photos.person_show') : t('photos.person_hide')" @click="togglePersonHidden">
+              <Icon :name="personInfo.hidden ? 'lucide:eye' : 'lucide:eye-off'" size="16" />
+            </button>
+          </div>
           <div v-if="albumInfo" class="ml-auto flex items-center gap-1">
             <button v-if="albumInfo.own" type="button" class="btn-ghost px-2 py-1.5 text-sm" @click="sharing = true">
               <Icon name="lucide:share-2" size="16" /> <span class="hidden sm:inline">{{ t('photos.album_share') }}</span>
@@ -705,7 +809,7 @@ async function afterEdit(r: EditResult) {
             @range-failed="say(t('photos.range_failed'))"
           />
           <div v-else-if="bucketsLoaded" class="flex h-full items-center justify-center p-6 text-center text-sm text-muted">
-            {{ album ? t('photos.album_empty') : owner ? t('photos.partner_empty') : t('photos.empty_filtered') }}
+            {{ album ? t('photos.album_empty') : owner ? t('photos.partner_empty') : person ? t('photos.person_empty') : t('photos.empty_filtered') }}
           </div>
           <SelectionBar
             v-if="selection.size"
@@ -751,12 +855,14 @@ async function afterEdit(r: EditResult) {
       @edit-place="(id) => (editPlaceIds = [id])"
       @album="(id) => (albumIds = [id])"
     />
-    <div v-if="notice && (viewer || tab === 'memories' || tab === 'trash' || (tab === 'albums' && !album) || (tab === 'shared' && !owner))" class="pointer-events-none fixed inset-x-0 bottom-20 z-[55] flex justify-center px-4" role="status">
+    <div v-if="notice && (viewer || tab === 'memories' || tab === 'trash' || (tab === 'albums' && !album) || (tab === 'people' && !person) || (tab === 'shared' && !owner))" class="pointer-events-none fixed inset-x-0 bottom-20 z-[55] flex justify-center px-4" role="status">
       <span class="rounded-full bg-black/75 px-3 py-1.5 text-xs text-white">{{ notice }}</span>
     </div>
     <EditDateDialog v-if="editDateIds" :ids="editDateIds" @close="editDateIds = null" @done="afterEdit" />
     <EditPlaceDialog v-if="editPlaceIds" :ids="editPlaceIds" @close="editPlaceIds = null" @done="afterEdit" />
     <AddToAlbumDialog v-if="albumIds" :ids="albumIds" @close="albumIds = null" @done="albumDone" />
     <AlbumShareDialog v-if="sharing && albumInfo" :album="albumInfo" @close="sharing = false" />
+    <BirthdayDialog v-if="birthday && personInfo" :person="personInfo" @close="birthday = false" @done="(p) => { personInfo = p; birthday = false }" />
+    <MergePeopleDialog v-if="merging && personInfo" :person="personInfo" @close="merging = false" @done="mergeDone" />
   </div>
 </template>

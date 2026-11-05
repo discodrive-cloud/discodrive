@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"discodrive/internal/httpsecurity"
@@ -80,6 +81,18 @@ type Config struct {
 	// PhotosExifTimeout bounds one exiftool read (PHOTOS_EXIF_TIMEOUT, seconds; default
 	// 60): a file exiftool hangs on is recorded as failed and the reader restarted.
 	PhotosExifTimeout time.Duration
+	// People in the gallery. PhotosMLURL (PHOTOS_ML_URL) is the address of the face service
+	// (DiscoDrive's own ml container, or an Immich machine-learning one); empty = no people at
+	// all. PHOTOS_ML_MODEL names its face model (auraface; buffalo_l on Immich);
+	// PHOTOS_FACES_WORKERS pictures are in flight at once (default 2). Thresholds:
+	// PHOTOS_FACES_MIN_SCORE (0.7, detection), PHOTOS_FACES_MAX_DISTANCE (cosine; 0.6, or 0.5
+	// for buffalo_*), PHOTOS_FACES_MIN_FACES (3, a person's core).
+	PhotosMLURL            string
+	PhotosMLModel          string
+	PhotosFacesWorkers     int
+	PhotosFacesMinScore    float32
+	PhotosFacesMaxDistance float32
+	PhotosFacesMinFaces    int
 }
 
 // GiB is the byte multiplier for the *_GB settings: they are binary gigabytes,
@@ -95,28 +108,34 @@ func (c Config) DefaultUserQuotaBytes() int64 { return int64(c.DefaultUserQuotaG
 // Load reads configuration from the environment, applying defaults.
 func Load() Config {
 	return Config{
-		Host:                  getenv("APP_HOST", "127.0.0.1"),
-		TrustedProxyCIDRs:     getenv("TRUSTED_PROXY_CIDRS", httpsecurity.DefaultTrustedProxies),
-		AllowInsecureHTTP:     getenvBool("ALLOW_INSECURE_HTTP", false),
-		Port:                  getenv("APP_PORT", "8080"),
-		DatabaseURL:           os.Getenv("DATABASE_URL"),
-		JWTSecret:             os.Getenv("JWT_SECRET"),
-		SettingsEncryptionKey: os.Getenv("SETTINGS_ENCRYPTION_KEY"),
-		BaseDomain:            os.Getenv("BASE_DOMAIN"),
-		StorageRoot:           getenv("STORAGE_ROOT", "/data"),
-		SetupTokenFile:        getenv("SETUP_TOKEN_FILE", filepath.Join(getenv("STORAGE_ROOT", "/data"), ".bootstrap", "setup-token")),
-		VersionKeep:           getenvInt("VERSION_KEEP", 10),
-		TrashDays:             getenvInt("TRASH_DAYS", 30),
-		RescanSecondsIgnored:  os.Getenv("RESCAN_SECONDS") != "",
-		XAccelEnabled:         getenvBool("XACCEL_ENABLED", true),
-		SavedMaxDownloadMB:    getenvInt("SAVED_MAX_DOWNLOAD_MB", 32768),
-		StorageTotalGB:        getenvInt("STORAGE_TOTAL_GB", 0),
-		MusicEnabled:          getenvBool("MUSIC_ENABLED", true),
-		BooksEnabled:          getenvBool("BOOKS_ENABLED", true),
-		PhotosEnabled:         getenvBool("PHOTOS_ENABLED", true),
-		PhotosWorkers:         photosWorkers(),
-		PhotosExifTimeout:     time.Duration(max(1, getenvInt("PHOTOS_EXIF_TIMEOUT", 60))) * time.Second,
-		DefaultUserQuotaGB:    getenvInt("DEFAULT_USER_QUOTA_GB", 0),
+		Host:                   getenv("APP_HOST", "127.0.0.1"),
+		TrustedProxyCIDRs:      getenv("TRUSTED_PROXY_CIDRS", httpsecurity.DefaultTrustedProxies),
+		AllowInsecureHTTP:      getenvBool("ALLOW_INSECURE_HTTP", false),
+		Port:                   getenv("APP_PORT", "8080"),
+		DatabaseURL:            os.Getenv("DATABASE_URL"),
+		JWTSecret:              os.Getenv("JWT_SECRET"),
+		SettingsEncryptionKey:  os.Getenv("SETTINGS_ENCRYPTION_KEY"),
+		BaseDomain:             os.Getenv("BASE_DOMAIN"),
+		StorageRoot:            getenv("STORAGE_ROOT", "/data"),
+		SetupTokenFile:         getenv("SETUP_TOKEN_FILE", filepath.Join(getenv("STORAGE_ROOT", "/data"), ".bootstrap", "setup-token")),
+		VersionKeep:            getenvInt("VERSION_KEEP", 10),
+		TrashDays:              getenvInt("TRASH_DAYS", 30),
+		RescanSecondsIgnored:   os.Getenv("RESCAN_SECONDS") != "",
+		XAccelEnabled:          getenvBool("XACCEL_ENABLED", true),
+		SavedMaxDownloadMB:     getenvInt("SAVED_MAX_DOWNLOAD_MB", 32768),
+		StorageTotalGB:         getenvInt("STORAGE_TOTAL_GB", 0),
+		MusicEnabled:           getenvBool("MUSIC_ENABLED", true),
+		BooksEnabled:           getenvBool("BOOKS_ENABLED", true),
+		PhotosEnabled:          getenvBool("PHOTOS_ENABLED", true),
+		PhotosWorkers:          photosWorkers(),
+		PhotosExifTimeout:      time.Duration(max(1, getenvInt("PHOTOS_EXIF_TIMEOUT", 60))) * time.Second,
+		DefaultUserQuotaGB:     getenvInt("DEFAULT_USER_QUOTA_GB", 0),
+		PhotosMLURL:            os.Getenv("PHOTOS_ML_URL"),
+		PhotosMLModel:          getenv("PHOTOS_ML_MODEL", "auraface"),
+		PhotosFacesWorkers:     max(1, getenvInt("PHOTOS_FACES_WORKERS", 2)),
+		PhotosFacesMinScore:    getenvFloat("PHOTOS_FACES_MIN_SCORE", 0.7),
+		PhotosFacesMaxDistance: getenvFloat("PHOTOS_FACES_MAX_DISTANCE", defaultFaceDistance(getenv("PHOTOS_ML_MODEL", "auraface"))),
+		PhotosFacesMinFaces:    max(1, getenvInt("PHOTOS_FACES_MIN_FACES", 3)),
 	}
 }
 
@@ -136,6 +155,24 @@ func getenvInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+// defaultFaceDistance is the clustering threshold measured for a face model: 0.6 for
+// AuraFace (no two people merged on the author's library), 0.5 for Immich's buffalo_* packs.
+func defaultFaceDistance(model string) float32 {
+	if strings.HasPrefix(model, "buffalo") {
+		return 0.5
+	}
+	return 0.6
+}
+
+func getenvFloat(key string, def float32) float32 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 32); err == nil && f > 0 {
+			return float32(f)
 		}
 	}
 	return def

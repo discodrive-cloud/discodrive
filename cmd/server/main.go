@@ -38,6 +38,7 @@ import (
 	"discodrive/internal/notify"
 	"discodrive/internal/opds"
 	"discodrive/internal/photos"
+	"discodrive/internal/photos/faces"
 	"discodrive/internal/photos/geo"
 	"discodrive/internal/photos/maps"
 	"discodrive/internal/photos/media"
@@ -91,6 +92,21 @@ func main() {
 			log.Fatalf("discodrive: connecting to database: %v", err)
 		}
 		code := runRescan(ctx, db.New(pool), os.Args[2:], os.Stdout, time.Second)
+		pool.Close()
+		os.Exit(code)
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "faces" {
+		if cfg.DatabaseURL == "" {
+			log.Fatal("discodrive: DATABASE_URL is not set")
+		}
+		ctx := context.Background()
+		pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("discodrive: connecting to database: %v", err)
+		}
+		code := runFaces(ctx, db.New(pool), os.Args[2:], os.Stdout, cfg.PhotosMLModel,
+			faces.Params{MaxDistance: cfg.PhotosFacesMaxDistance, MinFaces: cfg.PhotosFacesMinFaces})
 		pool.Close()
 		os.Exit(code)
 	}
@@ -331,6 +347,7 @@ func runServer(cfg config.Config) {
 	var photosIdx *photos.Indexer
 	var photoThumbs *photos.Thumbs
 	var photoMaps *maps.Manager
+	var photoFaces *photos.Faces
 	if tools := media.Detect(); !cfg.PhotosEnabled {
 		log.Println("discodrive: photos are turned off (PHOTOS_ENABLED=false)")
 	} else if tools.Available() {
@@ -363,6 +380,20 @@ func runServer(cfg config.Config) {
 			go photoMaps.Resume(ctx)
 			photoThumbs = photos.NewThumbs(queries, cfg.StorageRoot, tools, cfg.PhotosWorkers, exif)
 			photosIdx.OnPending = photoThumbs.Kick
+			switch {
+			case cfg.PhotosMLURL == "":
+			case cfg.PhotosWorkers == 0:
+				log.Println("discodrive: photos: people need background workers (PHOTOS_WORKERS=0)")
+			default:
+				photoFaces = photos.NewFaces(queries, photoThumbs,
+					&photos.MLClient{URL: cfg.PhotosMLURL, Model: cfg.PhotosMLModel, MinScore: cfg.PhotosFacesMinScore},
+					faces.Params{MaxDistance: cfg.PhotosFacesMaxDistance, MinFaces: cfg.PhotosFacesMinFaces},
+					cfg.PhotosFacesWorkers)
+				photoThumbs.OnReady = photoFaces.Kick
+				photoFaces.Begin = pool.Begin
+				go photoFaces.Run(ctx)
+				log.Printf("discodrive: photos: people on, face service %s", cfg.PhotosMLURL)
+			}
 			go photoThumbs.Run(ctx)
 			libs = append(libs, photosIdx)
 		}
@@ -400,7 +431,7 @@ func runServer(cfg config.Config) {
 	scriptHashes := inlineScriptHashes(discodrive.WebUI())
 	srv := &http.Server{
 		Addr:              cfg.Addr(),
-		Handler:           transport.Handler(securityHeaders(scriptHashes, compressResponses(api.NewRouter(authSvc, queries, fileSvc, uploads, cfg.StorageRoot, cipher, notifier, discodrive.WebUI(), dav, caldavH, carddavH, davSvc, cfg.XAccelEnabled, eventHub, subsonicH, opdsH, kosyncH, tagEditor, metaEditor, savedSvc, bookmarksSvc, photosIdx, photoThumbs, photoMaps, sections)))),
+		Handler:           transport.Handler(securityHeaders(scriptHashes, compressResponses(api.NewRouter(authSvc, queries, fileSvc, uploads, cfg.StorageRoot, cipher, notifier, discodrive.WebUI(), dav, caldavH, carddavH, davSvc, cfg.XAccelEnabled, eventHub, subsonicH, opdsH, kosyncH, tagEditor, metaEditor, savedSvc, bookmarksSvc, photosIdx, photoThumbs, photoMaps, sections, api.WithPhotoFaces(photoFaces))))),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
