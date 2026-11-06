@@ -20,7 +20,7 @@ WHERE id IN (
     LIMIT $2
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model
+RETURNING id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model, rotation
 `
 
 type ClaimPendingThumbsParams struct {
@@ -83,6 +83,7 @@ func (q *Queries) ClaimPendingThumbs(ctx context.Context, arg ClaimPendingThumbs
 			&i.FaceState,
 			&i.FaceError,
 			&i.FaceModel,
+			&i.Rotation,
 		); err != nil {
 			return nil, err
 		}
@@ -95,7 +96,7 @@ func (q *Queries) ClaimPendingThumbs(ctx context.Context, arg ClaimPendingThumbs
 }
 
 const claimPendingTranscodes = `-- name: ClaimPendingTranscodes :many
-SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model FROM photo_assets
+SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model, rotation FROM photo_assets
 WHERE kind = 'video' AND transcode_state = 'pending' AND id <> ALL(COALESCE($1::uuid[], '{}'))
 ORDER BY id
 LIMIT $2
@@ -159,6 +160,7 @@ func (q *Queries) ClaimPendingTranscodes(ctx context.Context, arg ClaimPendingTr
 			&i.FaceState,
 			&i.FaceError,
 			&i.FaceModel,
+			&i.Rotation,
 		); err != nil {
 			return nil, err
 		}
@@ -324,7 +326,7 @@ func (q *Queries) DeletePhotoSources(ctx context.Context, userID pgtype.UUID) er
 }
 
 const getPhotoAsset = `-- name: GetPhotoAsset :one
-SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model FROM photo_assets WHERE id = $1 AND user_id = $2
+SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model, rotation FROM photo_assets WHERE id = $1 AND user_id = $2
 `
 
 type GetPhotoAssetParams struct {
@@ -377,12 +379,13 @@ func (q *Queries) GetPhotoAsset(ctx context.Context, arg GetPhotoAssetParams) (P
 		&i.FaceState,
 		&i.FaceError,
 		&i.FaceModel,
+		&i.Rotation,
 	)
 	return i, err
 }
 
 const getPhotoAssetByID = `-- name: GetPhotoAssetByID :one
-SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model FROM photo_assets WHERE id = $1
+SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model, rotation FROM photo_assets WHERE id = $1
 `
 
 // The row by id alone, for endpoints whose credential is a node-scoped token and that
@@ -432,12 +435,13 @@ func (q *Queries) GetPhotoAssetByID(ctx context.Context, id pgtype.UUID) (PhotoA
 		&i.FaceState,
 		&i.FaceError,
 		&i.FaceModel,
+		&i.Rotation,
 	)
 	return i, err
 }
 
 const getPhotoAssetByNode = `-- name: GetPhotoAssetByNode :one
-SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model FROM photo_assets WHERE node_id = $1
+SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model, rotation FROM photo_assets WHERE node_id = $1
 `
 
 func (q *Queries) GetPhotoAssetByNode(ctx context.Context, nodeID pgtype.UUID) (PhotoAsset, error) {
@@ -485,6 +489,7 @@ func (q *Queries) GetPhotoAssetByNode(ctx context.Context, nodeID pgtype.UUID) (
 		&i.FaceState,
 		&i.FaceError,
 		&i.FaceModel,
+		&i.Rotation,
 	)
 	return i, err
 }
@@ -558,7 +563,7 @@ func (q *Queries) InsertPhotoSource(ctx context.Context, arg InsertPhotoSourcePa
 }
 
 const listHiddenPhotoAssets = `-- name: ListHiddenPhotoAssets :many
-SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model FROM photo_assets a
+SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation FROM photo_assets a
 WHERE a.user_id = $1
   AND a.taken_local >= $2::timestamp
   AND a.taken_local < $2::timestamp + interval '1 month'
@@ -622,6 +627,7 @@ func (q *Queries) ListHiddenPhotoAssets(ctx context.Context, arg ListHiddenPhoto
 			&i.FaceState,
 			&i.FaceError,
 			&i.FaceModel,
+			&i.Rotation,
 		); err != nil {
 			return nil, err
 		}
@@ -699,7 +705,7 @@ func (q *Queries) ListKnownPhotoHashes(ctx context.Context, arg ListKnownPhotoHa
 }
 
 const listOnThisDay = `-- name: ListOnThisDay :many
-SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model FROM photo_assets a
+SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation FROM photo_assets a
 WHERE a.user_id = $1
   AND extract(month from a.taken_local) = $2::int
   AND extract(day from a.taken_local) = $3::int
@@ -764,6 +770,7 @@ func (q *Queries) ListOnThisDay(ctx context.Context, arg ListOnThisDayParams) ([
 			&i.FaceState,
 			&i.FaceError,
 			&i.FaceModel,
+			&i.Rotation,
 		); err != nil {
 			return nil, err
 		}
@@ -776,7 +783,7 @@ func (q *Queries) ListOnThisDay(ctx context.Context, arg ListOnThisDayParams) ([
 }
 
 const listOwnPhotoAssets = `-- name: ListOwnPhotoAssets :many
-SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model FROM photo_assets WHERE user_id = $1 AND id = ANY($2::uuid[])
+SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model, rotation FROM photo_assets WHERE user_id = $1 AND id = ANY($2::uuid[])
 `
 
 type ListOwnPhotoAssetsParams struct {
@@ -837,6 +844,7 @@ func (q *Queries) ListOwnPhotoAssets(ctx context.Context, arg ListOwnPhotoAssets
 			&i.FaceState,
 			&i.FaceError,
 			&i.FaceModel,
+			&i.Rotation,
 		); err != nil {
 			return nil, err
 		}
@@ -873,7 +881,7 @@ func (q *Queries) ListPhotoAssetIDs(ctx context.Context, userID pgtype.UUID) ([]
 }
 
 const listPhotoAssetsInMonth = `-- name: ListPhotoAssetsInMonth :many
-SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model FROM photo_assets a
+SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation FROM photo_assets a
 JOIN nodes n ON n.id = a.node_id
 WHERE a.user_id = ANY($1::uuid[])
   AND (a.user_id = $2 OR n.user_id = a.user_id)
@@ -999,6 +1007,7 @@ func (q *Queries) ListPhotoAssetsInMonth(ctx context.Context, arg ListPhotoAsset
 			&i.FaceState,
 			&i.FaceError,
 			&i.FaceModel,
+			&i.Rotation,
 		); err != nil {
 			return nil, err
 		}
@@ -1011,7 +1020,7 @@ func (q *Queries) ListPhotoAssetsInMonth(ctx context.Context, arg ListPhotoAsset
 }
 
 const listPhotoAssetsWithoutPlace = `-- name: ListPhotoAssetsWithoutPlace :many
-SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model FROM photo_assets
+SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model, rotation FROM photo_assets
 WHERE lat IS NOT NULL AND lon IS NOT NULL AND place_id IS NULL
 ORDER BY id LIMIT $1
 `
@@ -1069,6 +1078,7 @@ func (q *Queries) ListPhotoAssetsWithoutPlace(ctx context.Context, limit int32) 
 			&i.FaceState,
 			&i.FaceError,
 			&i.FaceModel,
+			&i.Rotation,
 		); err != nil {
 			return nil, err
 		}
@@ -1616,7 +1626,7 @@ func (q *Queries) ListStalePhotoNodes(ctx context.Context, id pgtype.UUID) ([]No
 }
 
 const listTrashedPhotoAssets = `-- name: ListTrashedPhotoAssets :many
-SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model FROM photo_assets a
+SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation FROM photo_assets a
 WHERE a.user_id = $1 AND a.parent_id IS NULL AND a.trashed_at IS NOT NULL
 ORDER BY a.trashed_at DESC, a.id
 `
@@ -1672,6 +1682,7 @@ func (q *Queries) ListTrashedPhotoAssets(ctx context.Context, userID pgtype.UUID
 			&i.FaceState,
 			&i.FaceError,
 			&i.FaceModel,
+			&i.Rotation,
 		); err != nil {
 			return nil, err
 		}
@@ -1743,6 +1754,62 @@ func (q *Queries) QueuePhotoTranscode(ctx context.Context, id pgtype.UUID) (int6
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const rotatePhotoCards = `-- name: RotatePhotoCards :many
+WITH roots AS (
+    SELECT a.id FROM photo_assets a
+    WHERE a.user_id = $1
+      AND (a.id = ANY($2::uuid[])
+           OR (a.parent_id IS NULL AND a.content_hash IS NOT NULL AND a.content_hash IN (
+                SELECT s.content_hash FROM photo_assets s
+                WHERE s.user_id = $1 AND s.id = ANY($2::uuid[]))))
+), turned AS (
+    UPDATE photo_assets AS t SET
+        rotation = (t.rotation + $3::int) % 360,
+        thumb_state = 'pending', thumb_error = NULL, face_state = NULL, face_error = NULL
+    WHERE t.user_id = $1 AND t.id IN (SELECT r.id FROM roots r)
+      AND t.parent_id IS NULL AND t.kind <> 'video'
+    RETURNING t.id
+), boxes AS (
+    UPDATE photo_faces AS f SET
+        x1 = CASE $3::int WHEN 90 THEN 1 - f.y2 WHEN 180 THEN 1 - f.x2 ELSE f.y1 END,
+        x2 = CASE $3::int WHEN 90 THEN 1 - f.y1 WHEN 180 THEN 1 - f.x1 ELSE f.y2 END,
+        y1 = CASE $3::int WHEN 90 THEN f.x1 WHEN 180 THEN 1 - f.y2 ELSE 1 - f.x2 END,
+        y2 = CASE $3::int WHEN 90 THEN f.x2 WHEN 180 THEN 1 - f.y1 ELSE 1 - f.x1 END
+    WHERE f.asset_id IN (SELECT d.id FROM turned d)
+)
+SELECT d.id FROM turned d
+`
+
+type RotatePhotoCardsParams struct {
+	UserID pgtype.UUID   `json:"user_id"`
+	Ids    []pgtype.UUID `json:"ids"`
+	Turn   int32         `json:"turn"`
+}
+
+// Turns cards (and the user's copies of the same content, as the flags do) clockwise by
+// turn degrees on top of their own turn. Videos keep theirs. The thumbnail is made again,
+// the face boxes (fractions of the preview) turn with the picture and the faces are looked
+// at again: a sideways face is often missed, and the old ones carry their persons over.
+func (q *Queries) RotatePhotoCards(ctx context.Context, arg RotatePhotoCardsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, rotatePhotoCards, arg.UserID, arg.Ids, arg.Turn)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setPhotoCardFlags = `-- name: SetPhotoCardFlags :exec
@@ -2062,7 +2129,7 @@ ON CONFLICT (node_id) DO UPDATE SET
     indexed_at = now(),
     node_version = EXCLUDED.node_version,
     index_error = EXCLUDED.index_error
-RETURNING id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model
+RETURNING id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model, rotation
 `
 
 type UpsertPhotoAssetParams struct {
@@ -2171,6 +2238,7 @@ func (q *Queries) UpsertPhotoAsset(ctx context.Context, arg UpsertPhotoAssetPara
 		&i.FaceState,
 		&i.FaceError,
 		&i.FaceModel,
+		&i.Rotation,
 	)
 	return i, err
 }

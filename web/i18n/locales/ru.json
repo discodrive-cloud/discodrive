@@ -954,6 +954,8 @@
     "unfavorite": "Убрать из избранного",
     "edit_date": "Изменить дату",
     "edit_place": "Изменить место",
+    "rotate_left": "Повернуть влево",
+    "rotate_right": "Повернуть вправо",
     "hide": "Скрыть",
     "clear_selection": "Снять выделение",
     "selected": "Выбрано: {n}",

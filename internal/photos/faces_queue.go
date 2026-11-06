@@ -323,11 +323,15 @@ func (f *Faces) store(ctx context.Context, a db.PhotoAsset, found []DetectedFace
 		if err := q.DeleteAssetFaces(ctx, a.ID); err != nil {
 			return err
 		}
-		persons := carryPersons(found, old)
+		carried := carryFaces(found, old)
 		for i, d := range found {
-			if _, err := q.InsertPhotoFace(ctx, db.InsertPhotoFaceParams{UserID: a.UserID, AssetID: a.ID,
-				PersonID: persons[i], X1: d.X1, Y1: d.Y1, X2: d.X2, Y2: d.Y2, Score: d.Score,
-				Embedding: encodeVec(d.Vec), Model: f.ml.Model}); err != nil {
+			p := db.InsertPhotoFaceParams{UserID: a.UserID, AssetID: a.ID, X1: d.X1, Y1: d.Y1, X2: d.X2, Y2: d.Y2,
+				Score: d.Score, Embedding: encodeVec(d.Vec), Model: f.ml.Model}
+			if j := carried[i]; j >= 0 {
+				// What the user set by hand stays set by hand.
+				p.PersonID, p.Manual = old[j].PersonID, old[j].Manual
+			}
+			if _, err := q.InsertPhotoFace(ctx, p); err != nil {
 				return err
 			}
 		}
@@ -353,8 +357,21 @@ func carryPerson(d DetectedFace, old []db.PhotoFace) pgtype.UUID {
 	return p[0]
 }
 
-// carryPersons matches new faces to old ones one to one, best overlap first.
+// carryPersons is the person each new face takes over (see carryFaces).
 func carryPersons(found []DetectedFace, old []db.PhotoFace) []pgtype.UUID {
+	out := make([]pgtype.UUID, len(found))
+	for i, j := range carryFaces(found, old) {
+		if j >= 0 {
+			out[i] = old[j].PersonID
+		}
+	}
+	return out
+}
+
+// carryFaces matches new faces to the old ones that carry something — a person, or the
+// user's hand (manual) — one to one, best overlap first: the index of the old face per new
+// face, -1 for none.
+func carryFaces(found []DetectedFace, old []db.PhotoFace) []int {
 	type pair struct {
 		n, o int
 		v    float32
@@ -363,7 +380,7 @@ func carryPersons(found []DetectedFace, old []db.PhotoFace) []pgtype.UUID {
 	for i, d := range found {
 		cx, cy := (d.X1+d.X2)/2, (d.Y1+d.Y2)/2
 		for j, o := range old {
-			if !o.PersonID.Valid {
+			if !o.PersonID.Valid && !o.Manual {
 				continue
 			}
 			v := iou(d, o)
@@ -374,11 +391,14 @@ func carryPersons(found []DetectedFace, old []db.PhotoFace) []pgtype.UUID {
 		}
 	}
 	sort.Slice(pairs, func(a, b int) bool { return pairs[a].v > pairs[b].v })
-	out := make([]pgtype.UUID, len(found))
+	out := make([]int, len(found))
+	for i := range out {
+		out[i] = -1
+	}
 	usedN, usedO := map[int]bool{}, map[int]bool{}
 	for _, p := range pairs {
 		if !usedN[p.n] && !usedO[p.o] {
-			out[p.n] = old[p.o].PersonID
+			out[p.n] = p.o
 			usedN[p.n], usedO[p.o] = true, true
 		}
 	}

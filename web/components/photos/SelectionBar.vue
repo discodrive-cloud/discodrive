@@ -24,11 +24,12 @@ const emit = defineEmits<{
   album: []
   'remove-from-album': []
   'not-person': []
+  rotate: [turn: 90 | -90]
   clear: []
 }>()
 const { t } = useI18n()
 
-type Action = { id: 'favorite' | 'download' | 'edit-date' | 'edit-place' | 'hide' | 'delete' | 'album' | 'remove-from-album' | 'not-person'; icon: string; label: string; filled?: boolean; danger?: boolean }
+type Action = { id: 'favorite' | 'download' | 'edit-date' | 'edit-place' | 'rotate-left' | 'rotate-right' | 'hide' | 'delete' | 'album' | 'remove-from-album' | 'not-person'; icon: string; label: string; filled?: boolean; danger?: boolean }
 
 const actions = computed<Action[]>(() => {
   const list: Action[] = []
@@ -43,6 +44,8 @@ const actions = computed<Action[]>(() => {
     list.push(
       { id: 'edit-date', icon: 'lucide:calendar-clock', label: t('photos.edit_date') },
       { id: 'edit-place', icon: 'lucide:map-pin', label: t('photos.edit_place') },
+      { id: 'rotate-left', icon: 'lucide:rotate-ccw', label: t('photos.rotate_left') },
+      { id: 'rotate-right', icon: 'lucide:rotate-cw', label: t('photos.rotate_right') },
       { id: 'hide', icon: props.hiddenMode ? 'lucide:eye' : 'lucide:eye-off', label: props.hiddenMode ? t('photos.unhide') : t('photos.hide') },
       { id: 'delete', icon: 'lucide:trash-2', label: t('common.delete'), danger: true },
     )
@@ -60,6 +63,8 @@ function run(id: Action['id']) {
     case 'download': emit('download'); break
     case 'edit-date': emit('edit-date'); break
     case 'edit-place': emit('edit-place'); break
+    case 'rotate-left': emit('rotate', -90); break
+    case 'rotate-right': emit('rotate', 90); break
     case 'hide': emit('hide'); break
     case 'delete': emit('delete'); break
   }

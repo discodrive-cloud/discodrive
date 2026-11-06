@@ -357,6 +357,7 @@ type PhotoAsset struct {
 	FaceState      pgtype.Text        `json:"face_state"`
 	FaceError      pgtype.Text        `json:"face_error"`
 	FaceModel      pgtype.Text        `json:"face_model"`
+	Rotation       int16              `json:"rotation"`
 }
 
 type PhotoFace struct {

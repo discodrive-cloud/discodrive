@@ -516,3 +516,55 @@ func TestFaceSquare(t *testing.T) {
 		t.Fatalf("whole: %d", s)
 	}
 }
+
+// halves makes a w x h JPEG black on the left half and white on the right.
+func halves(t *testing.T, tools Tools, w, h int) string {
+	t.Helper()
+	d := t.TempDir()
+	half := strconv.Itoa(w / 2)
+	run(t, tools.Vips, "black", filepath.Join(d, "b.v"), half, strconv.Itoa(h))
+	run(t, tools.Vips, "invert", filepath.Join(d, "b.v"), filepath.Join(d, "w.v"))
+	p := filepath.Join(d, "h.jpg")
+	run(t, tools.Vips, "join", filepath.Join(d, "b.v"), filepath.Join(d, "w.v"), p, "horizontal")
+	return p
+}
+
+// topBrightness is the brightness of the top half of an image.
+func topBrightness(t *testing.T, tools Tools, p string) float64 {
+	t.Helper()
+	w, h := jpegSize(t, tools, p)
+	top := filepath.Join(t.TempDir(), "top.jpg")
+	run(t, tools.Vips, "extract_area", p, top, "0", "0", strconv.Itoa(w), strconv.Itoa(h/2))
+	return brightness(t, tools, top)
+}
+
+func TestPreview_UserRotation(t *testing.T) {
+	tools := exifTools(t)
+	src := halves(t, tools, 600, 400)
+	for _, c := range []struct {
+		rot      int
+		w, h     int
+		topBlack bool // the black left half ends up on top after a clockwise quarter turn
+	}{{90, 400, 600, true}, {270, 400, 600, false}, {180, 600, 400, false}} {
+		dst := filepath.Join(t.TempDir(), "p.jpg")
+		if err := Preview(context.Background(), tools, src, Meta{Kind: "photo", Rotate: c.rot}, dst); err != nil {
+			t.Fatal(err)
+		}
+		if w, h := jpegSize(t, tools, dst); w != c.w || h != c.h {
+			t.Fatalf("rot %d: size = %dx%d, want %dx%d", c.rot, w, h, c.w, c.h)
+		}
+		if c.rot != 180 {
+			if b := topBrightness(t, tools, dst); (b < 0.2) != c.topBlack {
+				t.Fatalf("rot %d: top brightness %.2f", c.rot, b)
+			}
+		}
+	}
+	// The thumbnail turns too (square, so look at which side is dark).
+	dst := filepath.Join(t.TempDir(), "t.jpg")
+	if err := Thumb(context.Background(), tools, src, Meta{Kind: "photo", Rotate: 90}, dst); err != nil {
+		t.Fatal(err)
+	}
+	if b := topBrightness(t, tools, dst); b > 0.2 {
+		t.Fatalf("thumb top brightness %.2f, want dark", b)
+	}
+}

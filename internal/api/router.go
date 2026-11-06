@@ -249,6 +249,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("POST /me/photos/v1/assets/{id}/play", prot(http.HandlerFunc(s.handlePhotoPlay)))
 	mux.Handle("PATCH /me/photos/v1/assets", prot(http.HandlerFunc(s.handlePatchPhotoAssets)))
 	mux.Handle("PUT /me/photos/v1/assets/metadata", prot(http.HandlerFunc(s.handlePutPhotoMetadata)))
+	mux.Handle("POST /me/photos/v1/assets/rotate", prot(http.HandlerFunc(s.handleRotatePhotoAssets)))
 	mux.Handle("POST /me/photos/v1/assets/delete", prot(http.HandlerFunc(s.handleDeletePhotoAssets)))
 	mux.Handle("POST /me/photos/v1/hidden/unlock", prot(http.HandlerFunc(s.rateLimited(s.handlePhotosHiddenUnlock))))
 	mux.Handle("GET /me/photos/v1/hidden/buckets", prot(http.HandlerFunc(s.handlePhotosHiddenBuckets)))

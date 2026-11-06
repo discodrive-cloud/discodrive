@@ -348,6 +348,7 @@ func (t *Thumbs) render(ctx context.Context, a db.PhotoAsset, kind string) (stri
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
+	meta.Rotate = int(a.Rotation)
 	if kind == "thumb" {
 		err = media.Thumb(ctx, t.tools, src, meta, dst)
 	} else {
@@ -406,10 +407,27 @@ func (t *Thumbs) PreviewInto(ctx context.Context, a db.PhotoAsset, dst string) (
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
+	meta.Rotate = int(a.Rotation)
 	if err := media.Preview(ctx, t.tools, src, meta, dst); err != nil {
 		return "", err
 	}
 	return dst, nil
+}
+
+// Rotated clears what was made from the asset before the user turned it: the old
+// previews (their name carries the turn) and the pictures of its faces (cut from the old
+// preview; the boxes turned with it). The thumbnail is pending again and made in place.
+func (t *Thumbs) Rotated(ctx context.Context, a db.PhotoAsset) {
+	dropStaleDerivatives(t.storageRoot, a)
+	faces, err := t.q.ListAssetFaces(ctx, a.ID)
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(derivUserDir(t.storageRoot, db.UUIDString(a.UserID)), "faces")
+	for _, f := range faces {
+		id := db.UUIDString(f.ID)
+		_ = os.Remove(filepath.Join(dir, shard(id), id+".jpg"))
+	}
 }
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }

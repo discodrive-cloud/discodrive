@@ -370,3 +370,56 @@ func TestPhotosMetadata_LiteUnavailable(t *testing.T) {
 	e := newPhotosEnv(t, false, 0)
 	e.json(e.do(e.tok, "PUT", "/me/photos/v1/assets/metadata", map[string]any{"ids": []string{db.UUIDString(e.user.ID)}, "shiftMinutes": 5}), 409, nil)
 }
+
+func TestPhotosRotate(t *testing.T) {
+	e := newPhotosEnv(t, true, 0)
+	a := e.asset(e.user, assetOpts{})
+	v := e.asset(e.user, assetOpts{kind: "video"})
+	f := e.face(a, e.person(e.user, "Mike"), 0.2) // box 0.2..0.4
+	before := photoThumbEtag(a)
+
+	var out struct {
+		Updated int               `json:"updated"`
+		Thumbs  map[string]string `json:"thumbs"`
+	}
+	ids := []string{db.UUIDString(a.ID), db.UUIDString(v.ID)}
+	e.json(e.do(e.tok, "POST", "/me/photos/v1/assets/rotate", map[string]any{"ids": ids, "turn": 90}), 200, &out)
+	if out.Updated != 1 || out.Thumbs[db.UUIDString(a.ID)] == "" || out.Thumbs[db.UUIDString(a.ID)] == before {
+		t.Fatalf("rotate: %+v (before %s)", out, before)
+	}
+	got, _ := e.q.GetPhotoAssetByID(e.ctx, a.ID)
+	if got.Rotation != 90 || got.ThumbState != "pending" || got.FaceState.Valid {
+		t.Fatalf("after 90: rotation %d thumb %s face %v", got.Rotation, got.ThumbState, got.FaceState)
+	}
+	if gv, _ := e.q.GetPhotoAssetByID(e.ctx, v.ID); gv.Rotation != 0 {
+		t.Fatalf("video turned: %d", gv.Rotation)
+	}
+	// A clockwise quarter turn: (x, y) -> (1-y, x).
+	faces, _ := e.q.ListAssetFaces(e.ctx, a.ID)
+	if len(faces) != 1 || faces[0].ID != f || !near(faces[0].X1, 0.6) || !near(faces[0].X2, 0.8) || !near(faces[0].Y1, 0.2) || !near(faces[0].Y2, 0.4) {
+		t.Fatalf("box after 90: %+v", faces)
+	}
+	// -90 turns back; the turn adds up modulo a full turn.
+	e.json(e.do(e.tok, "POST", "/me/photos/v1/assets/rotate", map[string]any{"ids": ids[:1], "turn": -90}), 200, &out)
+	got, _ = e.q.GetPhotoAssetByID(e.ctx, a.ID)
+	faces, _ = e.q.ListAssetFaces(e.ctx, a.ID)
+	if got.Rotation != 0 || out.Thumbs[db.UUIDString(a.ID)] != before || !near(faces[0].X1, 0.2) || !near(faces[0].Y2, 0.4) {
+		t.Fatalf("back to 0: rotation %d thumb %v box %+v", got.Rotation, out.Thumbs, faces[0])
+	}
+	e.json(e.do(e.tok, "POST", "/me/photos/v1/assets/rotate", map[string]any{"ids": ids[:1], "turn": 180}), 200, &out)
+	faces, _ = e.q.ListAssetFaces(e.ctx, a.ID)
+	if !near(faces[0].X1, 0.6) || !near(faces[0].Y1, 0.6) {
+		t.Fatalf("box after 180: %+v", faces[0])
+	}
+
+	for _, turn := range []int{0, 45, 360} {
+		if rec := e.do(e.tok, "POST", "/me/photos/v1/assets/rotate", map[string]any{"ids": ids[:1], "turn": turn}); rec.Code != 400 {
+			t.Fatalf("turn %d: %d", turn, rec.Code)
+		}
+	}
+	if rec := e.do(e.tok2, "POST", "/me/photos/v1/assets/rotate", map[string]any{"ids": ids[:1], "turn": 90}); rec.Code != 404 {
+		t.Fatalf("another user's card: %d", rec.Code)
+	}
+}
+
+func near(a float32, b float64) bool { return a > float32(b)-1e-4 && a < float32(b)+1e-4 }

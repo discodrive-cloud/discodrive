@@ -954,6 +954,8 @@
     "unfavorite": "Quitar de favoritos",
     "edit_date": "Cambiar fecha",
     "edit_place": "Cambiar lugar",
+    "rotate_left": "Girar a la izquierda",
+    "rotate_right": "Girar a la derecha",
     "hide": "Ocultar",
     "clear_selection": "Quitar selección",
     "selected": "Seleccionados: {n}",

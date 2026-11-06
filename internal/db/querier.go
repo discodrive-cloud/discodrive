@@ -671,6 +671,11 @@ type Querier interface {
 	// trashed rows included. Two branches, one per partial index: as a single condition
 	// the planner merges them and scans the table.
 	RewriteSubtreePaths(ctx context.Context, arg RewriteSubtreePathsParams) error
+	// Turns cards (and the user's copies of the same content, as the flags do) clockwise by
+	// turn degrees on top of their own turn. Videos keep theirs. The thumbnail is made again,
+	// the face boxes (fractions of the preview) turn with the picture and the faces are looked
+	// at again: a sideways face is often missed, and the old ones carry their persons over.
+	RotatePhotoCards(ctx context.Context, arg RotatePhotoCardsParams) ([]pgtype.UUID, error)
 	// Returns accessible books matching a case-insensitive substring in title, author, or series.
 	SearchAccessibleBooks(ctx context.Context, arg SearchAccessibleBooksParams) ([]Book, error)
 	// Returns accessible albums whose name matches a case-insensitive substring.

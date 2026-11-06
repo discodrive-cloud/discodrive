@@ -29,8 +29,8 @@ SELECT * FROM photo_faces WHERE asset_id = $1 ORDER BY id;
 DELETE FROM photo_faces WHERE asset_id = $1;
 
 -- name: InsertPhotoFace :one
-INSERT INTO photo_faces (user_id, asset_id, person_id, x1, y1, x2, y2, score, embedding, model)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO photo_faces (user_id, asset_id, person_id, x1, y1, x2, y2, score, embedding, model, manual)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING id;
 
 -- Every face of the user made by the current model, for a clustering pass.

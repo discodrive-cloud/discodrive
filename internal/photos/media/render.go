@@ -51,14 +51,24 @@ func renderImage(ctx context.Context, t Tools, src string, m Meta, dst string, s
 	return atomicWrite(dst, func(tmp string) error {
 		s := strconv.Itoa(size)
 		thumb := func(in string) error {
-			args := []string{"thumbnail", in, tmp + "[Q=82,strip]", s, "--height", s, "--export-profile", "srgb"}
+			out := tmp + "[Q=82,strip]"
+			turn := rotAngle(m.Rotate)
+			if turn != "" {
+				// The user's turn is applied to the small picture: cheaper, and the crop of
+				// a square thumbnail is the same either way round.
+				out = filepath.Join(work, "small.v")
+			}
+			args := []string{"thumbnail", in, out, s, "--height", s, "--export-profile", "srgb"}
 			if crop {
 				args = append(args, "--crop", "centre")
 			} else {
 				// A preview never enlarges a small original.
 				args = append(args, "--size", "down")
 			}
-			return runCmd(ctx, t.Vips, args...)
+			if err := runCmd(ctx, t.Vips, args...); err != nil || turn == "" {
+				return err
+			}
+			return runCmd(ctx, t.Vips, "rot", out, tmp+"[Q=82,strip]", turn)
 		}
 		err := thumb(in)
 		if err != nil && ctx.Err() == nil && heifExts[strings.ToLower(filepath.Ext(in))] {
@@ -72,6 +82,19 @@ func renderImage(ctx context.Context, t Tools, src string, m Meta, dst string, s
 		}
 		return err
 	})
+}
+
+// rotAngle is the vips rot angle of a clockwise turn in degrees, "" for none.
+func rotAngle(deg int) string {
+	switch deg {
+	case 90:
+		return "d90"
+	case 180:
+		return "d180"
+	case 270:
+		return "d270"
+	}
+	return ""
 }
 
 var heifExts = map[string]bool{".heic": true, ".heif": true, ".hif": true}

@@ -383,7 +383,12 @@ type photoRowDTO struct {
 // file does (node version). The feed row carries it and the file endpoints answer with
 // it as the ETag.
 func photoThumbEtag(a db.PhotoAsset) string {
-	sum := sha256.Sum256([]byte(db.UUIDString(a.ID) + ":" + strconv.FormatInt(a.NodeVersion.Int64, 10)))
+	key := db.UUIDString(a.ID) + ":" + strconv.FormatInt(a.NodeVersion.Int64, 10)
+	if a.Rotation != 0 {
+		// A turned picture is another thumbnail; unturned ones keep the tags they had.
+		key += ":r" + strconv.Itoa(int(a.Rotation))
+	}
+	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:8])
 }
 
@@ -460,9 +465,13 @@ func (s *Server) photoRows(r *http.Request, assets []db.PhotoAsset) ([]photoRowD
 		}
 		_, live := kids[a.ID]["live-video"]
 		_, edited := kids[a.ID]["original"]
+		w, h := int4p(a.Width), int4p(a.Height)
+		if a.Rotation == 90 || a.Rotation == 270 {
+			w, h = h, w // as shown
+		}
 		rows = append(rows, photoRowDTO{
 			ID: db.UUIDString(a.ID), TakenAt: photoTakenAt(a), TzOffsetMin: int4p(a.TzOffsetMin), Kind: a.Kind,
-			W: int4p(a.Width), H: int4p(a.Height), DurationMs: dur, Live: live, Edited: edited,
+			W: w, H: h, DurationMs: dur, Live: live, Edited: edited,
 			Favorite: a.Favorite && a.UserID == viewer, Thumb: photoThumbEtag(a), Place: s.photoPlace(r, a),
 			Own: viewer.Valid && a.UserID == viewer,
 		})

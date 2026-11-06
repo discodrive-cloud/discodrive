@@ -374,6 +374,18 @@ function setFavorite(ids: string[], favorite: boolean) {
     }
   })
 }
+// rotate turns cards in the gallery only; the new thumb tags make the grid and the viewer
+// fetch the turned pictures. The selection stays: a second click turns further.
+function rotateIds(ids: string[], turn: 90 | -90) {
+  return act(async () => {
+    const thumbs = await api.rotate(ids, turn)
+    for (const [id, thumb] of Object.entries(thumbs)) {
+      grid.value?.patchItems([id], { thumb })
+      viewerRef.value?.patchRow(id, { thumb })
+      viewerRef.value?.refresh(id) // the face boxes turned with it
+    }
+  })
+}
 function toggleFavorite() {
   return setFavorite(selectedIds.value, !allFavorite.value)
 }
@@ -713,6 +725,7 @@ async function afterEdit(r: EditResult) {
             @download="download"
             @edit-date="editDate"
             @edit-place="editPlace"
+            @rotate="(turn) => rotateIds(selectedIds, turn)"
             @album="toAlbum"
           />
           <div
@@ -767,6 +780,7 @@ async function afterEdit(r: EditResult) {
             @download="download"
             @edit-date="editDate"
             @edit-place="editPlace"
+            @rotate="(turn) => rotateIds(selectedIds, turn)"
           />
           <div v-if="notice" class="pointer-events-none absolute inset-x-0 z-30 flex justify-center px-4" :class="selection.size ? 'bottom-20' : 'bottom-4'" role="status">
             <span class="rounded-full bg-black/75 px-3 py-1.5 text-xs text-white">{{ notice }}</span>
@@ -848,6 +862,7 @@ async function afterEdit(r: EditResult) {
             @download="download"
             @edit-date="editDate"
             @edit-place="editPlace"
+            @rotate="(turn) => rotateIds(selectedIds, turn)"
           />
           <div v-if="notice" class="pointer-events-none absolute inset-x-0 z-30 flex justify-center px-4" :class="selection.size ? 'bottom-20' : 'bottom-4'" role="status">
             <span class="rounded-full bg-black/75 px-3 py-1.5 text-xs text-white">{{ notice }}</span>
@@ -875,6 +890,7 @@ async function afterEdit(r: EditResult) {
       @edit-date="(id) => (editDateIds = [id])"
       @edit-place="(id) => (editPlaceIds = [id])"
       @album="(id) => (albumIds = [id])"
+      @rotate="(id, turn) => rotateIds([id], turn)"
     />
     <div v-if="notice && (viewer || tab === 'memories' || tab === 'trash' || (tab === 'albums' && !album) || (tab === 'people' && !person) || (tab === 'shared' && !owner))" class="pointer-events-none fixed inset-x-0 bottom-20 z-[55] flex justify-center px-4" role="status">
       <span class="rounded-full bg-black/75 px-3 py-1.5 text-xs text-white">{{ notice }}</span>

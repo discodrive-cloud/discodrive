@@ -316,6 +316,15 @@ func TestCarryPerson(t *testing.T) {
 	if got[0].Valid || !got[1].Valid {
 		t.Fatalf("one to one: %v", got)
 	}
+	// A face the user took off its person (manual, nobody) is carried too: looked at
+	// again, it must stay nobody's instead of going back to the clustering.
+	removed := []db.PhotoFace{{X1: 0.40, Y1: 0.40, X2: 0.60, Y2: 0.60, Manual: true}}
+	if m := carryFaces(twoNew[1:], removed); m[0] != 0 {
+		t.Fatalf("manual face not carried: %v", m)
+	}
+	if m := carryFaces(twoNew[1:], []db.PhotoFace{{X1: 0.40, Y1: 0.40, X2: 0.60, Y2: 0.60}}); m[0] != -1 {
+		t.Fatalf("a plain unassigned face carried: %v", m)
+	}
 }
 
 func TestFacesQueueOfflineAtStartRecovers(t *testing.T) {

@@ -55,6 +55,10 @@ func AssetDerivPath(storageRoot string, a db.PhotoAsset, kind string) string {
 	if kind == "preview" || kind == "h264" {
 		kind += "-" + contentKey(a)
 	}
+	if strings.HasPrefix(kind, "preview") && a.Rotation != 0 {
+		// The user's turn is part of the picture (the thumbnail is made again in place).
+		kind += "-r" + strconv.Itoa(int(a.Rotation))
+	}
 	return DerivPath(storageRoot, db.UUIDString(a.UserID), db.UUIDString(a.ID), kind)
 }
 

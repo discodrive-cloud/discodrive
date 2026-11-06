@@ -528,3 +528,32 @@ FROM photo_assets
 WHERE user_id = $1 AND parent_id IS NULL AND NOT hidden AND trashed_at IS NULL
   AND lat IS NOT NULL AND lon IS NOT NULL
 HAVING count(*) > 0;
+
+-- Turns cards (and the user's copies of the same content, as the flags do) clockwise by
+-- turn degrees on top of their own turn. Videos keep theirs. The thumbnail is made again,
+-- the face boxes (fractions of the preview) turn with the picture and the faces are looked
+-- at again: a sideways face is often missed, and the old ones carry their persons over.
+-- name: RotatePhotoCards :many
+WITH roots AS (
+    SELECT a.id FROM photo_assets a
+    WHERE a.user_id = sqlc.arg(user_id)
+      AND (a.id = ANY(sqlc.arg(ids)::uuid[])
+           OR (a.parent_id IS NULL AND a.content_hash IS NOT NULL AND a.content_hash IN (
+                SELECT s.content_hash FROM photo_assets s
+                WHERE s.user_id = sqlc.arg(user_id) AND s.id = ANY(sqlc.arg(ids)::uuid[]))))
+), turned AS (
+    UPDATE photo_assets AS t SET
+        rotation = (t.rotation + sqlc.arg(turn)::int) % 360,
+        thumb_state = 'pending', thumb_error = NULL, face_state = NULL, face_error = NULL
+    WHERE t.user_id = sqlc.arg(user_id) AND t.id IN (SELECT r.id FROM roots r)
+      AND t.parent_id IS NULL AND t.kind <> 'video'
+    RETURNING t.id
+), boxes AS (
+    UPDATE photo_faces AS f SET
+        x1 = CASE sqlc.arg(turn)::int WHEN 90 THEN 1 - f.y2 WHEN 180 THEN 1 - f.x2 ELSE f.y1 END,
+        x2 = CASE sqlc.arg(turn)::int WHEN 90 THEN 1 - f.y1 WHEN 180 THEN 1 - f.x1 ELSE f.y2 END,
+        y1 = CASE sqlc.arg(turn)::int WHEN 90 THEN f.x1 WHEN 180 THEN 1 - f.y2 ELSE 1 - f.x2 END,
+        y2 = CASE sqlc.arg(turn)::int WHEN 90 THEN f.x2 WHEN 180 THEN 1 - f.y1 ELSE 1 - f.x1 END
+    WHERE f.asset_id IN (SELECT d.id FROM turned d)
+)
+SELECT d.id FROM turned d;

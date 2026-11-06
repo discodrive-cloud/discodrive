@@ -387,6 +387,17 @@ export function usePhotosApi() {
         await request(`${PHOTOS_API}/assets`, { method: 'PATCH', body: { ids: part, ...patch }, headers: h() })
       }
     },
+    // rotate turns cards clockwise by turn degrees (-90: the other way) in the gallery;
+    // the files stay as they are. Returns the new thumb tag of each turned card (videos are
+    // left alone and missing).
+    async rotate(ids: string[], turn: 90 | -90 | 180) {
+      const thumbs: Record<string, string> = {}
+      for (const part of chunk(ids, PHOTO_BATCH)) {
+        const r = await request<{ thumbs: Record<string, string> }>(`${PHOTOS_API}/assets/rotate`, { method: 'POST', body: { ids: part, turn }, headers: h() })
+        Object.assign(thumbs, r.thumbs)
+      }
+      return thumbs
+    },
     async remove(ids: string[]) {
       for (const part of chunk(ids, PHOTO_BATCH)) {
         await request(`${PHOTOS_API}/assets/delete`, { method: 'POST', body: { ids: part }, headers: h() })

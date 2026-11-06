@@ -115,6 +115,71 @@ func (s *Server) handlePatchPhotoAssets(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]int{"updated": len(ids)})
 }
 
+// POST /me/photos/v1/assets/rotate {"ids":[], "turn":90|-90|180} — turns whole cards
+// clockwise (-90: counter-clockwise) on top of their own turn, in the gallery only: the
+// files stay as they are. Videos are left alone. → {"updated":n, "thumbs":{id: new thumb tag}}
+func (s *Server) handleRotatePhotoAssets(w http.ResponseWriter, r *http.Request) {
+	if !s.photosReady(w) {
+		return
+	}
+	uid, ok := photosUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		IDs  []string `json:"ids"`
+		Turn int      `json:"turn"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	turn := map[int]int32{90: 90, -90: 270, 270: 270, 180: 180, -180: 180}[req.Turn]
+	if turn == 0 {
+		writeError(w, http.StatusBadRequest, "turn must be 90, -90 or 180")
+		return
+	}
+	ids, ok := s.ownCards(w, r, uid, req.IDs, false)
+	if !ok {
+		return
+	}
+	var turned []pgtype.UUID
+	rotate := func() error {
+		var err error
+		turned, err = s.q.RotatePhotoCards(r.Context(), db.RotatePhotoCardsParams{UserID: uid, Ids: ids, Turn: turn})
+		return err
+	}
+	// Under the user's face lock: a face pass or a store must not see half-turned boxes.
+	var err error
+	if s.faces != nil {
+		err = s.faces.Locked(uid, rotate)
+	} else {
+		err = rotate()
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	thumbs := make(map[string]string, len(turned))
+	for _, id := range turned {
+		a, err := s.q.GetPhotoAssetByID(r.Context(), id)
+		if err != nil {
+			continue
+		}
+		thumbs[db.UUIDString(id)] = photoThumbEtag(a)
+		if s.thumbs != nil {
+			s.thumbs.Rotated(r.Context(), a)
+		}
+	}
+	if s.thumbs != nil {
+		s.thumbs.Kick()
+	}
+	if s.faces != nil {
+		s.faces.Kick()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": len(turned), "thumbs": thumbs})
+}
+
 // PUT /me/photos/v1/assets/metadata {"ids":[], "takenAt":RFC3339?, "tzOffsetMin":int?,
 // "shiftMinutes":int?, "place":{"lat","lon"}|null?} — sets the capture moment and/or the
 // place of whole cards (a shift moves each card from its own date). The values go into the

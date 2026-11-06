@@ -328,3 +328,39 @@ func imageWidth(t *testing.T, e *env, p string) (int, int) {
 	h, _ := strconv.Atoi(f[1])
 	return w, h
 }
+
+// A turned card gets a turned preview under a new name; the old one goes on Rotated, and
+// a rescan of the unchanged file keeps the turn.
+func TestThumbs_PreviewFollowsRotation(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	src := e.source("Photos")
+	n := e.push(&[]string{id(src)}[0], "a.jpg", e.jpeg("a.jpg", 64)) // 64x48
+	a := e.mustAssetAfter(n)
+	th := e.thumbs(0)
+	old, err := th.Ensure(ctx, a, "preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.q.RotatePhotoCards(ctx, db.RotatePhotoCardsParams{UserID: a.UserID, Ids: []pgtype.UUID{a.ID}, Turn: 90}); err != nil {
+		t.Fatal(err)
+	}
+	b := e.reload(a)
+	th.Rotated(ctx, b)
+	if exists(old) {
+		t.Fatal("the unturned preview is still on disk")
+	}
+	p, err := th.Ensure(ctx, b, "preview")
+	if err != nil || p == old {
+		t.Fatalf("preview %s %v (old %s)", p, err, old)
+	}
+	if w, h := imageWidth(t, e, p); w != 48 || h != 64 {
+		t.Fatalf("turned preview %dx%d, want 48x64", w, h)
+	}
+	if err := e.ix.indexNode(ctx, n.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if c := e.reload(a); c.Rotation != 90 {
+		t.Fatalf("a rescan dropped the turn: %d", c.Rotation)
+	}
+}

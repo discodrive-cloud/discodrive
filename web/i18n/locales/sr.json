@@ -954,6 +954,8 @@
     "unfavorite": "Уклони из омиљеног",
     "edit_date": "Промени датум",
     "edit_place": "Промени место",
+    "rotate_left": "Ротирај улево",
+    "rotate_right": "Ротирај удесно",
     "hide": "Сакриј",
     "clear_selection": "Поништи избор",
     "selected": "Изабрано: {n}",

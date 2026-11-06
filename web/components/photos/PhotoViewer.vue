@@ -36,6 +36,7 @@ const emit = defineEmits<{
   'edit-date': [id: string]
   'edit-place': [id: string]
   album: [id: string]
+  rotate: [id: string, turn: 90 | -90]
 }>()
 
 const { t, locale } = useI18n()
@@ -403,6 +404,14 @@ const own = computed(() => current.value?.own !== false)
             </svg>
             <Icon v-else name="lucide:heart" size="20" />
           </button>
+          <template v-if="own && current.kind !== 'video'">
+            <button type="button" class="act" :title="t('photos.rotate_left')" :aria-label="t('photos.rotate_left')" @click="emit('rotate', current.id, -90)">
+              <Icon name="lucide:rotate-ccw" size="20" />
+            </button>
+            <button type="button" class="act" :title="t('photos.rotate_right')" :aria-label="t('photos.rotate_right')" @click="emit('rotate', current.id, 90)">
+              <Icon name="lucide:rotate-cw" size="20" />
+            </button>
+          </template>
           <button v-if="canDownload" type="button" class="act" :title="t('photos.download_original')" @click="emit('download', current.id)">
             <Icon name="lucide:download" size="20" />
           </button>

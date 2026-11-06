@@ -46,7 +46,10 @@ type Meta struct {
 
 	Width, Height int // as displayed, i.e. after applying Orientation
 	Orientation   int
-	DurationMS    int64 // video only
+	// Rotate is the clockwise turn (0, 90, 180, 270) the user gave the picture in the
+	// gallery, on top of Orientation. Not read from the file: the caller sets it.
+	Rotate     int
+	DurationMS int64 // video only
 
 	// HDR is true when the file carries an HDR gain map: Apple HDRGain tag,
 	// HDRGainMap* tags (Apple HEIC auxiliary map) or an XMP hdrgm namespace
