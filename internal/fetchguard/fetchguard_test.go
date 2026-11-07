@@ -86,3 +86,28 @@ func TestNewClientIgnoresEnvironmentProxy(t *testing.T) {
 		t.Fatal("guarded transport has a Proxy func: it bypasses the dial-time IP check")
 	}
 }
+
+func TestValidateURLUnresolvedIsDistinguishable(t *testing.T) {
+	err := ValidateURL("https://does-not-exist.invalid/x")
+	if !errors.Is(err, ErrBlocked) || !errors.Is(err, ErrUnresolved) {
+		t.Fatalf("unresolvable host: err = %v, want ErrBlocked and ErrUnresolved", err)
+	}
+	if err := ValidateURL("http://127.0.0.1/x"); !errors.Is(err, ErrBlocked) || errors.Is(err, ErrUnresolved) {
+		t.Fatalf("loopback: err = %v, want ErrBlocked only", err)
+	}
+}
+
+// Instagram and Threads answer HTTP/1.1 clients with 429: the guarded client must
+// offer HTTP/2 while still dialing through the guarded Dialer.
+func TestNewClientOffersHTTP2(t *testing.T) {
+	tr, ok := NewClient(0).Transport.(uaTransport).inner.(*http.Transport)
+	if !ok {
+		t.Fatal("unexpected transport type")
+	}
+	if !tr.ForceAttemptHTTP2 {
+		t.Fatal("ForceAttemptHTTP2 is off: custom DialContext disables HTTP/2 unless forced")
+	}
+	if tr.Proxy != nil || tr.DialContext == nil {
+		t.Fatal("the guarded dialer and the no-proxy rule must stay")
+	}
+}

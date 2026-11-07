@@ -14,6 +14,7 @@ import (
 	davpkg "discodrive/internal/dav"
 	"discodrive/internal/db"
 	"discodrive/internal/ebook"
+	"discodrive/internal/links"
 	"discodrive/internal/music"
 	"discodrive/internal/notify"
 	"discodrive/internal/photos"
@@ -47,6 +48,8 @@ type Server struct {
 	metaEditor   *ebook.MetadataEditor
 	saved        *saved.Service
 	bookmarks    *bookmarks.Service
+	links        *links.Service // nil: the shared-links inbox is off
+	linkLimiter  *rateLimiter
 	photos       *photos.Indexer // nil in the lite build (no media tools)
 	thumbs       *photos.Thumbs
 	faces        *photos.Faces  // people; nil without a face service
@@ -324,6 +327,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("DELETE /me/saved/{id}", prot(http.HandlerFunc(s.handleSavedDelete)))
 	mux.Handle("GET /me/saved/{id}/content", prot(http.HandlerFunc(s.handleSavedContent)))
 	mux.Handle("GET /me/saved/{id}/image", prot(http.HandlerFunc(s.handleSavedImage)))
+	s.registerLinkRoutes(mux, prot)
 	mux.Handle("GET /me/bookmarks", prot(http.HandlerFunc(s.handleBookmarksList)))
 	mux.Handle("POST /me/bookmarks", prot(http.HandlerFunc(s.handleBookmarkCreate)))
 	mux.Handle("GET /me/bookmarks/changes", prot(http.HandlerFunc(s.handleBookmarksChanges)))

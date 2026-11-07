@@ -55,7 +55,8 @@ SELECT u.id, u.email, u.role, u.storage_quota, u.created_at,
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = u.id AND e.disk_path IS NOT NULL
        ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = u.id), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = u.id), 0)
-         + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = u.id AND si.status = 'processing'), 0))::bigint AS used
+         + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = u.id AND si.status = 'processing'), 0)
+         + COALESCE((SELECT SUM(octet_length(sl.thumb)) FROM saved_links sl WHERE sl.user_id = u.id), 0))::bigint AS used
 FROM users u
 ORDER BY u.created_at;
 
@@ -75,7 +76,8 @@ SELECT (COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = sqlc.arg(user_id) AND e.disk_path IS NOT NULL
        ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = sqlc.arg(user_id)), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = sqlc.arg(user_id)), 0)
-         + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = sqlc.arg(user_id) AND si.status = 'processing'), 0))::bigint AS used;
+         + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = sqlc.arg(user_id) AND si.status = 'processing'), 0)
+         + COALESCE((SELECT SUM(octet_length(sl.thumb)) FROM saved_links sl WHERE sl.user_id = sqlc.arg(user_id)), 0))::bigint AS used;
 
 -- The part of a user's occupied space that emptying the trash would release: trashed
 -- files plus the version history that goes with them. Files sit there for TRASH_DAYS,
@@ -99,7 +101,8 @@ SELECT (COALESCE((
        ), 0) + COALESCE((
            SELECT SUM(size) FROM podcast_episodes WHERE disk_path IS NOT NULL
        ), 0) + COALESCE((SELECT SUM(cover_size) FROM podcast_channels), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0)
-         + COALESCE((SELECT SUM(bytes_done) FROM saved_items WHERE status = 'processing'), 0))::bigint AS used;
+         + COALESCE((SELECT SUM(bytes_done) FROM saved_items WHERE status = 'processing'), 0)
+         + COALESCE((SELECT SUM(octet_length(thumb)) FROM saved_links), 0))::bigint AS used;
 
 -- Sum of the quotas handed out to users, optionally excluding one (the user being
 -- edited). NULL exclude_id excludes nobody. Used to keep the handed-out total within
@@ -127,7 +130,8 @@ FROM (
                SELECT SUM(e.size) FROM podcast_episodes e
                WHERE e.user_id = usr.id AND e.disk_path IS NOT NULL
            ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = usr.id), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0)
-             + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = usr.id AND si.status = 'processing'), 0))::bigint AS used
+             + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = usr.id AND si.status = 'processing'), 0)
+             + COALESCE((SELECT SUM(octet_length(sl.thumb)) FROM saved_links sl WHERE sl.user_id = usr.id), 0))::bigint AS used
     FROM users usr
 ) AS fresh
 WHERE u.id = fresh.id AND u.storage_used <> fresh.used;

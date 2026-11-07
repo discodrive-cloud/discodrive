@@ -552,6 +552,20 @@ type SavedItem struct {
 	CookieExpiresAt pgtype.Timestamptz `json:"cookie_expires_at"`
 }
 
+type SavedLink struct {
+	ID         pgtype.UUID        `json:"id"`
+	UserID     pgtype.UUID        `json:"user_id"`
+	Url        string             `json:"url"`
+	Source     string             `json:"source"`
+	Title      string             `json:"title"`
+	Author     string             `json:"author"`
+	Thumb      []byte             `json:"thumb"`
+	EnrichedAt pgtype.Timestamptz `json:"enriched_at"`
+	ArchivedAt pgtype.Timestamptz `json:"archived_at"`
+	SavedAt    pgtype.Timestamptz `json:"saved_at"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
 type ServerBootstrap struct {
 	Singleton bool   `json:"singleton"`
 	Completed bool   `json:"completed"`

@@ -14,6 +14,7 @@ import (
 
 	"discodrive/internal/bookmarks"
 	"discodrive/internal/db"
+	"discodrive/internal/links"
 	"discodrive/internal/notify"
 	"discodrive/internal/podcast"
 	"discodrive/internal/quota"
@@ -43,6 +44,8 @@ type Config struct {
 
 	BookmarkEnrichInterval time.Duration
 	BookmarkGCInterval     time.Duration
+
+	LinksEnrichInterval time.Duration
 }
 
 // Default returns sensible defaults; keep/trashDays come from config.
@@ -63,6 +66,8 @@ func Default(versionKeep, trashDays int) Config {
 
 		BookmarkEnrichInterval: time.Minute,
 		BookmarkGCInterval:     24 * time.Hour,
+
+		LinksEnrichInterval: time.Minute,
 	}
 }
 
@@ -79,6 +84,7 @@ type Worker struct {
 	cfg    Config
 	saved  *saved.Service     // nil if saved items are not configured
 	bm     *bookmarks.Service // nil if bookmark sync is not configured
+	links  *links.Service     // nil if the shared-links inbox is not configured
 	// disk is storage.DiskUsage, replaced in tests: the free space of the machine the
 	// tests run on is not something a test can assert against.
 	disk func(path string) (total, free uint64, err error)
@@ -87,6 +93,9 @@ type Worker struct {
 func New(fs *storage.FileService, root string, q *db.Queries, notifier *notify.Notifier, cfg Config, savedSvc *saved.Service, bookmarksSvc *bookmarks.Service) *Worker {
 	return &Worker{fs: fs, root: root, q: q, notify: notifier, cfg: cfg, saved: savedSvc, bm: bookmarksSvc, disk: storage.DiskUsage}
 }
+
+// SetLinks adds the preview fetch for links shared from phones. Call before Run.
+func (w *Worker) SetLinks(l *links.Service) { w.links = l }
 
 // Run starts all background jobs and blocks until ctx is cancelled.
 func (w *Worker) Run(ctx context.Context) {
@@ -119,6 +128,9 @@ func (w *Worker) Run(ctx context.Context) {
 	if w.bm != nil {
 		go w.tick(ctx, w.cfg.BookmarkEnrichInterval, "bookmark-enrich", w.bm.EnrichPending)
 		go w.tick(ctx, w.cfg.BookmarkGCInterval, "bookmark-gc", w.bm.GCTombstones)
+	}
+	if w.links != nil {
+		go w.tick(ctx, w.cfg.LinksEnrichInterval, "links-enrich", w.links.EnrichPending)
 	}
 	<-ctx.Done()
 }

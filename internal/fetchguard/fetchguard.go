@@ -18,6 +18,11 @@ import (
 // ErrBlocked is returned for URLs that fail the SSRF guard.
 var ErrBlocked = errors.New("fetchguard: blocked URL")
 
+// ErrUnresolved accompanies ErrBlocked when the host did not resolve at all, as
+// opposed to resolving to a forbidden address. Callers that only store a link and
+// fetch it later may accept such a URL: the dial-time check still guards the fetch.
+var ErrUnresolved = errors.New("fetchguard: host did not resolve")
+
 // ValidateURL enforces http/https and rejects hosts that resolve to loopback,
 // private, or link-local addresses. It is a cheap first pass; Dialer is the
 // authoritative guard (it re-checks the IP actually dialed).
@@ -36,7 +41,7 @@ func ValidateURL(raw string) error {
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		// Can't resolve (offline/unknown). Reject to be safe.
-		return fmt.Errorf("%w: resolve %q: %v", ErrBlocked, host, err)
+		return fmt.Errorf("%w: %w: %q: %v", ErrBlocked, ErrUnresolved, host, err)
 	}
 	for _, ip := range ips {
 		if isBlockedIP(ip) {
@@ -144,8 +149,11 @@ func NewClient(timeout time.Duration) *http.Client {
 			// No proxy, ever: with HTTP(S)_PROXY set, the transport dials the proxy
 			// and the proxy dials the target, so Dialer's IP check would only ever
 			// see the proxy's address.
-			Proxy:                 nil,
-			DialContext:           Dialer.DialContext,
+			Proxy:       nil,
+			DialContext: Dialer.DialContext,
+			// A custom DialContext turns HTTP/2 off unless forced. Some sites (Instagram,
+			// Threads) answer HTTP/1.1 clients with 429; TLS still runs over Dialer.
+			ForceAttemptHTTP2:     true,
 			ResponseHeaderTimeout: 30 * time.Second,
 		}},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {

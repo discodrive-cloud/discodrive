@@ -34,6 +34,7 @@ import (
 	"discodrive/internal/httpsecurity"
 	"discodrive/internal/kosync"
 	"discodrive/internal/library"
+	"discodrive/internal/links"
 	"discodrive/internal/music"
 	"discodrive/internal/notify"
 	"discodrive/internal/opds"
@@ -306,6 +307,8 @@ func runServer(cfg config.Config) {
 	}
 	// Browser bookmark sync: server-authoritative tree + favicon enrichment.
 	bookmarksSvc := bookmarks.NewService(pool, queries, store)
+	// Links shared from phones ("Share → DiscoDrive"): stored at once, previews fetched in the background.
+	linksSvc := links.NewService(queries)
 
 	// Background jobs: GC for versions/trash, quotas, podcasts, saved items, bookmarks.
 	// A section the operator switched off (MUSIC_ENABLED, BOOKS_ENABLED, PHOTOS_ENABLED)
@@ -332,7 +335,9 @@ func runServer(cfg config.Config) {
 	// Lets the storage-alert job warn the admins about the cap running out, not just
 	// about the disk running out.
 	workerCfg.StorageTotal = cfg.StorageTotalBytes()
-	go worker.New(fileSvc, cfg.StorageRoot, queries, notifier, workerCfg, savedSvc, bookmarksSvc).Run(ctx)
+	jobs := worker.New(fileSvc, cfg.StorageRoot, queries, notifier, workerCfg, savedSvc, bookmarksSvc)
+	jobs.SetLinks(linksSvc)
+	go jobs.Run(ctx)
 	// Disk↔database reconciliation runs on demand: this startup request, the admin panel
 	// and `server rescan`. The runner is the only executor of the queue; a request left
 	// unfinished by a crash, or queued while the server was down, runs now as well.
@@ -431,7 +436,7 @@ func runServer(cfg config.Config) {
 	scriptHashes := inlineScriptHashes(discodrive.WebUI())
 	srv := &http.Server{
 		Addr:              cfg.Addr(),
-		Handler:           transport.Handler(securityHeaders(scriptHashes, compressResponses(api.NewRouter(authSvc, queries, fileSvc, uploads, cfg.StorageRoot, cipher, notifier, discodrive.WebUI(), dav, caldavH, carddavH, davSvc, cfg.XAccelEnabled, eventHub, subsonicH, opdsH, kosyncH, tagEditor, metaEditor, savedSvc, bookmarksSvc, photosIdx, photoThumbs, photoMaps, sections, api.WithPhotoFaces(photoFaces))))),
+		Handler:           transport.Handler(securityHeaders(scriptHashes, compressResponses(api.NewRouter(authSvc, queries, fileSvc, uploads, cfg.StorageRoot, cipher, notifier, discodrive.WebUI(), dav, caldavH, carddavH, davSvc, cfg.XAccelEnabled, eventHub, subsonicH, opdsH, kosyncH, tagEditor, metaEditor, savedSvc, bookmarksSvc, photosIdx, photoThumbs, photoMaps, sections, api.WithPhotoFaces(photoFaces), api.WithLinks(linksSvc))))),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

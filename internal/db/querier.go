@@ -147,6 +147,7 @@ type Querier interface {
 	CountAddressbooks(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountAdmins(ctx context.Context) (int64, error)
 	CountCalendars(ctx context.Context, userID pgtype.UUID) (int64, error)
+	CountInboxLinks(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// Other live assets with the same content in the user's sources (copies of the card).
 	CountPhotoCopies(ctx context.Context, arg CountPhotoCopiesParams) (int64, error)
 	CountPhotoIndexing(ctx context.Context, userID pgtype.UUID) (CountPhotoIndexingRow, error)
@@ -228,6 +229,7 @@ type Querier interface {
 	DeletePodcastEpisodeForUser(ctx context.Context, arg DeletePodcastEpisodeForUserParams) (int64, error)
 	DeleteRating(ctx context.Context, arg DeleteRatingParams) error
 	DeleteSavedItemForUser(ctx context.Context, arg DeleteSavedItemForUserParams) (DeleteSavedItemForUserRow, error)
+	DeleteSavedLink(ctx context.Context, arg DeleteSavedLinkParams) (int64, error)
 	DeleteSetting(ctx context.Context, key string) error
 	DeleteShare(ctx context.Context, id pgtype.UUID) error
 	DeleteSharesForResource(ctx context.Context, arg DeleteSharesForResourceParams) error
@@ -311,6 +313,7 @@ type Querier interface {
 	GetReadingProgress(ctx context.Context, arg GetReadingProgressParams) (ReadingProgress, error)
 	GetRescanRequest(ctx context.Context, id int64) (RescanRequest, error)
 	GetSavedItemForUser(ctx context.Context, arg GetSavedItemForUserParams) (SavedItem, error)
+	GetSavedLinkThumb(ctx context.Context, arg GetSavedLinkThumbParams) ([]byte, error)
 	GetSetting(ctx context.Context, key string) (Setting, error)
 	GetShare(ctx context.Context, id pgtype.UUID) (ResourceShare, error)
 	GetSongByNode(ctx context.Context, nodeID pgtype.UUID) (Song, error)
@@ -438,6 +441,9 @@ type Querier interface {
 	ListInternetRadioStations(ctx context.Context, userID pgtype.UUID) ([]InternetRadioStation, error)
 	// Which of the hashes the user's gallery already holds, trashed and hidden files included.
 	ListKnownPhotoHashes(ctx context.Context, arg ListKnownPhotoHashesParams) ([]string, error)
+	// Backstop for the fetch started right after saving: only rows that one has had a
+	// minute to handle, so the two do not fetch the same page at once.
+	ListLinksNeedingEnrich(ctx context.Context, limit int32) ([]ListLinksNeedingEnrichRow, error)
 	ListLiveNodes(ctx context.Context, userID pgtype.UUID) ([]Node, error)
 	ListNewestEpisodesForUser(ctx context.Context, arg ListNewestEpisodesForUserParams) ([]PodcastEpisode, error)
 	// Children of a node without owner scoping (for listing a shared folder after canAccess).
@@ -524,6 +530,7 @@ type Querier interface {
 	ListRootNodes(ctx context.Context, userID pgtype.UUID) ([]Node, error)
 	// Downloads are an internal queue and never appear in listings.
 	ListSavedItems(ctx context.Context, arg ListSavedItemsParams) ([]SavedItem, error)
+	ListSavedLinks(ctx context.Context, arg ListSavedLinksParams) ([]ListSavedLinksRow, error)
 	ListSecretKeys(ctx context.Context) ([]string, error)
 	ListSharesForResource(ctx context.Context, arg ListSharesForResourceParams) ([]ResourceShare, error)
 	ListSharesForUser(ctx context.Context, sharedWithUser pgtype.UUID) ([]ResourceShare, error)
@@ -676,6 +683,7 @@ type Querier interface {
 	// the face boxes (fractions of the preview) turn with the picture and the faces are looked
 	// at again: a sideways face is often missed, and the old ones carry their persons over.
 	RotatePhotoCards(ctx context.Context, arg RotatePhotoCardsParams) ([]pgtype.UUID, error)
+	SavedLinkSources(ctx context.Context, arg SavedLinkSourcesParams) ([]string, error)
 	// Returns accessible books matching a case-insensitive substring in title, author, or series.
 	SearchAccessibleBooks(ctx context.Context, arg SearchAccessibleBooksParams) ([]Book, error)
 	// Returns accessible albums whose name matches a case-insensitive substring.
@@ -742,6 +750,9 @@ type Querier interface {
 	// content_html/cookie_header are dropped once processed — transport, not storage.
 	SetSavedItemDone(ctx context.Context, arg SetSavedItemDoneParams) (int64, error)
 	SetSavedItemError(ctx context.Context, arg SetSavedItemErrorParams) error
+	SetSavedLinkArchived(ctx context.Context, arg SetSavedLinkArchivedParams) (int64, error)
+	// The title from the share sheet wins over the page's own.
+	SetSavedLinkEnriched(ctx context.Context, arg SetSavedLinkEnrichedParams) error
 	SetSharePasswordHash(ctx context.Context, arg SetSharePasswordHashParams) error
 	SetThumbState(ctx context.Context, arg SetThumbStateParams) error
 	SetTranscodeState(ctx context.Context, arg SetTranscodeStateParams) error
@@ -862,6 +873,12 @@ type Querier interface {
 	// Re-save refreshes the client-supplied HTML/cookies (a newer browser state)
 	// but never resets the status.
 	UpsertSavedItem(ctx context.Context, arg UpsertSavedItemParams) (SavedItem, error)
+	// Saved links: the "Share → DiscoDrive" inbox.
+	// Sharing a link again brings it to the top of the inbox, out of the archive too — but
+	// only a share made after the archiving: a phone resending a queued copy of an old share
+	// must not undo what the user did since. A row the first fetch found nothing for is
+	// fetched again; a title already found wins over an empty one.
+	UpsertSavedLink(ctx context.Context, arg UpsertSavedLinkParams) (UpsertSavedLinkRow, error)
 	UpsertSetting(ctx context.Context, arg UpsertSettingParams) error
 	UpsertSong(ctx context.Context, arg UpsertSongParams) (Song, error)
 	UpsertSyncSettings(ctx context.Context, arg UpsertSyncSettingsParams) (SyncSetting, error)

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import BookmarksPane from '~/components/saved/BookmarksPane.vue'
 import PocketPane from '~/components/saved/PocketPane.vue'
+import LinksPane from '~/components/saved/LinksPane.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -9,6 +10,7 @@ const router = useRouter()
 const tabs = [
   { id: 'bookmarks', component: BookmarksPane },
   { id: 'pocket', component: PocketPane },
+  { id: 'links', component: LinksPane },
 ] as const
 
 const ids = tabs.map((x) => x.id)
