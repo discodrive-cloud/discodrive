@@ -28,7 +28,7 @@ func TestImportVCardsFlow(t *testing.T) {
 	svc, abID, ctx := setupContacts(t) // helper from contacts_test.go: (*dav.Service, string, context.Context)
 	raw := "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Иван\r\nUID:imp-1\r\nEND:VCARD\r\n" +
 		"BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Пётр\r\nUID:imp-2\r\nEND:VCARD\r\n"
-	imp, skip := importVCards(ctx, svc, abID, raw)
+	imp, skip, _ := importVCards(ctx, svc, abID, raw)
 	if imp != 2 || skip != 0 {
 		t.Fatalf("expected imported=2 skipped=0, got %d/%d", imp, skip)
 	}
@@ -44,7 +44,7 @@ func TestImportVCardsFlow(t *testing.T) {
 	}
 	// a card without UID → gets a generated UID and is saved
 	noUID := "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Без Уида\r\nEND:VCARD\r\n"
-	imp, _ = importVCards(ctx, svc, abID, noUID)
+	imp, _, _ = importVCards(ctx, svc, abID, noUID)
 	if imp != 1 {
 		t.Fatalf("card without UID: expected imported=1, got %d", imp)
 	}

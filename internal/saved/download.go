@@ -124,7 +124,7 @@ func (s *Service) processDownload(ctx context.Context, item db.SavedItem) (resul
 		}
 		return result{}, err
 	}
-	nodeID, err := s.publish(ctx, item.UserID, tmpRel, destRel, size, hash)
+	nodeID, err := s.publish(ctx, item.UserID, tmpRel, destRel, size, pr.persisted, hash)
 	if err != nil {
 		_ = s.st.Remove(tmpRel)
 		return result{}, err

@@ -15,6 +15,7 @@ import (
 
 	"discodrive/internal/db"
 	"discodrive/internal/fetchguard"
+	"discodrive/internal/quota"
 	"discodrive/internal/storage"
 )
 
@@ -27,7 +28,13 @@ type Service struct {
 
 	Client   *http.Client
 	Validate func(string) error
+
+	quota *quota.Checker
 }
+
+// SetQuota makes favicons count against their owner's quota: one is not stored when it
+// does not fit. nil disables the check.
+func (s *Service) SetQuota(c *quota.Checker) { s.quota = c }
 
 func NewService(pool *pgxpool.Pool, q *db.Queries, st storage.Storage) *Service {
 	return &Service{

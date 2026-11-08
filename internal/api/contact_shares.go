@@ -11,6 +11,9 @@ import (
 
 // POST /me/contacts/share {email} — share the default address book with another user.
 func (s *Server) handleShareContacts(w http.ResponseWriter, r *http.Request) {
+	if !s.shareAllowed(w, r) {
+		return
+	}
 	abID, ok := s.book(r)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -24,8 +27,12 @@ func (s *Server) handleShareContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner := auth.UserID(r.Context())
-	share, err := s.dav.ShareAddressbook(r.Context(), owner, abID, body.Email)
+	share, fresh, err := s.dav.ShareAddressbookFresh(r.Context(), owner, abID, body.Email)
 	if !writeShareResult(w, err, "address book not found") {
+		return
+	}
+	if !fresh { // sharing again only updates the share: no second email
+		writeShareOK(w)
 		return
 	}
 	abName := "Contacts"

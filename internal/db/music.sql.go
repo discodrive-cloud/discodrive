@@ -1721,6 +1721,13 @@ func (q *Queries) GetPlayQueue(ctx context.Context, userID pgtype.UUID) (PlayQue
 }
 
 const getPlayQueueEntries = `-- name: GetPlayQueueEntries :many
+WITH RECURSIVE shared_subtree AS (
+    SELECT resource_id AS node_id FROM resource_shares
+    WHERE resource_type = 'file_node' AND shared_with_user = $1
+      AND (expires_at IS NULL OR expires_at > now())
+    UNION
+    SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
+)
 SELECT s.id, s.user_id, s.album_id, s.artist_id, s.node_id, s.title, s.track, s.disc, s.duration, s.bitrate, s.suffix, s.content_type, s.size, s.genre, s.musicbrainz_id, s.created_at, s.updated_at,
        al.name AS album_name, ar.name AS artist_name, al.year AS album_year
 FROM play_queue_entries e
@@ -1728,6 +1735,7 @@ JOIN songs s ON s.id = e.song_id
 JOIN albums al ON al.id = s.album_id
 JOIN artists ar ON ar.id = s.artist_id
 WHERE e.user_id = $1
+  AND (s.user_id = $1 OR s.node_id IN (SELECT node_id FROM shared_subtree))
 ORDER BY e.idx
 `
 
@@ -1754,6 +1762,7 @@ type GetPlayQueueEntriesRow struct {
 	AlbumYear     pgtype.Int4        `json:"album_year"`
 }
 
+// The caller's saved queue, for songs the caller can still play.
 func (q *Queries) GetPlayQueueEntries(ctx context.Context, userID pgtype.UUID) ([]GetPlayQueueEntriesRow, error) {
 	rows, err := q.db.Query(ctx, getPlayQueueEntries, userID)
 	if err != nil {
@@ -1815,17 +1824,28 @@ func (q *Queries) GetPlaylist(ctx context.Context, id pgtype.UUID) (Playlist, er
 }
 
 const getPlaylistSongs = `-- name: GetPlaylistSongs :many
+WITH RECURSIVE shared_subtree AS (
+    SELECT resource_id AS node_id FROM resource_shares
+    WHERE resource_type = 'file_node' AND shared_with_user = (SELECT pl.user_id FROM playlists pl WHERE pl.id = $1)
+      AND (expires_at IS NULL OR expires_at > now())
+    UNION
+    SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
+)
 SELECT s.id, s.user_id, s.album_id, s.artist_id, s.node_id,
        s.title, s.track, s.disc, s.duration, s.bitrate,
        s.suffix, s.content_type, s.size, s.genre, s.musicbrainz_id,
        s.created_at, s.updated_at
 FROM playlist_songs ps
+JOIN playlists p ON p.id = ps.playlist_id
 JOIN songs s ON s.id = ps.song_id
 WHERE ps.playlist_id = $1
+  AND (s.user_id = p.user_id OR s.node_id IN (SELECT node_id FROM shared_subtree))
 ORDER BY ps.position
 `
 
-// Returns songs in a playlist ordered by position, joined with song details.
+// Returns songs in a playlist ordered by position, joined with song details. Only songs
+// the playlist's owner can still play: a song from a share that was revoked since it was
+// added drops out (its metadata belongs to someone else).
 func (q *Queries) GetPlaylistSongs(ctx context.Context, playlistID pgtype.UUID) ([]Song, error) {
 	rows, err := q.db.Query(ctx, getPlaylistSongs, playlistID)
 	if err != nil {
@@ -2722,6 +2742,13 @@ func (q *Queries) RatingsForUser(ctx context.Context, userID pgtype.UUID) ([]Rat
 }
 
 const recentPlayHistory = `-- name: RecentPlayHistory :many
+WITH RECURSIVE shared_subtree AS (
+    SELECT resource_id AS node_id FROM resource_shares
+    WHERE resource_type = 'file_node' AND shared_with_user = $1::uuid
+      AND (expires_at IS NULL OR expires_at > now())
+    UNION
+    SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
+)
 SELECT s.id, s.user_id, s.album_id, s.artist_id, s.node_id,
        s.title, s.track, s.disc, s.duration, s.bitrate,
        s.suffix, s.content_type, s.size, s.genre, s.musicbrainz_id,
@@ -2733,6 +2760,7 @@ JOIN songs s ON s.id = ph.song_id
 JOIN albums al ON al.id = s.album_id
 JOIN artists ar ON ar.id = s.artist_id
 WHERE ph.user_id = $1::uuid
+  AND (s.user_id = $1::uuid OR s.node_id IN (SELECT node_id FROM shared_subtree))
 ORDER BY ph.played_at DESC
 LIMIT $2
 `
@@ -2766,7 +2794,8 @@ type RecentPlayHistoryRow struct {
 	PlayedAt      pgtype.Timestamptz `json:"played_at"`
 }
 
-// Returns recent play_history rows for the caller, joined to song+album+artist.
+// Returns recent play_history rows for the caller, joined to song+album+artist, for songs
+// the caller can still play.
 func (q *Queries) RecentPlayHistory(ctx context.Context, arg RecentPlayHistoryParams) ([]RecentPlayHistoryRow, error) {
 	rows, err := q.db.Query(ctx, recentPlayHistory, arg.UserID, arg.Lim)
 	if err != nil {

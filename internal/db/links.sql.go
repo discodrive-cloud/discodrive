@@ -22,6 +22,17 @@ func (q *Queries) CountInboxLinks(ctx context.Context, userID pgtype.UUID) (int6
 	return count, err
 }
 
+const countSavedLinks = `-- name: CountSavedLinks :one
+SELECT count(*) FROM saved_links WHERE user_id = $1
+`
+
+func (q *Queries) CountSavedLinks(ctx context.Context, userID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countSavedLinks, userID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteSavedLink = `-- name: DeleteSavedLink :execrows
 DELETE FROM saved_links WHERE id = $1 AND user_id = $2
 `
@@ -56,18 +67,25 @@ func (q *Queries) GetSavedLinkThumb(ctx context.Context, arg GetSavedLinkThumbPa
 }
 
 const listLinksNeedingEnrich = `-- name: ListLinksNeedingEnrich :many
-SELECT id, url FROM saved_links
-WHERE enriched_at IS NULL AND saved_at < now() - interval '1 minute'
-ORDER BY saved_at LIMIT $1
+SELECT id, user_id, url FROM (
+    SELECT id, user_id, url, created_at,
+           row_number() OVER (PARTITION BY user_id ORDER BY created_at) AS rn
+    FROM saved_links
+    WHERE enriched_at IS NULL AND created_at < now() - interval '1 minute'
+) pending
+ORDER BY rn, created_at LIMIT $1
 `
 
 type ListLinksNeedingEnrichRow struct {
-	ID  pgtype.UUID `json:"id"`
-	Url string      `json:"url"`
+	ID     pgtype.UUID `json:"id"`
+	UserID pgtype.UUID `json:"user_id"`
+	Url    string      `json:"url"`
 }
 
 // Backstop for the fetch started right after saving: only rows that one has had a
-// minute to handle, so the two do not fetch the same page at once.
+// minute to handle, so the two do not fetch the same page at once. The batch goes round
+// the users, each one's oldest first by when the server stored it: saved_at comes from
+// the phone, so ordering by it would let backdated links take every batch.
 func (q *Queries) ListLinksNeedingEnrich(ctx context.Context, limit int32) ([]ListLinksNeedingEnrichRow, error) {
 	rows, err := q.db.Query(ctx, listLinksNeedingEnrich, limit)
 	if err != nil {
@@ -77,7 +95,7 @@ func (q *Queries) ListLinksNeedingEnrich(ctx context.Context, limit int32) ([]Li
 	items := []ListLinksNeedingEnrichRow{}
 	for rows.Next() {
 		var i ListLinksNeedingEnrichRow
-		if err := rows.Scan(&i.ID, &i.Url); err != nil {
+		if err := rows.Scan(&i.ID, &i.UserID, &i.Url); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -155,6 +173,22 @@ func (q *Queries) ListSavedLinks(ctx context.Context, arg ListSavedLinksParams) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const savedLinkExists = `-- name: SavedLinkExists :one
+SELECT EXISTS (SELECT 1 FROM saved_links WHERE user_id = $1 AND url = $2)
+`
+
+type SavedLinkExistsParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	Url    string      `json:"url"`
+}
+
+func (q *Queries) SavedLinkExists(ctx context.Context, arg SavedLinkExistsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, savedLinkExists, arg.UserID, arg.Url)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const savedLinkSources = `-- name: SavedLinkSources :many

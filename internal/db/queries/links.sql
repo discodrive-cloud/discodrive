@@ -33,6 +33,12 @@ ORDER BY source;
 -- name: CountInboxLinks :one
 SELECT count(*) FROM saved_links WHERE user_id = $1 AND archived_at IS NULL;
 
+-- name: CountSavedLinks :one
+SELECT count(*) FROM saved_links WHERE user_id = $1;
+
+-- name: SavedLinkExists :one
+SELECT EXISTS (SELECT 1 FROM saved_links WHERE user_id = $1 AND url = $2);
+
 -- name: GetSavedLinkThumb :one
 SELECT thumb FROM saved_links WHERE id = $1 AND user_id = $2 AND thumb IS NOT NULL;
 
@@ -46,10 +52,16 @@ DELETE FROM saved_links WHERE id = $1 AND user_id = $2;
 
 -- name: ListLinksNeedingEnrich :many
 -- Backstop for the fetch started right after saving: only rows that one has had a
--- minute to handle, so the two do not fetch the same page at once.
-SELECT id, url FROM saved_links
-WHERE enriched_at IS NULL AND saved_at < now() - interval '1 minute'
-ORDER BY saved_at LIMIT $1;
+-- minute to handle, so the two do not fetch the same page at once. The batch goes round
+-- the users, each one's oldest first by when the server stored it: saved_at comes from
+-- the phone, so ordering by it would let backdated links take every batch.
+SELECT id, user_id, url FROM (
+    SELECT id, user_id, url, created_at,
+           row_number() OVER (PARTITION BY user_id ORDER BY created_at) AS rn
+    FROM saved_links
+    WHERE enriched_at IS NULL AND created_at < now() - interval '1 minute'
+) pending
+ORDER BY rn, created_at LIMIT $1;
 
 -- name: SetSavedLinkEnriched :exec
 -- The title from the share sheet wins over the page's own.

@@ -109,6 +109,44 @@ func (s *FileService) CheckQuota(ctx context.Context, userID string, n int64) er
 	return s.quota.Check(ctx, uid, n)
 }
 
+// holdQuota charges n bytes to owner before a write that cannot be streamed through an
+// upload reservation (a version restore, an undelete copy). The check runs under the
+// global upload-quota lock and leaves a reservation row behind, so concurrent writers of
+// the same user see these bytes as used until release is called — after the write has
+// committed or failed. A crash leaves the row to the stale-reservation GC.
+func (s *FileService) holdQuota(ctx context.Context, owner pgtype.UUID, n int64) (release func(), err error) {
+	if s.quota == nil || n <= 0 {
+		return func() {}, nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+	if err := qtx.LockUploadQuota(ctx); err != nil {
+		return nil, err
+	}
+	if err := quota.New(qtx, s.quota.Total()).Check(ctx, owner, n); err != nil {
+		return nil, err
+	}
+	id := "hold-" + strings.TrimPrefix(tmpName(), ".tmp/")
+	if err := qtx.CreateUploadReservation(ctx, db.CreateUploadReservationParams{ID: id, UserID: owner}); err != nil {
+		return nil, err
+	}
+	if err := qtx.AddUploadReservation(ctx, db.AddUploadReservationParams{ID: id, Bytes: n}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.q.DeleteUploadReservation(cleanup, id)
+	}, nil
+}
+
 // Allowance reports how many more bytes userID may write (quota.Unlimited when nothing
 // limits it). Callers that must buffer a body of unknown length before Push use it to
 // stop buffering at the limit Push would refuse anyway.
@@ -626,11 +664,11 @@ func (s *FileService) restoreOnce(ctx context.Context, userID, nodeID string, ve
 	if s.noVersions {
 		grow -= node.Size.Int64
 	}
-	if grow > 0 {
-		if err := s.CheckQuota(ctx, db.UUIDString(owner), grow); err != nil {
-			return db.Node{}, err
-		}
+	release, err := s.holdQuota(ctx, owner, grow)
+	if err != nil {
+		return db.Node{}, err
 	}
+	defer release()
 
 	var snap string      // the replaced content's snapshot, if any
 	var liveChanged bool // the live file holds bytes no committed row describes
@@ -1651,9 +1689,11 @@ func (s *FileService) undeleteOnce(ctx context.Context, userID, nodeID string) (
 				size += r.Size.Int64
 			}
 		}
-		if err := s.CheckQuota(ctx, db.UUIDString(owner), size); err != nil {
+		release, err := s.holdQuota(ctx, owner, size)
+		if err != nil {
 			return db.Node{}, err
 		}
+		defer release()
 	}
 	defer s.busy.hold(oldRel, newRel)()
 
@@ -1766,8 +1806,10 @@ func (s *FileService) PushByPathWithMeta(ctx context.Context, userID, relPath st
 // the bytes already sit in the staging file tmpRel, and diskRel is where they belong
 // ("<userID>/..."). The node is created right away, so the file counts toward the
 // quota the moment it lands instead of after the next rescan. The destination must be
-// free; the caller picks a free name. size and hash describe the staged bytes.
-func (s *FileService) Adopt(ctx context.Context, userID, tmpRel, diskRel string, size int64, hash string) (db.Node, error) {
+// free; the caller picks a free name. size and hash describe the staged bytes; counted
+// is how much of them usage already includes (a Saved item's bytes_done while it is
+// processing), so the publish charges only the rest against the quota.
+func (s *FileService) Adopt(ctx context.Context, userID, tmpRel, diskRel string, size, counted int64, hash string) (db.Node, error) {
 	userRel, ok := strings.CutPrefix(diskRel, userID+"/")
 	if !ok || userRel == "" {
 		return db.Node{}, ErrNotFound
@@ -1776,10 +1818,12 @@ func (s *FileService) Adopt(ctx context.Context, userID, tmpRel, diskRel string,
 	if err := validateName(name); err != nil {
 		return db.Node{}, err
 	}
-	return retryValue(ctx, func() (db.Node, error) { return s.adoptOnce(ctx, userID, tmpRel, diskRel, dir, name, size, hash) })
+	return retryValue(ctx, func() (db.Node, error) {
+		return s.adoptOnce(ctx, userID, tmpRel, diskRel, dir, name, size, counted, hash)
+	})
 }
 
-func (s *FileService) adoptOnce(ctx context.Context, userID, tmpRel, diskRel, dir, name string, size int64, hash string) (db.Node, error) {
+func (s *FileService) adoptOnce(ctx context.Context, userID, tmpRel, diskRel, dir, name string, size, counted int64, hash string) (db.Node, error) {
 	parentID, err := s.ensureDirChain(ctx, userID, strings.Trim(dir, "/"))
 	if err != nil {
 		return db.Node{}, err
@@ -1800,6 +1844,16 @@ func (s *FileService) adoptOnce(ctx context.Context, userID, tmpRel, diskRel, di
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
+	// Parallel downloads each sampled the same allowance; charge the file under the
+	// upload-quota lock so they cannot all land.
+	if s.quota != nil && size > counted {
+		if err := qtx.LockUploadQuota(ctx); err != nil {
+			return db.Node{}, err
+		}
+		if err := quota.New(qtx, s.quota.Total()).Check(ctx, ownerUUID, size-counted); err != nil {
+			return db.Node{}, err
+		}
+	}
 	if _, err := qtx.GetLiveNodeByPath(ctx, db.GetLiveNodeByPathParams{UserID: ownerUUID, Path: rel}); err == nil {
 		return db.Node{}, ErrNameTaken
 	} else if !errors.Is(err, pgx.ErrNoRows) {

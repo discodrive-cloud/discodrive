@@ -125,6 +125,7 @@ type BrowserBookmark struct {
 	FaviconTriedAt pgtype.Timestamptz `json:"favicon_tried_at"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	FaviconSize    int64              `json:"favicon_size"`
 }
 
 type BrowserSession struct {

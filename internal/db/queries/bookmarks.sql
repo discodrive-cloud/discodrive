@@ -126,7 +126,7 @@ LIMIT $1;
 -- SetBookmarkFavicon does NOT bump seq: favicons are server-side decoration,
 -- browsers don't need to re-pull the node.
 -- name: SetBrowserBookmarkFavicon :exec
-UPDATE browser_bookmarks SET favicon_ext = $2, favicon_tried_at = now() WHERE id = $1;
+UPDATE browser_bookmarks SET favicon_ext = $2, favicon_size = $3, favicon_tried_at = now() WHERE id = $1;
 
 -- name: SetBrowserBookmarkTitleIfEmpty :execrows
 WITH s AS (

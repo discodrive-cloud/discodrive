@@ -50,6 +50,7 @@ type Server struct {
 	bookmarks    *bookmarks.Service
 	links        *links.Service // nil: the shared-links inbox is off
 	linkLimiter  *rateLimiter
+	shareLimiter *rateLimiter    // share requests per user (each new share mails the recipient)
 	photos       *photos.Indexer // nil in the lite build (no media tools)
 	thumbs       *photos.Thumbs
 	faces        *photos.Faces  // people; nil without a face service
@@ -70,7 +71,7 @@ func (s *Server) quotaChecker() *quota.Checker {
 
 // NewRouter registers public and authenticated routes.
 func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService, uploads *storage.Uploads, storageRoot string, cipher *secret.Cipher, notifier *notify.Notifier, ui fs.FS, davHandler http.Handler, caldavHandler http.Handler, carddavHandler http.Handler, davSvc *davpkg.Service, xaccel bool, events *EventHub, subsonicHandler http.Handler, opdsHandler http.Handler, kosyncHandler http.Handler, tagEditor *music.TagEditor, metaEditor *ebook.MetadataEditor, savedSvc *saved.Service, bookmarksSvc *bookmarks.Service, photosIdx *photos.Indexer, photoThumbs *photos.Thumbs, photoMaps *maps.Manager, opts ...Option) http.Handler {
-	s := &Server{auth: authSvc, q: q, files: files, uploads: uploads, storageRoot: storageRoot, cipher: cipher, notify: notifier, dav: davSvc, xaccel: xaccel, events: events, loginLimiter: newLoginLimiter(), pollLimiter: newPollLimiter(), feedLimiter: newLoginLimiter(), tagEditor: tagEditor, metaEditor: metaEditor, saved: savedSvc, bookmarks: bookmarksSvc, photos: photosIdx, thumbs: photoThumbs, maps: photoMaps, sections: AllSections}
+	s := &Server{auth: authSvc, q: q, files: files, uploads: uploads, storageRoot: storageRoot, cipher: cipher, notify: notifier, dav: davSvc, xaccel: xaccel, events: events, loginLimiter: newLoginLimiter(), pollLimiter: newPollLimiter(), feedLimiter: newLoginLimiter(), shareLimiter: newShareLimiter(), tagEditor: tagEditor, metaEditor: metaEditor, saved: savedSvc, bookmarks: bookmarksSvc, photos: photosIdx, thumbs: photoThumbs, maps: photoMaps, sections: AllSections}
 	for _, o := range opts {
 		o(s)
 	}

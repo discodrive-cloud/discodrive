@@ -13,6 +13,7 @@ import (
 
 	"discodrive/internal/dav"
 	"discodrive/internal/db"
+	"discodrive/internal/quota"
 )
 
 type ctxKey int
@@ -182,12 +183,12 @@ func (b *Backend) QueryCalendarObjects(ctx context.Context, path string, query *
 		return nil, err
 	}
 	// caldav.Filter expands a recurring object's time range with rrule-go's Between,
-	// which materializes every occurrence in the window. An object whose rule cannot be
-	// expanded at a bounded cost skips the filter and is returned as matching: the client
-	// expands it itself, as it does for every object it syncs.
+	// which materializes every occurrence in a window the client chooses, with no limit
+	// and no way to cancel it. A recurring object skips the filter and is returned as
+	// matching: the client expands it itself, as it does for every object it syncs.
 	var bounded, unbounded []caldav.CalendarObject
 	for _, o := range objs {
-		if dav.CalendarBounded(o.Data) {
+		if !dav.HasRecurrence(o.Data) {
 			bounded = append(bounded, o)
 		} else {
 			unbounded = append(unbounded, o)
@@ -221,6 +222,8 @@ func (b *Backend) PutCalendarObject(ctx context.Context, path string, calData *i
 	// checked here, before it, a second writer could land in between and be overwritten.
 	etag, err := b.svc.PutCalendarObjectIf(ctx, calID, obj, string(raw), putCheck(opts))
 	switch {
+	case errors.Is(err, quota.ErrExceeded):
+		return nil, webdav.NewHTTPError(http.StatusInsufficientStorage, err)
 	case errors.Is(err, dav.ErrPrecondition):
 		return nil, webdav.NewHTTPError(http.StatusPreconditionFailed, err)
 	case errors.Is(err, dav.ErrUIDConflict):

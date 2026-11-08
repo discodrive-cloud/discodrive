@@ -81,6 +81,9 @@ func (s *Server) handleLinkCreate(w http.ResponseWriter, r *http.Request) {
 		log.Printf("discodrive: links: a link was refused by the SSRF guard")
 		writeError(w, http.StatusBadRequest, "url is not allowed")
 		return
+	case errors.Is(err, links.ErrTooMany):
+		writeError(w, http.StatusInsufficientStorage, "the link inbox is full: delete some links first")
+		return
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return

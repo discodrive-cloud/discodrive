@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"discodrive/internal/auth"
 )
 
 // rateLimiter is a fixed-window per-key attempt counter (login brute-force protection).
@@ -132,4 +134,23 @@ func (rl *rateLimiter) reserve(key string) (func(), bool) {
 			rl.counts[key]--
 		}
 	}, true
+}
+
+// sharesPerMinute caps share requests (files, calendars, address books, task lists) per
+// user. Each new share mails the recipient, and removing a share and adding it again makes
+// it new: without a cap that loop would let one user flood another's inbox.
+const sharesPerMinute = 30
+
+func newShareLimiter() *rateLimiter {
+	return &rateLimiter{counts: make(map[string]int), limit: sharesPerMinute, window: time.Minute, windowStart: time.Now()}
+}
+
+// shareAllowed counts a share request of the signed-in user; false means it was answered
+// with 429.
+func (s *Server) shareAllowed(w http.ResponseWriter, r *http.Request) bool {
+	if s.shareLimiter != nil && !s.shareLimiter.allow(auth.UserID(r.Context())) {
+		writeError(w, http.StatusTooManyRequests, "too many share requests, please try again later")
+		return false
+	}
+	return true
 }

@@ -13,6 +13,7 @@ import (
 	"discodrive/internal/auth"
 	"discodrive/internal/dav"
 	"discodrive/internal/db"
+	"discodrive/internal/quota"
 )
 
 type occurrence struct {
@@ -261,6 +262,7 @@ func expandEvents(cal *ical.Calendar, rangeStart, rangeEnd time.Time, loc *time.
 		}
 		return t.Format(time.RFC3339)
 	}
+	expandable := dav.CalendarBounded(cal)
 	var out []occurrence
 	for _, m := range masters {
 		uid := propRaw(m, ical.PropUID)
@@ -276,8 +278,9 @@ func expandEvents(cal *ical.Calendar, rangeStart, rangeEnd time.Time, loc *time.
 			dtend = dtstart
 		}
 		dur := dtend.Sub(dtstart)
-		// A rule that cannot be expanded at a bounded cost is shown at its DTSTART only.
-		recurring := m.Props.Get(ical.PropRecurrenceRule) != nil && dav.BoundedRecurrence(m)
+		// A rule that cannot be expanded at a bounded cost is shown at its DTSTART only, and
+		// so is every rule of an object holding too many of them.
+		recurring := m.Props.Get(ical.PropRecurrenceRule) != nil && dav.BoundedRecurrence(m) && expandable
 		var starts []time.Time
 		if recurring {
 			if set, serr := m.RecurrenceSet(eloc); serr == nil && set != nil {
@@ -682,12 +685,16 @@ func (s *Server) putCal(r *http.Request, calID, uid string, cal *ical.Calendar) 
 	return err
 }
 
+// writePutCalError answers a failed calendar, task or contact write.
 func writePutCalError(w http.ResponseWriter, err error) {
-	if errors.Is(err, dav.ErrUIDConflict) {
-		writeError(w, http.StatusConflict, "another object in this calendar has the same UID")
-		return
+	switch {
+	case errors.Is(err, quota.ErrExceeded):
+		writeError(w, http.StatusInsufficientStorage, "insufficient storage")
+	case errors.Is(err, dav.ErrUIDConflict):
+		writeError(w, http.StatusConflict, "another object in this collection has the same UID")
+	default:
+		writeError(w, http.StatusInternalServerError, "failed to save")
 	}
-	writeError(w, http.StatusInternalServerError, "failed to save")
 }
 
 // applyEventForm overwrites the editable VEVENT properties; VALARM/X-* and other fields are

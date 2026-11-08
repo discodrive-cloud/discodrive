@@ -119,7 +119,7 @@ func (s *Service) processArticle(ctx context.Context, item db.SavedItem) (result
 		_ = s.st.Remove(tmpRel)
 		return result{}, err
 	}
-	nodeID, err := s.publish(ctx, item.UserID, tmpRel, destRel, size, hash)
+	nodeID, err := s.publish(ctx, item.UserID, tmpRel, destRel, size, 0, hash)
 	if err != nil {
 		_ = s.st.Remove(tmpRel)
 		return result{}, err

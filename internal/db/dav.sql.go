@@ -119,7 +119,7 @@ VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (resource_type, resource_id, shared_with_user)
     WHERE shared_with_user IS NOT NULL AND resource_type IN ('calendar', 'addressbook')
 DO UPDATE SET access = EXCLUDED.access, expires_at = EXCLUDED.expires_at
-RETURNING id, resource_type, resource_id, owner_id, shared_with_user, share_link_token, access, expires_at, created_at, share_password_hash
+RETURNING id, resource_type, resource_id, owner_id, shared_with_user, share_link_token, access, expires_at, created_at, share_password_hash, (xmax = 0)::boolean AS inserted
 `
 
 type UpsertCollectionShareParams struct {
@@ -131,10 +131,24 @@ type UpsertCollectionShareParams struct {
 	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
 }
 
+type UpsertCollectionShareRow struct {
+	ID                pgtype.UUID        `json:"id"`
+	ResourceType      string             `json:"resource_type"`
+	ResourceID        pgtype.UUID        `json:"resource_id"`
+	OwnerID           pgtype.UUID        `json:"owner_id"`
+	SharedWithUser    pgtype.UUID        `json:"shared_with_user"`
+	ShareLinkToken    pgtype.Text        `json:"share_link_token"`
+	Access            string             `json:"access"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	SharePasswordHash pgtype.Text        `json:"share_password_hash"`
+	Inserted          bool               `json:"inserted"`
+}
+
 // CalDAV/CardDAV collections: sharing and integrity checks.
 // Share a calendar or address book with a user; sharing it again with the same user
 // updates the existing share (see migration 000019).
-func (q *Queries) UpsertCollectionShare(ctx context.Context, arg UpsertCollectionShareParams) (ResourceShare, error) {
+func (q *Queries) UpsertCollectionShare(ctx context.Context, arg UpsertCollectionShareParams) (UpsertCollectionShareRow, error) {
 	row := q.db.QueryRow(ctx, upsertCollectionShare,
 		arg.ResourceType,
 		arg.ResourceID,
@@ -143,7 +157,7 @@ func (q *Queries) UpsertCollectionShare(ctx context.Context, arg UpsertCollectio
 		arg.Access,
 		arg.ExpiresAt,
 	)
-	var i ResourceShare
+	var i UpsertCollectionShareRow
 	err := row.Scan(
 		&i.ID,
 		&i.ResourceType,
@@ -155,6 +169,7 @@ func (q *Queries) UpsertCollectionShare(ctx context.Context, arg UpsertCollectio
 		&i.ExpiresAt,
 		&i.CreatedAt,
 		&i.SharePasswordHash,
+		&i.Inserted,
 	)
 	return i, err
 }

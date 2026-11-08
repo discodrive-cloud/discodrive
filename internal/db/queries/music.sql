@@ -438,14 +438,25 @@ INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES ($1, $2, $3);
 DELETE FROM playlist_songs WHERE playlist_id = $1;
 
 -- name: GetPlaylistSongs :many
--- Returns songs in a playlist ordered by position, joined with song details.
+-- Returns songs in a playlist ordered by position, joined with song details. Only songs
+-- the playlist's owner can still play: a song from a share that was revoked since it was
+-- added drops out (its metadata belongs to someone else).
+WITH RECURSIVE shared_subtree AS (
+    SELECT resource_id AS node_id FROM resource_shares
+    WHERE resource_type = 'file_node' AND shared_with_user = (SELECT pl.user_id FROM playlists pl WHERE pl.id = $1)
+      AND (expires_at IS NULL OR expires_at > now())
+    UNION
+    SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
+)
 SELECT s.id, s.user_id, s.album_id, s.artist_id, s.node_id,
        s.title, s.track, s.disc, s.duration, s.bitrate,
        s.suffix, s.content_type, s.size, s.genre, s.musicbrainz_id,
        s.created_at, s.updated_at
 FROM playlist_songs ps
+JOIN playlists p ON p.id = ps.playlist_id
 JOIN songs s ON s.id = ps.song_id
 WHERE ps.playlist_id = $1
+  AND (s.user_id = p.user_id OR s.node_id IN (SELECT node_id FROM shared_subtree))
 ORDER BY ps.position;
 
 -- name: CountPlaylistSongs :one
@@ -654,7 +665,15 @@ SELECT item_id, item_type, starred_at FROM stars WHERE user_id = $1;
 SELECT item_id, item_type, rating FROM ratings WHERE user_id = $1;
 
 -- name: RecentPlayHistory :many
--- Returns recent play_history rows for the caller, joined to song+album+artist.
+-- Returns recent play_history rows for the caller, joined to song+album+artist, for songs
+-- the caller can still play.
+WITH RECURSIVE shared_subtree AS (
+    SELECT resource_id AS node_id FROM resource_shares
+    WHERE resource_type = 'file_node' AND shared_with_user = sqlc.arg(user_id)::uuid
+      AND (expires_at IS NULL OR expires_at > now())
+    UNION
+    SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
+)
 SELECT s.id, s.user_id, s.album_id, s.artist_id, s.node_id,
        s.title, s.track, s.disc, s.duration, s.bitrate,
        s.suffix, s.content_type, s.size, s.genre, s.musicbrainz_id,
@@ -666,6 +685,7 @@ JOIN songs s ON s.id = ph.song_id
 JOIN albums al ON al.id = s.album_id
 JOIN artists ar ON ar.id = s.artist_id
 WHERE ph.user_id = sqlc.arg(user_id)::uuid
+  AND (s.user_id = sqlc.arg(user_id)::uuid OR s.node_id IN (SELECT node_id FROM shared_subtree))
 ORDER BY ph.played_at DESC
 LIMIT sqlc.arg(lim);
 
@@ -704,6 +724,14 @@ SELECT user_id, current_id, position_ms, changed_by, changed_at
 FROM play_queues WHERE user_id = $1;
 
 -- name: GetPlayQueueEntries :many
+-- The caller's saved queue, for songs the caller can still play.
+WITH RECURSIVE shared_subtree AS (
+    SELECT resource_id AS node_id FROM resource_shares
+    WHERE resource_type = 'file_node' AND shared_with_user = $1
+      AND (expires_at IS NULL OR expires_at > now())
+    UNION
+    SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
+)
 SELECT s.*,
        al.name AS album_name, ar.name AS artist_name, al.year AS album_year
 FROM play_queue_entries e
@@ -711,6 +739,7 @@ JOIN songs s ON s.id = e.song_id
 JOIN albums al ON al.id = s.album_id
 JOIN artists ar ON ar.id = s.artist_id
 WHERE e.user_id = $1
+  AND (s.user_id = $1 OR s.node_id IN (SELECT node_id FROM shared_subtree))
 ORDER BY e.idx;
 
 -- name: AccessibleSongsByArtist :many

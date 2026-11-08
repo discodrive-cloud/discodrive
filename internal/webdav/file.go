@@ -162,13 +162,15 @@ type writeFile struct {
 }
 
 func (w *writeFile) Write(p []byte) (int, error) {
-	if int64(len(p)) > w.limit-w.written {
+	// The user's other PUTs in flight share the limit (see spooled).
+	if !spoolTake(w.userID, int64(len(p)), w.limit) {
 		if pq := putQuotaOf(w.ctx); pq != nil {
 			pq.exceeded = true
 		}
 		return 0, fmt.Errorf("upload of %q: %w", w.name, quota.ErrExceeded)
 	}
 	n, err := w.tmp.Write(p)
+	spoolGive(w.userID, int64(len(p)-n))
 	w.written += int64(n)
 	return n, err
 }
@@ -179,7 +181,7 @@ func (w *writeFile) Stat() (fs.FileInfo, error) {
 	return nodeInfo{name: w.name, dir: false, mtime: time.Now()}, nil
 }
 func (w *writeFile) Close() error {
-	defer func() { _ = w.tmp.Close(); _ = os.Remove(w.tmp.Name()) }()
+	defer func() { _ = w.tmp.Close(); _ = os.Remove(w.tmp.Name()); spoolGive(w.userID, w.written); w.written = 0 }()
 	// x/net/webdav's handlePut calls Close() even when copying the request body FAILED
 	// (webdav.go: closeErr is taken before copyErr is inspected) — and this Close is what
 	// publishes the file. Committing unconditionally turns any mid-transfer failure into a

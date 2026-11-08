@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"discodrive/internal/db"
+	"discodrive/internal/quota"
 )
 
 // ErrNotFound — collection/object not found (or does not belong to the user).
@@ -36,8 +37,26 @@ type PutCheck func(exists bool, etag string) bool
 
 // Service — CalDAV/CardDAV storage backed by Postgres. Ownership is scoped by user_id.
 type Service struct {
-	pool *pgxpool.Pool
-	q    *db.Queries
+	pool  *pgxpool.Pool
+	q     *db.Queries
+	quota *quota.Checker
+}
+
+// SetQuota makes writes that grow an object check the owner's quota (and the server-wide
+// cap): calendar and contact objects count as the user's stored data. nil disables it.
+func (s *Service) SetQuota(c *quota.Checker) { s.quota = c }
+
+// chargeQuota refuses a write that grows the owner's data by grow bytes past the quota.
+// It takes the upload-quota lock, so concurrent writes (here and in the file tree) cannot
+// each pass the check against the same free space; the lock is held until tx ends.
+func (s *Service) chargeQuota(ctx context.Context, qtx *db.Queries, owner pgtype.UUID, grow int64) error {
+	if s.quota == nil || grow <= 0 {
+		return nil
+	}
+	if err := qtx.LockUploadQuota(ctx); err != nil {
+		return err
+	}
+	return quota.New(qtx, s.quota.Total()).Check(ctx, owner, grow)
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
@@ -312,6 +331,19 @@ func (s *Service) PutCalendarObjectIf(ctx context.Context, calID, uid, data stri
 			}
 		}
 	}
+	if s.quota != nil {
+		cal, gerr := qtx.GetCalendar(ctx, cid)
+		if gerr != nil {
+			return "", gerr
+		}
+		cur, gerr := qtx.GetCalendarObject(ctx, db.GetCalendarObjectParams{CalendarID: cid, Uid: uid})
+		if gerr != nil && !errors.Is(gerr, pgx.ErrNoRows) {
+			return "", gerr
+		}
+		if err = s.chargeQuota(ctx, qtx, cal.UserID, int64(len(data)-len(cur.Data))); err != nil {
+			return "", err
+		}
+	}
 	if _, err = qtx.UpsertCalendarObject(ctx, db.UpsertCalendarObjectParams{
 		CalendarID: cid, Uid: uid, Data: data, Etag: etag, Parsed: parsed,
 	}); err != nil {
@@ -514,6 +546,19 @@ func (s *Service) PutAddressbookObjectIf(ctx context.Context, abID, uid, data st
 			if gerr != nil {
 				return "", gerr
 			}
+		}
+	}
+	if s.quota != nil {
+		ab, gerr := qtx.GetAddressbook(ctx, aid)
+		if gerr != nil {
+			return "", gerr
+		}
+		cur, gerr := qtx.GetAddressbookObject(ctx, db.GetAddressbookObjectParams{AddressbookID: aid, Uid: uid})
+		if gerr != nil && !errors.Is(gerr, pgx.ErrNoRows) {
+			return "", gerr
+		}
+		if err = s.chargeQuota(ctx, qtx, ab.UserID, int64(len(data)-len(cur.Data))); err != nil {
+			return "", err
 		}
 	}
 	if _, err = qtx.UpsertAddressbookObject(ctx, db.UpsertAddressbookObjectParams{

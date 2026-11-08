@@ -36,29 +36,36 @@ type SharedCalendar struct {
 
 // ShareCalendar grants a user (by email) full read_write access to a calendar.
 func (s *Service) ShareCalendar(ctx context.Context, ownerID, calID, withEmail string, expiresAt *time.Time) (db.ResourceShare, error) {
+	sh, _, err := s.ShareCalendarFresh(ctx, ownerID, calID, withEmail, expiresAt)
+	return sh, err
+}
+
+// ShareCalendarFresh is ShareCalendar that also reports whether the share is new: sharing
+// again with the same user only updates the existing share, and must not notify them again.
+func (s *Service) ShareCalendarFresh(ctx context.Context, ownerID, calID, withEmail string, expiresAt *time.Time) (db.ResourceShare, bool, error) {
 	cid, err := db.ParseUUID(calID)
 	if err != nil {
-		return db.ResourceShare{}, ErrNotFound
+		return db.ResourceShare{}, false, ErrNotFound
 	}
 	cal, err := s.q.GetCalendar(ctx, cid)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return db.ResourceShare{}, ErrNotFound
+		return db.ResourceShare{}, false, ErrNotFound
 	}
 	if err != nil {
-		return db.ResourceShare{}, err
+		return db.ResourceShare{}, false, err
 	}
 	if db.UUIDString(cal.UserID) != ownerID {
-		return db.ResourceShare{}, ErrNotOwner
+		return db.ResourceShare{}, false, ErrNotOwner
 	}
 	target, err := s.q.GetUserByEmail(ctx, withEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return db.ResourceShare{}, ErrRecipientNotFound
+		return db.ResourceShare{}, false, ErrRecipientNotFound
 	}
 	if err != nil {
-		return db.ResourceShare{}, err
+		return db.ResourceShare{}, false, err
 	}
 	if target.ID == cal.UserID {
-		return db.ResourceShare{}, ErrSelfShare
+		return db.ResourceShare{}, false, ErrSelfShare
 	}
 	var exp pgtype.Timestamptz
 	if expiresAt != nil {
@@ -66,7 +73,7 @@ func (s *Service) ShareCalendar(ctx context.Context, ownerID, calID, withEmail s
 	}
 	// Sharing again with the same user updates the share (expiry) instead of adding a
 	// second copy of the calendar to their home set.
-	return s.q.UpsertCollectionShare(ctx, db.UpsertCollectionShareParams{
+	return upsertShare(ctx, s.q, db.UpsertCollectionShareParams{
 		ResourceType:   "calendar",
 		ResourceID:     cid,
 		OwnerID:        cal.UserID,
@@ -284,31 +291,37 @@ func (s *Service) GetAddressbook(ctx context.Context, abID string) (db.Addressbo
 
 // ShareAddressbook grants a user (by email) full read_write access to an address book.
 func (s *Service) ShareAddressbook(ctx context.Context, ownerID, abID, withEmail string) (db.ResourceShare, error) {
+	sh, _, err := s.ShareAddressbookFresh(ctx, ownerID, abID, withEmail)
+	return sh, err
+}
+
+// ShareAddressbookFresh is ShareAddressbook that also reports whether the share is new.
+func (s *Service) ShareAddressbookFresh(ctx context.Context, ownerID, abID, withEmail string) (db.ResourceShare, bool, error) {
 	aid, err := db.ParseUUID(abID)
 	if err != nil {
-		return db.ResourceShare{}, ErrNotFound
+		return db.ResourceShare{}, false, ErrNotFound
 	}
 	ab, err := s.q.GetAddressbook(ctx, aid)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return db.ResourceShare{}, ErrNotFound
+		return db.ResourceShare{}, false, ErrNotFound
 	}
 	if err != nil {
-		return db.ResourceShare{}, err
+		return db.ResourceShare{}, false, err
 	}
 	if db.UUIDString(ab.UserID) != ownerID {
-		return db.ResourceShare{}, ErrNotOwner
+		return db.ResourceShare{}, false, ErrNotOwner
 	}
 	target, err := s.q.GetUserByEmail(ctx, withEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return db.ResourceShare{}, ErrRecipientNotFound
+		return db.ResourceShare{}, false, ErrRecipientNotFound
 	}
 	if err != nil {
-		return db.ResourceShare{}, err
+		return db.ResourceShare{}, false, err
 	}
 	if target.ID == ab.UserID {
-		return db.ResourceShare{}, ErrSelfShare
+		return db.ResourceShare{}, false, ErrSelfShare
 	}
-	return s.q.UpsertCollectionShare(ctx, db.UpsertCollectionShareParams{
+	return upsertShare(ctx, s.q, db.UpsertCollectionShareParams{
 		ResourceType:   "addressbook",
 		ResourceID:     aid,
 		OwnerID:        ab.UserID,
@@ -449,4 +462,17 @@ func (s *Service) CanAccessCalendar(ctx context.Context, userID, calID string) (
 		return false, err
 	}
 	return true, nil
+}
+
+// upsertShare creates or updates a collection share and reports whether it is new.
+func upsertShare(ctx context.Context, q *db.Queries, arg db.UpsertCollectionShareParams) (db.ResourceShare, bool, error) {
+	r, err := q.UpsertCollectionShare(ctx, arg)
+	if err != nil {
+		return db.ResourceShare{}, false, err
+	}
+	return db.ResourceShare{
+		ID: r.ID, ResourceType: r.ResourceType, ResourceID: r.ResourceID, OwnerID: r.OwnerID,
+		SharedWithUser: r.SharedWithUser, ShareLinkToken: r.ShareLinkToken, Access: r.Access,
+		ExpiresAt: r.ExpiresAt, CreatedAt: r.CreatedAt, SharePasswordHash: r.SharePasswordHash,
+	}, r.Inserted, nil
 }

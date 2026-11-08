@@ -52,6 +52,7 @@ type Thumbs struct {
 	mu       sync.Mutex
 	inflight map[pgtype.UUID]bool // ids claimed by a worker, for the claim queries
 	flights  map[string]*flight   // renders in progress, by asset and kind
+	failed   map[string]time.Time // previews that did not render, by derivative path
 	claimMu  sync.Mutex           // claim + registering in inflight is one step
 
 	renders atomic.Int64 // renders started, for tests
@@ -77,7 +78,7 @@ func NewThumbs(q *db.Queries, storageRoot string, tools media.Tools, workers int
 	n := max(workers, 1)
 	t := &Thumbs{tcKick: make(chan struct{}, 1), q: q, storageRoot: storageRoot, tools: tools, exif: exif, workers: workers,
 		sem:      make(chan struct{}, n),
-		inflight: map[pgtype.UUID]bool{}, flights: map[string]*flight{}}
+		inflight: map[pgtype.UUID]bool{}, flights: map[string]*flight{}, failed: map[string]time.Time{}}
 	for i := 0; i < workers; i++ {
 		t.kicks = append(t.kicks, make(chan struct{}, 1))
 	}
@@ -259,10 +260,14 @@ func (t *Thumbs) Ensure(ctx context.Context, a db.PhotoAsset, kind string) (stri
 	if kind != "thumb" && kind != "preview" {
 		return "", fmt.Errorf("photos: unknown derivative kind %q", kind)
 	}
-	if kind == "thumb" && a.ThumbState == "failed" {
+	// A file that did not render as a thumbnail will not render as a preview either.
+	if a.ThumbState == "failed" {
 		return "", ErrRenderFailed
 	}
 	dst := AssetDerivPath(t.storageRoot, a, kind)
+	if kind == "preview" && t.previewFailed(dst) {
+		return "", ErrRenderFailed
+	}
 	if kind == "preview" || a.ThumbState == "ready" {
 		if _, err := os.Stat(dst); err == nil {
 			return dst, nil
@@ -302,10 +307,43 @@ func (t *Thumbs) build(ctx context.Context, a db.PhotoAsset, kind string, sem ch
 		close(f.done)
 	}()
 	f.path, f.err = t.renderLimited(ctx, a, kind, sem)
-	if f.err != nil && kind == "thumb" && ctx.Err() == nil {
-		t.failThumb(ctx, a, f.err)
+	if f.err != nil && ctx.Err() == nil {
+		switch kind {
+		case "thumb":
+			t.failThumb(ctx, a, f.err)
+		case "preview":
+			t.failPreview(AssetDerivPath(t.storageRoot, a, kind))
+		}
 	}
 	return f.path, f.err
+}
+
+// previewRetry is how long a preview that failed to render is not tried again. The
+// derivative path names the file version and rotation, so a changed file is tried at
+// once; anything else (a tool installed later) after this long.
+const previewRetry = time.Hour
+
+// failPreview remembers a preview that did not render: requests for it (anonymous ones
+// through album links among them) must not start the same failing render each time.
+func (t *Thumbs) failPreview(dst string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now()
+	if len(t.failed) >= 10000 {
+		for k, at := range t.failed {
+			if now.Sub(at) > previewRetry {
+				delete(t.failed, k)
+			}
+		}
+	}
+	t.failed[dst] = now
+}
+
+func (t *Thumbs) previewFailed(dst string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	at, ok := t.failed[dst]
+	return ok && time.Since(at) < previewRetry
 }
 
 func (t *Thumbs) renderLimited(ctx context.Context, a db.PhotoAsset, kind string, sem chan struct{}) (string, error) {

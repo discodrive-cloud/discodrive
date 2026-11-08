@@ -40,21 +40,37 @@ func (s *FileService) ownerNode(ctx context.Context, ownerUser, nodeID string) (
 
 // ShareToUser grants a user (by email) access to a file_node.
 func (s *FileService) ShareToUser(ctx context.Context, ownerUser, nodeID, withEmail, access string, expiresAt *time.Time) (db.ResourceShare, error) {
+	sh, _, err := s.ShareToUserFresh(ctx, ownerUser, nodeID, withEmail, access, expiresAt)
+	return sh, err
+}
+
+// ShareToUserFresh is ShareToUser that also reports whether the share is new. Sharing a
+// node again with the same user updates the existing share (access, expiry) instead of
+// adding another one, and must not notify them again.
+func (s *FileService) ShareToUserFresh(ctx context.Context, ownerUser, nodeID, withEmail, access string, expiresAt *time.Time) (db.ResourceShare, bool, error) {
 	if !validAccess(access) {
-		return db.ResourceShare{}, ErrShareInput
+		return db.ResourceShare{}, false, ErrShareInput
 	}
 	node, err := s.ownerNode(ctx, ownerUser, nodeID)
 	if err != nil {
-		return db.ResourceShare{}, err
+		return db.ResourceShare{}, false, err
 	}
 	target, err := s.q.GetUserByEmail(ctx, withEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return db.ResourceShare{}, ErrNotFound
+		return db.ResourceShare{}, false, ErrNotFound
 	}
 	if err != nil {
-		return db.ResourceShare{}, err
+		return db.ResourceShare{}, false, err
 	}
-	return s.q.CreateShare(ctx, db.CreateShareParams{
+	existing, err := s.q.GetUserFileShare(ctx, db.GetUserFileShareParams{ResourceID: node.ID, SharedWithUser: target.ID})
+	if err == nil {
+		sh, err := s.q.UpdateShareAccess(ctx, db.UpdateShareAccessParams{ID: existing.ID, Access: access, ExpiresAt: tsPtr(expiresAt)})
+		return sh, false, err
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return db.ResourceShare{}, false, err
+	}
+	sh, err := s.q.CreateShare(ctx, db.CreateShareParams{
 		ResourceType:   "file_node",
 		ResourceID:     node.ID,
 		OwnerID:        node.UserID,
@@ -62,6 +78,7 @@ func (s *FileService) ShareToUser(ctx context.Context, ownerUser, nodeID, withEm
 		Access:         access,
 		ExpiresAt:      tsPtr(expiresAt),
 	})
+	return sh, err == nil, err
 }
 
 // ShareByLink creates a public link for a file_node, returning the share and token.

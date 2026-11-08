@@ -197,11 +197,13 @@ func normalizeTimes(cal *ical.Calendar) {
 		parsed[tzid] = v
 		return v
 	}
+	// One budget for the whole object: an object may hold any number of events with the
+	// same UID, so a per-event budget did not bound the work of one read.
+	budget := maxTimeValues
 	for _, comp := range cal.Children {
 		if comp.Name != ical.CompEvent && comp.Name != ical.CompToDo {
 			continue
 		}
-		budget := maxTimeValues
 		for _, name := range timeProps {
 			props := comp.Props[name]
 			if len(props) == 0 {
@@ -231,8 +233,8 @@ func normalizeTimes(cal *ical.Calendar) {
 }
 
 // Bounds on the work an object's own data can ask of normalizeTimes: date-time values per
-// event or to-do (an EXDATE list is one value per date), and observances and RDATEs read
-// from one VTIMEZONE.
+// object (an EXDATE list is one value per date), and observances and RDATEs read from one
+// VTIMEZONE.
 const (
 	maxTimeValues  = 2000
 	maxObservances = 200
@@ -275,7 +277,15 @@ func fixTZID(p *ical.Prop, vtz func(string) *vtimezone) {
 }
 
 // vtimezone is a VTIMEZONE read once for all the values that refer to it.
-type vtimezone struct{ obs []observance }
+type vtimezone struct {
+	obs  []observance
+	memo map[time.Time]tzOffset // repeated wall times (EXDATE lists, overrides) are computed once
+}
+
+type tzOffset struct {
+	off int
+	ok  bool
+}
 
 // observance is one STANDARD or DAYLIGHT block. Its onsets are DTSTART, the RDATEs and the
 // RRULE's occurrences.
@@ -337,6 +347,18 @@ func vtimezoneOffset(tz *ical.Component, wall time.Time) (int, bool) {
 }
 
 func (v *vtimezone) offset(wall time.Time) (int, bool) {
+	if r, ok := v.memo[wall]; ok {
+		return r.off, r.ok
+	}
+	off, ok := v.computeOffset(wall)
+	if v.memo == nil {
+		v.memo = map[time.Time]tzOffset{}
+	}
+	v.memo[wall] = tzOffset{off, ok}
+	return off, ok
+}
+
+func (v *vtimezone) computeOffset(wall time.Time) (int, bool) {
 	var best time.Time
 	bestOff, found := 0, false
 	var earliest time.Time

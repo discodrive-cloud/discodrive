@@ -279,6 +279,8 @@ func (s *Server) removeUserFiles(uid string) (done <-chan struct{}) {
 		// version snapshots and trashed bytes live outside "<uid>/" (.versions/<uid>/,
 		// .trash/<uid>/) and belong to the user just as much
 		{".versions/" + uid, "versions"}, {".trash/" + uid, "trash"},
+		// gallery thumbnails, previews, video copies and face crops (.photos/<uid>/)
+		{".photos/" + uid, "photos"},
 	} {
 		if ok, err := disk.Exists(m[0]); err != nil || !ok {
 			continue

@@ -210,10 +210,11 @@ func (f *fsImpl) OpenFile(ctx context.Context, name string, flag int, _ os.FileM
 		}
 		// The body is buffered whole before Push applies the quota, so bound the buffer
 		// here: a body without a declared length skips Handler's up-front check.
-		limit, err := f.svc.Allowance(ctx, f.userID)
+		allowance, err := f.svc.Allowance(ctx, f.userID)
 		if err != nil {
 			return nil, mapErr(err)
 		}
+		limit := spoolLimit(allowance, tempFree())
 		tmp, err := os.CreateTemp("", "kfdav-*")
 		if err != nil {
 			return nil, err

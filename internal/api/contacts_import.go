@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"discodrive/internal/dav"
 	"discodrive/internal/db"
+	"discodrive/internal/quota"
 )
 
 const maxImportBytes = 32 << 20 // 32 MB
@@ -46,7 +48,17 @@ func splitVCards(raw string) []string {
 
 // importVCards saves cards from the stream into the address book (upsert by UID). Returns
 // the number of imported and skipped cards (failed decode or save error).
-func importVCards(ctx context.Context, svc *dav.Service, abID, raw string) (imported, skipped int) {
+func importVCards(ctx context.Context, svc *dav.Service, abID, raw string) (imported, skipped int, err error) {
+	return importCards(raw, func(uid, data string) error {
+		_, err := svc.PutAddressbookObject(ctx, abID, uid, data)
+		return err
+	})
+}
+
+// importCards stores each card of raw with put. A card that does not parse or is refused
+// is skipped; running out of storage stops the import with quota.ErrExceeded, since every
+// card after it would be refused too.
+func importCards(raw string, put func(uid, data string) error) (imported, skipped int, err error) {
 	for _, block := range splitVCards(raw) {
 		card, err := vcard.NewDecoder(strings.NewReader(block)).Decode()
 		if err != nil {
@@ -65,13 +77,16 @@ func importVCards(ctx context.Context, svc *dav.Service, abID, raw string) (impo
 			}
 			data = b.String()
 		}
-		if _, err := svc.PutAddressbookObject(ctx, abID, uid, data); err != nil {
+		if err := put(uid, data); err != nil {
+			if errors.Is(err, quota.ErrExceeded) {
+				return imported, skipped, err
+			}
 			skipped++
 			continue
 		}
 		imported++
 	}
-	return imported, skipped
+	return imported, skipped, nil
 }
 
 // exportVCards concatenates raw cards into a single vCard stream.
@@ -91,12 +106,22 @@ func (s *Server) handleImportContacts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	// The route is exempt from the API body limit, so cap it here: a file of up to
+	// maxImportBytes plus room for the multipart framing.
+	r.Body = http.MaxBytesReader(w, r.Body, maxImportBytes+1<<20)
 	var raw string
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
-		if err := r.ParseMultipartForm(maxImportBytes); err != nil {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "expected multipart/form-data")
 			return
 		}
+		// Runs on a request clone: net/http would not remove these spool files.
+		defer r.MultipartForm.RemoveAll()
 		f, _, err := r.FormFile("file")
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "file is required (field: file)")
@@ -109,7 +134,12 @@ func (s *Server) handleImportContacts(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(io.LimitReader(r.Body, maxImportBytes))
 		raw = string(b)
 	}
-	imported, skipped := importVCards(r.Context(), s.dav, abID, raw)
+	imported, skipped, err := importVCards(r.Context(), s.dav, abID, raw)
+	if errors.Is(err, quota.ErrExceeded) {
+		writeJSON(w, http.StatusInsufficientStorage, map[string]any{
+			"error": "insufficient storage", "imported": imported, "skipped": skipped})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"imported": imported, "skipped": skipped})
 }
 

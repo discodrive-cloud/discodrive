@@ -13,6 +13,9 @@ import (
 
 // POST /me/calendars/{id}/share {email, expires_in_seconds?}
 func (s *Server) handleShareCalendar(w http.ResponseWriter, r *http.Request) {
+	if !s.shareAllowed(w, r) {
+		return
+	}
 	owner := auth.UserID(r.Context())
 	calID := r.PathValue("id")
 	var body struct {
@@ -28,8 +31,12 @@ func (s *Server) handleShareCalendar(w http.ResponseWriter, r *http.Request) {
 		t := time.Now().Add(time.Duration(body.ExpiresInSeconds) * time.Second)
 		exp = &t
 	}
-	share, err := s.dav.ShareCalendar(r.Context(), owner, calID, body.Email, exp)
+	share, fresh, err := s.dav.ShareCalendarFresh(r.Context(), owner, calID, body.Email, exp)
 	if !writeShareResult(w, err, "calendar not found") {
+		return
+	}
+	if !fresh { // sharing again only updates the share: no second email
+		writeShareOK(w)
 		return
 	}
 	// notify the recipient (best-effort, same as for file shares)

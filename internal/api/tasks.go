@@ -236,7 +236,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	applyTaskForm(todo, form)
 	cal.Children = append(cal.Children, todo)
 	if err := s.putCal(r, listID, uid, cal); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save")
+		writePutCalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"uid": uid, "list_id": listID})
@@ -316,7 +316,7 @@ func (s *Server) handleToggleTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.putCal(r, db.UUIDString(list.ID), uid, cal); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save")
+		writePutCalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"uid": uid})

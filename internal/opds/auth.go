@@ -17,7 +17,7 @@ func (h *Handler) authenticate(r *http.Request) (userID string, ok bool) {
 	ctx := r.Context()
 
 	// --- apiKey auth ---
-	if apiKey := r.FormValue("apiKey"); apiKey != "" {
+	if apiKey := r.URL.Query().Get("apiKey"); apiKey != "" {
 		settings, err := h.q.GetEbookSettingsByApiKey(ctx, pgtype.Text{String: apiKey, Valid: true})
 		if err != nil || !settings.Enabled {
 			return "", false

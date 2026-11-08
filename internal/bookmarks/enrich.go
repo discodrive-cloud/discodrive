@@ -26,10 +26,11 @@ func (s *Service) EnrichPending(ctx context.Context) error {
 		return err
 	}
 	for _, bm := range items {
-		ext, title := s.enrichOne(ctx, bm)
+		ext, size, title := s.enrichOne(ctx, bm)
 		if err := s.q.SetBrowserBookmarkFavicon(ctx, db.SetBrowserBookmarkFaviconParams{
-			ID:         bm.ID,
-			FaviconExt: ext,
+			ID:          bm.ID,
+			FaviconExt:  ext,
+			FaviconSize: size,
 		}); err != nil {
 			return err
 		}
@@ -48,20 +49,21 @@ func (s *Service) EnrichPending(ctx context.Context) error {
 
 // enrichOne fetches page metadata and the favicon; any failure just yields
 // empty results (the node is still marked as tried by the caller).
-func (s *Service) enrichOne(ctx context.Context, bm db.BrowserBookmark) (ext, title string) {
+func (s *Service) enrichOne(ctx context.Context, bm db.BrowserBookmark) (ext string, size int64, title string) {
 	if err := s.Validate(bm.Url); err != nil {
-		return "", "" // javascript:/about:/private hosts — nothing to fetch
+		return "", 0, "" // javascript:/about:/private hosts — nothing to fetch
 	}
 	pageURL, err := url.Parse(bm.Url)
 	if err != nil {
-		return "", ""
+		return "", 0, ""
 	}
 	ctx, cancel := context.WithTimeout(ctx, perItemDeadline)
 	defer cancel()
 	title, iconHref, err := s.fetchPageMeta(ctx, bm.Url)
 	if err != nil {
 		log.Printf("discodrive: bookmark enrich %s: %v", bm.Url, err)
-		return "", ""
+		return "", 0, ""
 	}
-	return s.fetchFavicon(ctx, db.UUIDString(bm.UserID), db.UUIDString(bm.ID), pageURL, iconHref), title
+	ext, size = s.fetchFavicon(ctx, bm.UserID, db.UUIDString(bm.ID), pageURL, iconHref)
+	return ext, size, title
 }

@@ -385,6 +385,9 @@ func writeStorageErr(w http.ResponseWriter, err error) {
 
 // POST /files/{id}/share — grant access to a user (email) or create a share link (link).
 func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
+	if !s.shareAllowed(w, r) {
+		return
+	}
 	var req struct {
 		Email            *string `json:"email"`
 		Link             bool    `json:"link"`
@@ -414,7 +417,7 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 			"share_id": db.UUIDString(share.ID), "token": token, "access": share.Access,
 		})
 	case req.Email != nil:
-		share, err := s.files.ShareToUser(r.Context(), user, id, *req.Email, req.Access, exp)
+		share, fresh, err := s.files.ShareToUserFresh(r.Context(), user, id, *req.Email, req.Access, exp)
 		if err != nil {
 			writeStorageErr(w, err)
 			return
@@ -428,8 +431,10 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 		if su, e := s.q.GetUserByID(r.Context(), mustUUID(user)); e == nil {
 			sharerEmail = su.Email
 		}
-		s.notify.Emit(r.Context(), db.UUIDString(share.SharedWithUser), "share.received",
-			map[string]any{"NodeName": nodeName, "SharerEmail": sharerEmail, "ResourceLabel": "file"})
+		if fresh { // sharing again only updates the share: no second email
+			s.notify.Emit(r.Context(), db.UUIDString(share.SharedWithUser), "share.received",
+				map[string]any{"NodeName": nodeName, "SharerEmail": sharerEmail, "ResourceLabel": "file"})
+		}
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"share_id": db.UUIDString(share.ID), "access": share.Access,
 		})
@@ -547,6 +552,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "expected multipart/form-data")
 		return
 	}
+	// The handler runs on a request clone, and net/http only removes the spool files of
+	// the original request's form: without this every upload leaves its file in TMPDIR.
+	defer r.MultipartForm.RemoveAll()
 	file, hdr, err := r.FormFile("file")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "no file in field: file")

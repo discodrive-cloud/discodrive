@@ -21,6 +21,7 @@ import (
 
 	"discodrive/internal/db"
 	"discodrive/internal/fetchguard"
+	"discodrive/internal/quota"
 )
 
 // Fetch limits. The server reads only what it needs to recognise a link: the start of
@@ -32,9 +33,12 @@ const (
 	maxRedirects  = 5
 	maxParallel   = 4
 	maxWaiting    = 64
-	enrichBatch   = 20
-	listLimit     = 500
-	maxOEmbed     = 64 << 10
+	// one user's links fetching or waiting at once: a burst of shares from one phone
+	// still gets previews right away, and most of the queue stays for others
+	maxPerUser  = 16
+	enrichBatch = 20
+	listLimit   = 500
+	maxOEmbed   = 64 << 10
 )
 
 // UserAgent is what link-preview fetches identify as. Instagram, Threads and X hand
@@ -51,6 +55,13 @@ var defaultOEmbed = map[string]string{
 
 // ErrNotFound: no such link for this user.
 var ErrNotFound = errors.New("links: not found")
+
+// ErrTooMany: the user's inbox and archive together hold maxLinksPerUser links already.
+var ErrTooMany = errors.New("links: too many saved links")
+
+// maxLinksPerUser bounds one user's rows. Only thumbnails count toward the quota, so
+// without a bound the URLs and titles of one account could grow the database without end.
+const maxLinksPerUser = 10000
 
 // Link is one inbox row as the API shows it.
 type Link struct {
@@ -87,7 +98,12 @@ type Service struct {
 
 	sem     chan struct{}
 	waiting atomic.Int32
-	wg      sync.WaitGroup
+	mu      sync.Mutex
+	perUser map[pgtype.UUID]int // links of each user fetching or waiting (kick)
+
+	// quota, when set, keeps a thumbnail out once the owner has no room for it.
+	quota *quota.Checker
+	wg    sync.WaitGroup
 	// noFetch turns the background fetch off (tests that only exercise storage).
 	noFetch bool
 }
@@ -101,8 +117,11 @@ func NewService(q *db.Queries) *Service {
 		}
 		return guard(req, via)
 	}
-	return &Service{q: q, Client: c, Validate: fetchguard.ValidateURL, oembed: defaultOEmbed, sem: make(chan struct{}, maxParallel)}
+	return &Service{q: q, Client: c, Validate: fetchguard.ValidateURL, oembed: defaultOEmbed, sem: make(chan struct{}, maxParallel), perUser: map[pgtype.UUID]int{}}
 }
+
+// SetQuota installs the quota checker. Called once at startup, before links are saved.
+func (s *Service) SetQuota(c *quota.Checker) { s.quota = c }
 
 // Save stores a link shared from a phone (or brings an existing one back to the top of
 // the inbox) and starts fetching its metadata. A link that resolves to an internal
@@ -133,6 +152,16 @@ func (s *Service) SaveShared(ctx context.Context, userID pgtype.UUID, rawURL, ti
 	if err := s.Validate(norm); err != nil && !errors.Is(err, fetchguard.ErrUnresolved) {
 		return Link{}, fmt.Errorf("%w: %v", fetchguard.ErrBlocked, err)
 	}
+	if n, err := s.q.CountSavedLinks(ctx, userID); err != nil {
+		return Link{}, err
+	} else if n >= maxLinksPerUser {
+		// at the cap a link already saved may still come back to the top, a new one not
+		if ok, err := s.q.SavedLinkExists(ctx, db.SavedLinkExistsParams{UserID: userID, Url: norm}); err != nil {
+			return Link{}, err
+		} else if !ok {
+			return Link{}, ErrTooMany
+		}
+	}
 	u, _ := url.Parse(norm)
 	row, err := s.q.UpsertSavedLink(ctx, db.UpsertSavedLinkParams{
 		UserID:   userID,
@@ -146,7 +175,7 @@ func (s *Service) SaveShared(ctx context.Context, userID pgtype.UUID, rawURL, ti
 	}
 	l := toLink(db.ListSavedLinksRow(row))
 	if !l.enriched && !s.noFetch {
-		s.kick(row.ID, row.Url)
+		s.kick(userID, row.ID, row.Url)
 	}
 	return l, nil
 }
@@ -230,7 +259,7 @@ func (s *Service) EnrichPending(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		s.enrich(r.ID, r.Url)
+		s.enrich(r.UserID, r.ID, r.Url)
 		<-s.sem
 	}
 	return nil
@@ -240,26 +269,43 @@ func (s *Service) EnrichPending(ctx context.Context) error {
 func (s *Service) Wait() { s.wg.Wait() }
 
 // kick fetches in the background: at most maxParallel at once, the rest waiting for a
-// slot. Past maxWaiting queued links the worker tick picks the rest up instead, so a
-// flood cannot pile up goroutines.
-func (s *Service) kick(id pgtype.UUID, rawURL string) {
+// slot. Past maxWaiting queued links, or maxPerUser of one user's, the worker tick picks
+// the rest up instead: a flood cannot pile up goroutines, and one user's links cannot
+// take the slots everyone's previews wait for.
+func (s *Service) kick(userID, id pgtype.UUID, rawURL string) {
+	s.mu.Lock()
+	if s.perUser[userID] >= maxPerUser {
+		s.mu.Unlock()
+		return
+	}
+	s.perUser[userID]++
+	s.mu.Unlock()
+	done := func() {
+		s.mu.Lock()
+		if s.perUser[userID]--; s.perUser[userID] <= 0 {
+			delete(s.perUser, userID)
+		}
+		s.mu.Unlock()
+	}
 	if s.waiting.Add(1) > maxWaiting {
 		s.waiting.Add(-1)
+		done()
 		return
 	}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer done()
 		s.sem <- struct{}{}
 		s.waiting.Add(-1)
 		defer func() { <-s.sem }()
-		s.enrich(id, rawURL)
+		s.enrich(userID, id, rawURL)
 	}()
 }
 
 // enrich fetches the page's metadata and preview and records the outcome. The row is
 // marked as tried whatever happens, so a page that refuses is not fetched forever.
-func (s *Service) enrich(id pgtype.UUID, rawURL string) {
+func (s *Service) enrich(userID, id pgtype.UUID, rawURL string) {
 	ctx, cancel := context.WithTimeout(context.Background(), enrichTimeout)
 	defer cancel()
 	var meta Meta
@@ -268,6 +314,12 @@ func (s *Service) enrich(id pgtype.UUID, rawURL string) {
 		if p := recover(); p != nil {
 			log.Printf("discodrive: links enrich %s: panic: %v\n%s", db.UUIDString(id), p, debug.Stack())
 			meta, thumb = Meta{}, nil
+		}
+		// The thumbnail counts toward the owner's quota: keep it out when it does not fit.
+		if thumb != nil && s.quota != nil {
+			if err := s.quota.Check(context.Background(), userID, int64(len(thumb))); err != nil {
+				thumb = nil
+			}
 		}
 		if err := s.q.SetSavedLinkEnriched(context.Background(), db.SetSavedLinkEnrichedParams{
 			ID: id, Title: meta.Title, Author: meta.Author, Thumb: thumb,

@@ -192,7 +192,9 @@ func TestAdminCannotDeleteSelfWithOtherUUIDSpelling(t *testing.T) {
 func TestAdminDeleteUserRemovesFiles(t *testing.T) {
 	a := newAdminHarness(t)
 	dirs := []string{a.userID, filepath.Join("saved", a.userID, "favicons"), filepath.Join("podcasts", a.userID, "covers"),
-		filepath.Join(".versions", a.userID, "node"), filepath.Join(".trash", a.userID)}
+		filepath.Join(".versions", a.userID, "node"), filepath.Join(".trash", a.userID),
+		// gallery thumbnails, previews, video copies and face crops
+		filepath.Join(".photos", a.userID, "01"), filepath.Join(".photos", a.userID, "faces", "ab")}
 	for _, d := range dirs {
 		if err := os.MkdirAll(filepath.Join(a.root, d), 0o755); err != nil {
 			t.Fatal(err)

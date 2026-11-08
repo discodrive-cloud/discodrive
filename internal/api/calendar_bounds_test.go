@@ -121,3 +121,44 @@ func TestYearlyRuleMatchesRRule(t *testing.T) {
 		}
 	}
 }
+
+// The value budget is per object: one stored object can hold dozens of events with the
+// same UID, and a budget that restarts for each of them let a 1 MiB object cost tens of
+// seconds of CPU on every read.
+func TestNormalizeTimes_BudgetCoversTheWholeObject(t *testing.T) {
+	ex := make([]string, 2100)
+	for i := range ex {
+		ex[i] = time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC).AddDate(0, 0, i).Format("20060102T150405")
+	}
+	var body string
+	for i := 0; i < 3; i++ {
+		body += vevent("DTSTART;TZID=Custom:20260101T090000", "RRULE:FREQ=DAILY", "EXDATE;TZID=Custom:"+strings.Join(ex, ","))
+	}
+	cal := decodeCal(t, vcal(observanceTZ("FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU", 1)+body))
+	normalizeTimes(cal)
+	kept := 0
+	for _, c := range cal.Children {
+		for _, p := range c.Props["EXDATE"] {
+			kept += len(strings.Split(p.Value, ","))
+		}
+	}
+	if kept > maxTimeValues {
+		t.Fatalf("kept %d date-time values across the object, budget is %d", kept, maxTimeValues)
+	}
+}
+
+// Each recurring master is one rrule-go run, and a rule that never matches runs to year
+// 9999. One object can hold thousands of masters with the same UID, so the expansion of
+// a single object must stay cheap however many it holds.
+func TestExpandEvents_ManyNeverMatchingMasters(t *testing.T) {
+	var body string
+	for i := 0; i < 300; i++ {
+		body += vevent("DTSTART:20260101T090000Z", "DTEND:20260101T090000Z", "RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30")
+	}
+	cal := decodeCal(t, vcal(body))
+	t0 := time.Now()
+	expandEvents(cal, rfc(t, "2026-11-01T00:00:00Z"), rfc(t, "2026-11-02T00:00:00Z"), time.UTC)
+	if d := time.Since(t0); d > time.Second {
+		t.Fatalf("300 never-matching masters took %v", d)
+	}
+}

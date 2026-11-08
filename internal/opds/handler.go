@@ -63,7 +63,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, ok := h.authenticate(r)
 	if !ok {
-		if r.FormValue("apiKey") != "" || r.Header.Get("Authorization") != "" {
+		if r.URL.Query().Get("apiKey") != "" || r.Header.Get("Authorization") != "" {
 			h.authLimit.Fail(r)
 		}
 		w.Header().Set("WWW-Authenticate", `Basic realm="discodrive OPDS"`)

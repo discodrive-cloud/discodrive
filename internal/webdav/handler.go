@@ -43,6 +43,14 @@ func Handler(svc *storage.FileService, prefix string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		uid := UserID(r.Context())
 		normalizeDestinationHost(r)
+		// x/net/webdav creates a COPY's destination before it lists the source, and the
+		// source lists its children lazily: a folder copied into its own subtree finds the
+		// new folder inside itself and recurses about a thousand levels deep. RFC 4918
+		// gives such a request no meaning, so refuse it (and the same MOVE) up front.
+		if (r.Method == "COPY" || r.Method == "MOVE") && destinationInsideSource(r, prefix) {
+			http.Error(w, "destination is inside the source", http.StatusForbidden)
+			return
+		}
 		// Record what the client promised to send so the write path can refuse a PUT whose
 		// body did not arrive in full rather than publishing the partial bytes (see
 		// writeFile.Close). ContentLength is -1 for chunked bodies — then the length check
@@ -107,6 +115,22 @@ func normalizeDestinationHost(r *http.Request) {
 	if sameHostname(u.Host, r.Host) {
 		r.Header.Set("Destination", u.EscapedPath())
 	}
+}
+
+// destinationInsideSource reports whether the Destination header names the request path
+// itself or a path below it.
+func destinationInsideSource(r *http.Request, prefix string) bool {
+	d := r.Header.Get("Destination")
+	if d == "" {
+		return false
+	}
+	u, err := url.Parse(d)
+	if err != nil {
+		return false
+	}
+	src := path.Clean("/" + strings.TrimPrefix(r.URL.Path, prefix))
+	dst := path.Clean("/" + strings.TrimPrefix(u.Path, prefix))
+	return dst == src || strings.HasPrefix(dst, strings.TrimSuffix(src, "/")+"/")
 }
 
 // sameHostname compares two host[:port] strings ignoring the port.

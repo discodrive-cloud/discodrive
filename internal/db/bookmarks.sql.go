@@ -79,7 +79,7 @@ INSERT INTO browser_bookmarks (id, user_id, parent_id, is_folder, title, url, po
 VALUES (COALESCE($6::uuid, gen_random_uuid()), $1, $7, $2, $3, $4, $5,
         (SELECT bookmark_seq FROM s))
 ON CONFLICT (id) DO NOTHING
-RETURNING id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at
+RETURNING id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at, favicon_size
 `
 
 type CreateBrowserBookmarkParams struct {
@@ -117,6 +117,7 @@ func (q *Queries) CreateBrowserBookmark(ctx context.Context, arg CreateBrowserBo
 		&i.FaviconTriedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FaviconSize,
 	)
 	return i, err
 }
@@ -176,7 +177,7 @@ func (q *Queries) GetBookmarkSyncState(ctx context.Context, id pgtype.UUID) (Get
 }
 
 const getBrowserBookmarkForUser = `-- name: GetBrowserBookmarkForUser :one
-SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at FROM browser_bookmarks WHERE id = $1 AND user_id = $2
+SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at, favicon_size FROM browser_bookmarks WHERE id = $1 AND user_id = $2
 `
 
 type GetBrowserBookmarkForUserParams struct {
@@ -201,6 +202,7 @@ func (q *Queries) GetBrowserBookmarkForUser(ctx context.Context, arg GetBrowserB
 		&i.FaviconTriedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FaviconSize,
 	)
 	return i, err
 }
@@ -223,7 +225,7 @@ func (q *Queries) HasInvalidLiveBookmarkParent(ctx context.Context, userID pgtyp
 }
 
 const listBrowserBookmarkChanges = `-- name: ListBrowserBookmarkChanges :many
-SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at FROM browser_bookmarks
+SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at, favicon_size FROM browser_bookmarks
 WHERE user_id = $1 AND seq > $2
 ORDER BY seq
 LIMIT $3
@@ -258,6 +260,7 @@ func (q *Queries) ListBrowserBookmarkChanges(ctx context.Context, arg ListBrowse
 			&i.FaviconTriedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FaviconSize,
 		); err != nil {
 			return nil, err
 		}
@@ -271,7 +274,7 @@ func (q *Queries) ListBrowserBookmarkChanges(ctx context.Context, arg ListBrowse
 
 const listBrowserBookmarks = `-- name: ListBrowserBookmarks :many
 
-SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at FROM browser_bookmarks
+SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at, favicon_size FROM browser_bookmarks
 WHERE user_id = $1 AND NOT deleted
 ORDER BY parent_id NULLS FIRST, position, title
 `
@@ -303,6 +306,7 @@ func (q *Queries) ListBrowserBookmarks(ctx context.Context, userID pgtype.UUID) 
 			&i.FaviconTriedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FaviconSize,
 		); err != nil {
 			return nil, err
 		}
@@ -315,7 +319,7 @@ func (q *Queries) ListBrowserBookmarks(ctx context.Context, userID pgtype.UUID) 
 }
 
 const listBrowserBookmarksAtSeq = `-- name: ListBrowserBookmarksAtSeq :many
-SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at FROM browser_bookmarks
+SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at, favicon_size FROM browser_bookmarks
 WHERE user_id = $1 AND seq = $2
 ORDER BY id
 `
@@ -351,6 +355,7 @@ func (q *Queries) ListBrowserBookmarksAtSeq(ctx context.Context, arg ListBrowser
 			&i.FaviconTriedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FaviconSize,
 		); err != nil {
 			return nil, err
 		}
@@ -363,7 +368,7 @@ func (q *Queries) ListBrowserBookmarksAtSeq(ctx context.Context, arg ListBrowser
 }
 
 const listBrowserBookmarksNeedingFavicon = `-- name: ListBrowserBookmarksNeedingFavicon :many
-SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at FROM browser_bookmarks
+SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at, favicon_size FROM browser_bookmarks
 WHERE favicon_tried_at IS NULL AND NOT deleted AND NOT is_folder
 ORDER BY created_at
 LIMIT $1
@@ -392,6 +397,7 @@ func (q *Queries) ListBrowserBookmarksNeedingFavicon(ctx context.Context, limit 
 			&i.FaviconTriedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FaviconSize,
 		); err != nil {
 			return nil, err
 		}
@@ -417,7 +423,7 @@ UPDATE browser_bookmarks SET
     updated_at = now()
 WHERE browser_bookmarks.id = $2 AND browser_bookmarks.user_id = $1 AND NOT deleted
   AND NOT EXISTS (SELECT 1 FROM sub WHERE sub.id = $3)
-RETURNING id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at
+RETURNING id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at, favicon_size
 `
 
 type MoveBrowserBookmarkParams struct {
@@ -447,6 +453,7 @@ func (q *Queries) MoveBrowserBookmark(ctx context.Context, arg MoveBrowserBookma
 		&i.FaviconTriedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FaviconSize,
 	)
 	return i, err
 }
@@ -463,18 +470,19 @@ func (q *Queries) NextBookmarkSeq(ctx context.Context, id pgtype.UUID) (int64, e
 }
 
 const setBrowserBookmarkFavicon = `-- name: SetBrowserBookmarkFavicon :exec
-UPDATE browser_bookmarks SET favicon_ext = $2, favicon_tried_at = now() WHERE id = $1
+UPDATE browser_bookmarks SET favicon_ext = $2, favicon_size = $3, favicon_tried_at = now() WHERE id = $1
 `
 
 type SetBrowserBookmarkFaviconParams struct {
-	ID         pgtype.UUID `json:"id"`
-	FaviconExt string      `json:"favicon_ext"`
+	ID          pgtype.UUID `json:"id"`
+	FaviconExt  string      `json:"favicon_ext"`
+	FaviconSize int64       `json:"favicon_size"`
 }
 
 // SetBookmarkFavicon does NOT bump seq: favicons are server-side decoration,
 // browsers don't need to re-pull the node.
 func (q *Queries) SetBrowserBookmarkFavicon(ctx context.Context, arg SetBrowserBookmarkFaviconParams) error {
-	_, err := q.db.Exec(ctx, setBrowserBookmarkFavicon, arg.ID, arg.FaviconExt)
+	_, err := q.db.Exec(ctx, setBrowserBookmarkFavicon, arg.ID, arg.FaviconExt, arg.FaviconSize)
 	return err
 }
 
@@ -539,7 +547,7 @@ UPDATE browser_bookmarks SET
     seq = (SELECT bookmark_seq FROM s),
     updated_at = now()
 WHERE browser_bookmarks.id = $2 AND browser_bookmarks.user_id = $1 AND NOT deleted
-RETURNING id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at
+RETURNING id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at, favicon_size
 `
 
 type UpdateBrowserBookmarkParams struct {
@@ -573,6 +581,7 @@ func (q *Queries) UpdateBrowserBookmark(ctx context.Context, arg UpdateBrowserBo
 		&i.FaviconTriedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FaviconSize,
 	)
 	return i, err
 }

@@ -8,7 +8,7 @@ VALUES (sqlc.arg(resource_type), sqlc.arg(resource_id), sqlc.arg(owner_id), sqlc
 ON CONFLICT (resource_type, resource_id, shared_with_user)
     WHERE shared_with_user IS NOT NULL AND resource_type IN ('calendar', 'addressbook')
 DO UPDATE SET access = EXCLUDED.access, expires_at = EXCLUDED.expires_at
-RETURNING *;
+RETURNING *, (xmax = 0)::boolean AS inserted;
 
 -- name: CreateLinkShare :one
 -- A public link (feed) share, its password hash written in the same statement.

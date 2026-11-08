@@ -170,7 +170,7 @@ func (s *Server) handleCreateContact(w http.ResponseWriter, r *http.Request) {
 	card.SetValue(vcard.FieldUID, uid)
 	applyForm(card, form)
 	if err := s.putCard(r, abID, uid, card); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save")
+		writePutCalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"uid": uid})
@@ -204,7 +204,7 @@ func (s *Server) handleUpdateContact(w http.ResponseWriter, r *http.Request) {
 	}
 	applyForm(card, form) // modify-existing: PHOTO/X-* fields are preserved
 	if err := s.putCard(r, abID, uid, card); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save")
+		writePutCalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"uid": uid})

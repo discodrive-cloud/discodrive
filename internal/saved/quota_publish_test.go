@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -129,5 +130,76 @@ func TestParallelDownloadsShareTheQuota(t *testing.T) {
 	}
 	if used > limit {
 		t.Fatalf("used %d bytes, over the quota", used)
+	}
+}
+
+// Small parallel downloads finish before any re-check (one ReserveBlock is 4 MiB), so
+// the quota has to be enforced when the file is published, under the upload-quota lock.
+func TestParallelSmallDownloadsAreChargedAtPublish(t *testing.T) {
+	const (
+		size  = 3 << 20
+		limit = 4 << 20
+		n     = 3
+	)
+	var arrived sync.WaitGroup
+	arrived.Add(n)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrived.Done()
+		arrived.Wait() // every download has sampled its budget before any byte lands
+		w.Header().Set("Content-Length", strconv.Itoa(size))
+		_, _ = w.Write([]byte(strings.Repeat("y", size)))
+	}))
+	defer srv.Close()
+
+	svc, pool, q, uid, root := bootstrap(t, 0)
+	withQuota(t, svc, pool, q, uid, root, limit)
+	var items []db.SavedItem
+	for i := range n {
+		it, err := svc.Create(context.Background(), uid, srv.URL+"/f"+strconv.Itoa(i)+".bin", KindDownload, "", "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, it)
+	}
+	done := 0
+	for _, it := range items {
+		if waitFinished(t, q, it.ID, uid).Status == StatusDone {
+			done++
+		}
+	}
+	used, err := q.UserStorageUsage(context.Background(), uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used > limit {
+		t.Fatalf("used = %d over a %d quota (%d of %d downloads published)", used, limit, done, n)
+	}
+	if done != 1 {
+		t.Fatalf("%d downloads published, want exactly 1", done)
+	}
+}
+
+// Charging at publish must not count the item twice: while it is processing its
+// bytes_done is already in usage, so a slow download that fits must still finish.
+func TestSlowDownloadThatFitsIsPublished(t *testing.T) {
+	const size = 3 << 20
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(size))
+		half := []byte(strings.Repeat("z", size/2))
+		_, _ = w.Write(half)
+		w.(http.Flusher).Flush()
+		time.Sleep(1200 * time.Millisecond) // a progress write lands mid-download
+		_, _ = w.Write(half)
+	}))
+	defer srv.Close()
+
+	svc, pool, q, uid, root := bootstrap(t, 0)
+	withQuota(t, svc, pool, q, uid, root, size+(512<<10))
+	it, err := svc.Create(context.Background(), uid, srv.URL+"/slow.bin", KindDownload, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitFinished(t, q, it.ID, uid); got.Status != StatusDone {
+		t.Fatalf("status %q (%s), want done", got.Status, got.ErrorMsg)
 	}
 }

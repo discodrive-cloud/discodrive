@@ -2,6 +2,7 @@ package bookmarks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,8 +12,12 @@ import (
 	"path"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/charset"
+
+	"discodrive/internal/db"
+	"discodrive/internal/quota"
 )
 
 const (
@@ -84,8 +89,9 @@ func (s *Service) fetchPageMeta(ctx context.Context, rawURL string) (title, icon
 }
 
 // fetchFavicon downloads the page's icon (or /favicon.ico as fallback) into
-// faviconRel(uid, id, ext) and returns the extension ("" on any failure).
-func (s *Service) fetchFavicon(ctx context.Context, uid, id string, pageURL *url.URL, iconHref string) string {
+// faviconRel(owner, id, ext) and returns the extension and the stored size ("" and 0 on
+// any failure).
+func (s *Service) fetchFavicon(ctx context.Context, owner pgtype.UUID, id string, pageURL *url.URL, iconHref string) (string, int64) {
 	candidates := []string{}
 	if iconHref != "" {
 		if u, err := pageURL.Parse(iconHref); err == nil {
@@ -98,42 +104,66 @@ func (s *Service) fetchFavicon(ctx context.Context, uid, id string, pageURL *url
 		if err := s.Validate(cand); err != nil {
 			continue
 		}
-		ext, err := s.downloadFavicon(ctx, uid, id, cand)
+		ext, n, err := s.downloadFavicon(ctx, owner, id, cand)
 		if err == nil {
-			return ext
+			return ext, n
 		}
 		log.Printf("discodrive: bookmark favicon %s: %v", cand, err)
+		if errors.Is(err, quota.ErrExceeded) {
+			break
+		}
 	}
-	return ""
+	return "", 0
 }
 
-func (s *Service) downloadFavicon(ctx context.Context, uid, id, iconURL string) (string, error) {
+// downloadFavicon stores the icon at iconURL if it is at most maxFaviconBytes and fits
+// the owner's quota.
+func (s *Service) downloadFavicon(ctx context.Context, owner pgtype.UUID, id, iconURL string) (string, int64, error) {
+	limit := int64(maxFaviconBytes)
+	if s.quota != nil {
+		allowance, err := s.quota.Allowance(ctx, owner)
+		if err != nil {
+			return "", 0, err
+		}
+		if allowance <= 0 {
+			return "", 0, quota.ErrExceeded
+		}
+		limit = min(limit, allowance)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, iconURL, nil)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	resp, err := s.Client.Do(req)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status %d", resp.StatusCode)
+		return "", 0, fmt.Errorf("status %d", resp.StatusCode)
 	}
 	ext := faviconExt(resp.Header.Get("Content-Type"), iconURL)
 	if ext == "" {
-		return "", fmt.Errorf("not an image: %q", resp.Header.Get("Content-Type"))
+		return "", 0, fmt.Errorf("not an image: %q", resp.Header.Get("Content-Type"))
 	}
-	rel := faviconRel(uid, id, ext)
-	n, _, err := s.st.WriteFile(rel, io.LimitReader(resp.Body, maxFaviconBytes))
+	rel := faviconRel(db.UUIDString(owner), id, ext)
+	// One byte past the limit tells a body that does not fit from one that just does.
+	n, _, err := s.st.WriteFile(rel, io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
-	if n == 0 {
+	switch {
+	case n == 0:
 		_ = s.st.Remove(rel)
-		return "", fmt.Errorf("empty favicon body")
+		return "", 0, fmt.Errorf("empty favicon body")
+	case n > limit:
+		_ = s.st.Remove(rel)
+		if limit < maxFaviconBytes {
+			return "", 0, quota.ErrExceeded
+		}
+		return "", 0, fmt.Errorf("favicon larger than %d bytes", maxFaviconBytes)
 	}
-	return ext, nil
+	return ext, n, nil
 }
 
 // faviconExt maps the response content type (or the URL extension) to a file

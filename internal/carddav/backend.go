@@ -13,6 +13,7 @@ import (
 
 	"discodrive/internal/dav"
 	"discodrive/internal/db"
+	"discodrive/internal/quota"
 )
 
 type ctxKey int
@@ -221,6 +222,8 @@ func (b *Backend) PutAddressObject(ctx context.Context, path string, card vcard.
 	// If-Match / If-None-Match are checked by the service inside the write's transaction.
 	etag, err := b.svc.PutAddressbookObjectIf(ctx, abID, obj, string(raw), putCheck(opts))
 	switch {
+	case errors.Is(err, quota.ErrExceeded):
+		return nil, webdav.NewHTTPError(http.StatusInsufficientStorage, err)
 	case errors.Is(err, dav.ErrPrecondition):
 		return nil, webdav.NewHTTPError(http.StatusPreconditionFailed, err)
 	case errors.Is(err, dav.ErrUIDConflict):

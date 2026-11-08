@@ -162,7 +162,7 @@ func TestAdoptCreatesNodeForStagedFile(t *testing.T) {
 	}
 
 	tmp, size, hash := stage("a", "payload")
-	node, err := fs.Adopt(ctx, userID, tmp, userID+"/Downloads/file.bin", size, hash)
+	node, err := fs.Adopt(ctx, userID, tmp, userID+"/Downloads/file.bin", size, 0, hash)
 	if err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
@@ -179,14 +179,14 @@ func TestAdoptCreatesNodeForStagedFile(t *testing.T) {
 
 	// A taken destination is refused and the staged bytes stay where they were.
 	tmp2, size2, hash2 := stage("b", "second")
-	if _, err := fs.Adopt(ctx, userID, tmp2, userID+"/Downloads/file.bin", size2, hash2); !errors.Is(err, storage.ErrNameTaken) {
+	if _, err := fs.Adopt(ctx, userID, tmp2, userID+"/Downloads/file.bin", size2, 0, hash2); !errors.Is(err, storage.ErrNameTaken) {
 		t.Fatalf("adopt onto a taken name: err = %v, want ErrNameTaken", err)
 	}
 	if got := readNode(t, fs, userID, db.UUIDString(node.ID)); got != "payload" {
 		t.Fatalf("existing file overwritten: %q", got)
 	}
 	// Another user's tree is not reachable.
-	if _, err := fs.Adopt(ctx, userID, tmp2, "00000000-0000-0000-0000-000000000000/x", size2, hash2); err == nil {
+	if _, err := fs.Adopt(ctx, userID, tmp2, "00000000-0000-0000-0000-000000000000/x", size2, 0, hash2); err == nil {
 		t.Fatal("adopt outside the user's tree succeeded")
 	}
 }

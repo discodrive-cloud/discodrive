@@ -1,8 +1,10 @@
 package opds
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -188,5 +190,28 @@ func TestNoCredentials(t *testing.T) {
 	}
 	if got := rec.Header().Get("WWW-Authenticate"); got == "" {
 		t.Error("expected WWW-Authenticate header, got none")
+	}
+}
+
+// The apiKey is a query parameter. Reading it with FormValue made the handler parse a
+// multipart body before any credential check, and that parse happens on a request
+// clone whose temp files net/http never removes. A key sent only in the body must not
+// authenticate: proof that the body is not parsed.
+func TestAPIKeyInBodyIsNotRead(t *testing.T) {
+	h, _ := setupOPDS(t)
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("apiKey", testAPIKey)
+	_ = mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/opds", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("apiKey in a multipart body = %d, want 401", rec.Code)
+	}
+	if req.MultipartForm != nil {
+		t.Fatal("the body was parsed before authentication")
 	}
 }

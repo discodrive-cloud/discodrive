@@ -93,7 +93,7 @@ func (s *Service) SetQuota(c *quota.Checker) { s.quota = c }
 // Publisher creates the node for a file the service produced, so it is counted in the
 // owner's quota as soon as it lands. storage.FileService implements it.
 type Publisher interface {
-	Adopt(ctx context.Context, userID, tmpRel, diskRel string, size int64, hash string) (db.Node, error)
+	Adopt(ctx context.Context, userID, tmpRel, diskRel string, size, counted int64, hash string) (db.Node, error)
 	Delete(ctx context.Context, userID, nodeID string) error
 }
 
@@ -103,11 +103,12 @@ func (s *Service) SetFiles(p Publisher) { s.files = p }
 // publish moves a finished staging file to destRel ("<uid>/...") and, with a publisher
 // installed, creates its node in the same step.
 // It returns the new node's id ("" without a publisher).
-func (s *Service) publish(ctx context.Context, userID pgtype.UUID, tmpRel, destRel string, size int64, hash string) (string, error) {
+// counted is how much of size usage already includes (the item's persisted bytes_done).
+func (s *Service) publish(ctx context.Context, userID pgtype.UUID, tmpRel, destRel string, size, counted int64, hash string) (string, error) {
 	if s.files == nil {
 		return "", s.st.Move(tmpRel, destRel)
 	}
-	node, err := s.files.Adopt(ctx, db.UUIDString(userID), tmpRel, destRel, size, hash)
+	node, err := s.files.Adopt(ctx, db.UUIDString(userID), tmpRel, destRel, size, counted, hash)
 	if err != nil {
 		return "", err
 	}
@@ -316,7 +317,7 @@ func (s *Service) process(item db.SavedItem) {
 	}
 	if err != nil {
 		log.Printf("discodrive: saved %s %s: %v", item.Kind, db.UUIDString(item.ID), err)
-		s.setError(item, err.Error())
+		s.setError(item, userMessage(err))
 		return
 	}
 
@@ -356,6 +357,19 @@ type result struct {
 	size        pgtype.Int8
 	title       string // only set when the item had no title; empty = keep existing
 	meta        []byte // nil = keep existing
+}
+
+// userMessage is what the user sees for a failed item. Fetch errors name the hosts and
+// addresses the SSRF guard resolved (internal ones included), so those stay in the log.
+func userMessage(err error) string {
+	var ue *url.Error
+	switch {
+	case errors.Is(err, fetchguard.ErrBlocked):
+		return "url is not allowed"
+	case errors.As(err, &ue):
+		return "could not reach the site"
+	}
+	return err.Error()
 }
 
 // setError records a failed item. The message is shown to the user.

@@ -154,6 +154,7 @@ type Querier interface {
 	CountPlaylistSongs(ctx context.Context, playlistID pgtype.UUID) (int64, error)
 	// Returns how many documents the user has a stored position for.
 	CountReadingProgress(ctx context.Context, userID pgtype.UUID) (int64, error)
+	CountSavedLinks(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountUnclusteredFaces(ctx context.Context, arg CountUnclusteredFacesParams) (int64, error)
 	CountUserFacesOfModel(ctx context.Context, arg CountUserFacesOfModelParams) (int64, error)
 	CountUserLogins(ctx context.Context, userID pgtype.UUID) (int64, error)
@@ -303,9 +304,12 @@ type Querier interface {
 	GetPhotoPerson(ctx context.Context, arg GetPhotoPersonParams) (GetPhotoPersonRow, error)
 	GetPhotoSettings(ctx context.Context, userID pgtype.UUID) (PhotoSetting, error)
 	GetPlayQueue(ctx context.Context, userID pgtype.UUID) (PlayQueue, error)
+	// The caller's saved queue, for songs the caller can still play.
 	GetPlayQueueEntries(ctx context.Context, userID pgtype.UUID) ([]GetPlayQueueEntriesRow, error)
 	GetPlaylist(ctx context.Context, id pgtype.UUID) (Playlist, error)
-	// Returns songs in a playlist ordered by position, joined with song details.
+	// Returns songs in a playlist ordered by position, joined with song details. Only songs
+	// the playlist's owner can still play: a song from a share that was revoked since it was
+	// added drops out (its metadata belongs to someone else).
 	GetPlaylistSongs(ctx context.Context, playlistID pgtype.UUID) ([]Song, error)
 	GetPodcastChannelByFeed(ctx context.Context, arg GetPodcastChannelByFeedParams) (PodcastChannel, error)
 	GetPodcastChannelForUser(ctx context.Context, arg GetPodcastChannelForUserParams) (PodcastChannel, error)
@@ -323,6 +327,8 @@ type Querier interface {
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 	GetUserChangeSeq(ctx context.Context, id pgtype.UUID) (int64, error)
+	// The share of a file or folder with one user, if it exists: sharing it again updates it.
+	GetUserFileShare(ctx context.Context, arg GetUserFileShareParams) (ResourceShare, error)
 	GetUserForAuthUpdate(ctx context.Context, id pgtype.UUID) (User, error)
 	GetUserLanguage(ctx context.Context, id pgtype.UUID) (string, error)
 	GetUserPhotoFace(ctx context.Context, arg GetUserPhotoFaceParams) (GetUserPhotoFaceRow, error)
@@ -442,7 +448,9 @@ type Querier interface {
 	// Which of the hashes the user's gallery already holds, trashed and hidden files included.
 	ListKnownPhotoHashes(ctx context.Context, arg ListKnownPhotoHashesParams) ([]string, error)
 	// Backstop for the fetch started right after saving: only rows that one has had a
-	// minute to handle, so the two do not fetch the same page at once.
+	// minute to handle, so the two do not fetch the same page at once. The batch goes round
+	// the users, each one's oldest first by when the server stored it: saved_at comes from
+	// the phone, so ordering by it would let backdated links take every batch.
 	ListLinksNeedingEnrich(ctx context.Context, limit int32) ([]ListLinksNeedingEnrichRow, error)
 	ListLiveNodes(ctx context.Context, userID pgtype.UUID) ([]Node, error)
 	ListNewestEpisodesForUser(ctx context.Context, arg ListNewestEpisodesForUserParams) ([]PodcastEpisode, error)
@@ -583,7 +591,8 @@ type Querier interface {
 	// snapshots, downloaded podcast episodes (which live outside the file tree, in
 	// podcasts/<user>/), and Saved downloads still in flight (bytes_done of 'processing'
 	// rows; a finished download is a node). Anything narrower would let a user park unlimited data past their
-	// quota in the trash, in .versions, or in a podcast subscription.
+	// quota in the trash, in .versions, or in a podcast subscription. Calendar and contact
+	// objects (stored in Postgres) and bookmark favicons count too.
 	ListUsersWithUsage(ctx context.Context) ([]ListUsersWithUsageRow, error)
 	ListWebAuthnCredentials(ctx context.Context, userID pgtype.UUID) ([]WebauthnCredential, error)
 	ListWebdavDevicesByEmail(ctx context.Context, email string) ([]Device, error)
@@ -644,7 +653,8 @@ type Querier interface {
 	// Pass NULL for genre, from_year, to_year to skip those filters.
 	RandomAccessibleSongs(ctx context.Context, arg RandomAccessibleSongsParams) ([]RandomAccessibleSongsRow, error)
 	RatingsForUser(ctx context.Context, userID pgtype.UUID) ([]RatingsForUserRow, error)
-	// Returns recent play_history rows for the caller, joined to song+album+artist.
+	// Returns recent play_history rows for the caller, joined to song+album+artist, for songs
+	// the caller can still play.
 	RecentPlayHistory(ctx context.Context, arg RecentPlayHistoryParams) ([]RecentPlayHistoryRow, error)
 	// Append change_log rows for every live strict descendant of prefix. Needed after
 	// a subtree path rewrite (move/rename): cursor-based clients (and the scoped feed,
@@ -683,6 +693,7 @@ type Querier interface {
 	// the face boxes (fractions of the preview) turn with the picture and the faces are looked
 	// at again: a sideways face is often missed, and the old ones carry their persons over.
 	RotatePhotoCards(ctx context.Context, arg RotatePhotoCardsParams) ([]pgtype.UUID, error)
+	SavedLinkExists(ctx context.Context, arg SavedLinkExistsParams) (bool, error)
 	SavedLinkSources(ctx context.Context, arg SavedLinkSourcesParams) ([]string, error)
 	// Returns accessible books matching a case-insensitive substring in title, author, or series.
 	SearchAccessibleBooks(ctx context.Context, arg SearchAccessibleBooksParams) ([]Book, error)
@@ -837,6 +848,7 @@ type Querier interface {
 	UpdatePhotoPerson(ctx context.Context, arg UpdatePhotoPersonParams) (int64, error)
 	UpdatePlaylistMeta(ctx context.Context, arg UpdatePlaylistMetaParams) error
 	UpdateSavedItemProgress(ctx context.Context, arg UpdateSavedItemProgressParams) (int64, error)
+	UpdateShareAccess(ctx context.Context, arg UpdateShareAccessParams) (ResourceShare, error)
 	UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error)
 	// A.5: persist the credential after a login (sign_count bumps; clone detection) + last used.
 	UpdateWebAuthnCredential(ctx context.Context, arg UpdateWebAuthnCredentialParams) (int64, error)
@@ -854,7 +866,7 @@ type Querier interface {
 	// CalDAV/CardDAV collections: sharing and integrity checks.
 	// Share a calendar or address book with a user; sharing it again with the same user
 	// updates the existing share (see migration 000019).
-	UpsertCollectionShare(ctx context.Context, arg UpsertCollectionShareParams) (ResourceShare, error)
+	UpsertCollectionShare(ctx context.Context, arg UpsertCollectionShareParams) (UpsertCollectionShareRow, error)
 	UpsertEbookSettings(ctx context.Context, arg UpsertEbookSettingsParams) (EbookSetting, error)
 	UpsertKnownLogin(ctx context.Context, arg UpsertKnownLoginParams) (bool, error)
 	UpsertMusicSettings(ctx context.Context, arg UpsertMusicSettingsParams) (MusicSetting, error)

@@ -263,6 +263,9 @@ func writeTaskListError(w http.ResponseWriter, err error) {
 // POST /me/task-lists/{id}/share {email} — gives one more user full access to the list
 // (again for the same user is a no-op). Each recipient is a separate share.
 func (s *Server) handleShareTaskList(w http.ResponseWriter, r *http.Request) {
+	if !s.shareAllowed(w, r) {
+		return
+	}
 	c, err := s.ownTaskList(r, r.PathValue("id"))
 	if err != nil {
 		writeTaskListError(w, err)
@@ -281,7 +284,7 @@ func (s *Server) handleShareTaskList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner := auth.UserID(r.Context())
-	share, err := s.dav.ShareCalendar(r.Context(), owner, db.UUIDString(c.ID), email, nil)
+	share, fresh, err := s.dav.ShareCalendarFresh(r.Context(), owner, db.UUIDString(c.ID), email, nil)
 	if !writeShareResult(w, err, "task list not found") {
 		return
 	}
@@ -289,7 +292,7 @@ func (s *Server) handleShareTaskList(w http.ResponseWriter, r *http.Request) {
 	if su, e := s.q.GetUserByID(r.Context(), mustUUID(owner)); e == nil {
 		sharerEmail = su.Email
 	}
-	if s.notify != nil {
+	if s.notify != nil && fresh { // sharing again only updates the share: no second email
 		s.notify.Emit(r.Context(), db.UUIDString(share.SharedWithUser), "share.received",
 			map[string]any{"NodeName": c.Name, "SharerEmail": sharerEmail, "ResourceLabel": "task list"})
 	}

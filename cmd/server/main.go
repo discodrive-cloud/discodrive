@@ -307,8 +307,10 @@ func runServer(cfg config.Config) {
 	}
 	// Browser bookmark sync: server-authoritative tree + favicon enrichment.
 	bookmarksSvc := bookmarks.NewService(pool, queries, store)
+	bookmarksSvc.SetQuota(quotaChecker)
 	// Links shared from phones ("Share → DiscoDrive"): stored at once, previews fetched in the background.
 	linksSvc := links.NewService(queries)
+	linksSvc.SetQuota(quotaChecker)
 
 	// Background jobs: GC for versions/trash, quotas, podcasts, saved items, bookmarks.
 	// A section the operator switched off (MUSIC_ENABLED, BOOKS_ENABLED, PHOTOS_ENABLED)
@@ -415,6 +417,7 @@ func runServer(cfg config.Config) {
 	dav := webdavpkg.Auth(authSvc, queries, webdavpkg.Handler(fileSvc, "/dav"))
 
 	davSvc := davpkg.NewService(pool)
+	davSvc.SetQuota(quotaChecker)
 	calBackend := caldavpkg.New(davSvc)
 	calHandler := &godavcaldav.Handler{Backend: calBackend, Prefix: "/caldav"}
 	caldavH := caldavpkg.Handler(authSvc, queries, calBackend, calHandler)
