@@ -15,6 +15,8 @@
   --c-accent2: 52 211 153;
   --c-warn: 251 191 36;
   --c-danger: 248 113 113;
+  /* the select arrow (.input on <select>) in --c-muted: an SVG cannot read the variable */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='rgb(107%2C124%2C147)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 :root.light {
   --c-bg: 245 247 250;
@@ -27,6 +29,7 @@
   --c-accent2: 5 150 105;
   --c-warn: 217 119 6;
   --c-danger: 220 38 38;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='rgb(91%2C107%2C128)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 @layer base {
@@ -60,6 +63,16 @@
   .input {
     @apply w-full rounded-md border border-line bg-panel2 px-3 py-2 text-sm text-ink
            outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 placeholder:text-muted;
+  }
+  /* the browser's own select arrow sits flush against the right border: draw ours
+     with the same inset as the text */
+  select.input {
+    appearance: none;
+    padding-right: 2.25rem;
+    background-image: var(--select-chevron);
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    background-size: 1rem 1rem;
   }
 }
 
