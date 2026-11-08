@@ -309,7 +309,7 @@ watch(view, () => { showCompleted.value = false; listMenuFor.value = '' })
       </ul>
     </aside>
 
-    <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto">
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
     <div class="mb-4 flex items-center justify-between gap-3">
       <h1 class="truncate text-xl font-semibold">{{ currentList?.name || t('nav.tasks') }}</h1>
       <div class="flex shrink-0 items-center gap-2">
