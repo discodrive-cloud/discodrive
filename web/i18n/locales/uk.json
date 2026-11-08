@@ -650,7 +650,20 @@
     "confirm_delete_list": "Видалити список «{name}»?",
     "confirm_delete_list_tasks": "Разом із ним буде видалено завдання: {n}. Список також зникне з Нагадувань на iPhone.",
     "error_list_save": "Не вдалося зберегти список",
-    "error_list_delete": "Не вдалося видалити список"
+    "error_list_delete": "Не вдалося видалити список",
+    "share_list": "Поділитися",
+    "share_title": "Доступ до списку «{name}»",
+    "share_email_ph": "Email користувача",
+    "share_add": "Додати",
+    "share_full_access": "Кожен, з ким ви поділилися, може читати, додавати, редагувати й видаляти завдання. Список з'явиться і в його Нагадуваннях на iPhone.",
+    "share_nobody": "Ще ні з ким не поділилися",
+    "share_revoke": "Закрити доступ",
+    "shared_by": "Список користувача {email}",
+    "leave_list": "Вийти зі списку",
+    "confirm_leave_list": "Вийти зі списку «{name}»?",
+    "confirm_leave_list_msg": "Список зникне у вас, а в {email} залишиться.",
+    "error_share": "Не вдалося змінити доступ",
+    "error_leave": "Не вдалося вийти зі списку"
   },
   "force_password": {
     "title": "Потрібен новий пароль",

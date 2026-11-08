@@ -650,7 +650,20 @@
     "confirm_delete_list": "Liste „{name}“ löschen?",
     "confirm_delete_list_tasks": "Ihre Aufgaben werden ebenfalls gelöscht: {n}. Die Liste verschwindet auch aus den Erinnerungen auf dem iPhone.",
     "error_list_save": "Liste konnte nicht gespeichert werden",
-    "error_list_delete": "Liste konnte nicht gelöscht werden"
+    "error_list_delete": "Liste konnte nicht gelöscht werden",
+    "share_list": "Teilen",
+    "share_title": "Zugriff auf „{name}“",
+    "share_email_ph": "E-Mail des Benutzers",
+    "share_add": "Hinzufügen",
+    "share_full_access": "Alle, mit denen Sie teilen, können Aufgaben lesen, hinzufügen, bearbeiten und löschen. Die Liste erscheint auch in ihren Erinnerungen auf dem iPhone.",
+    "share_nobody": "Noch mit niemandem geteilt",
+    "share_revoke": "Zugriff entziehen",
+    "shared_by": "Liste von {email}",
+    "leave_list": "Liste verlassen",
+    "confirm_leave_list": "„{name}“ verlassen?",
+    "confirm_leave_list_msg": "Die Liste verschwindet bei Ihnen, {email} behält sie.",
+    "error_share": "Zugriff konnte nicht geändert werden",
+    "error_leave": "Liste konnte nicht verlassen werden"
   },
   "force_password": {
     "title": "Neues Passwort erforderlich",

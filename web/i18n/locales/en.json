@@ -650,7 +650,20 @@
     "confirm_delete_list": "Delete the list “{name}”?",
     "confirm_delete_list_tasks": "Its tasks will be deleted too: {n}. The list will also disappear from Reminders on iPhone.",
     "error_list_save": "Couldn't save the list",
-    "error_list_delete": "Couldn't delete the list"
+    "error_list_delete": "Couldn't delete the list",
+    "share_list": "Share",
+    "share_title": "Access to “{name}”",
+    "share_email_ph": "User's email",
+    "share_add": "Add",
+    "share_full_access": "Everyone you share with can read, add, edit and delete tasks. The list also shows up in their Reminders on iPhone.",
+    "share_nobody": "Not shared with anyone yet",
+    "share_revoke": "Remove access",
+    "shared_by": "{email}'s list",
+    "leave_list": "Leave list",
+    "confirm_leave_list": "Leave “{name}”?",
+    "confirm_leave_list_msg": "The list will disappear for you; {email} keeps it.",
+    "error_share": "Couldn't change access",
+    "error_leave": "Couldn't leave the list"
   },
   "force_password": {
     "title": "New password required",

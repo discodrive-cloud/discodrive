@@ -650,7 +650,20 @@
     "confirm_delete_list": "Supprimer la liste « {name} » ?",
     "confirm_delete_list_tasks": "Ses tâches seront aussi supprimées : {n}. La liste disparaîtra également de Rappels sur l’iPhone.",
     "error_list_save": "Impossible d’enregistrer la liste",
-    "error_list_delete": "Impossible de supprimer la liste"
+    "error_list_delete": "Impossible de supprimer la liste",
+    "share_list": "Partager",
+    "share_title": "Accès à « {name} »",
+    "share_email_ph": "E-mail de l’utilisateur",
+    "share_add": "Ajouter",
+    "share_full_access": "Chaque personne avec qui vous partagez peut lire, ajouter, modifier et supprimer des tâches. La liste apparaît aussi dans ses Rappels sur l’iPhone.",
+    "share_nobody": "Partagée avec personne pour l’instant",
+    "share_revoke": "Retirer l’accès",
+    "shared_by": "Liste de {email}",
+    "leave_list": "Quitter la liste",
+    "confirm_leave_list": "Quitter « {name} » ?",
+    "confirm_leave_list_msg": "La liste disparaîtra pour vous ; {email} la conserve.",
+    "error_share": "Impossible de modifier l’accès",
+    "error_leave": "Impossible de quitter la liste"
   },
   "force_password": {
     "title": "Nouveau mot de passe requis",

@@ -7,10 +7,15 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"discodrive/internal/auth"
 	"discodrive/internal/dav"
+	"discodrive/internal/db"
 )
 
 type taskHarness struct {
+	auth       *auth.Service
 	mux        *http.ServeMux
 	dav        *dav.Service
 	tokA, tokB string
@@ -33,20 +38,23 @@ func newTaskHarness(t *testing.T) *taskHarness {
 	s := &Server{auth: svc, q: q, dav: d}
 	mux := http.NewServeMux()
 	for pattern, h := range map[string]http.HandlerFunc{
-		"GET /me/tasks":              s.handleListTasks,
-		"POST /me/tasks":             s.handleCreateTask,
-		"GET /me/tasks/{uid}":        s.handleGetTask,
-		"PUT /me/tasks/{uid}":        s.handleUpdateTask,
-		"PUT /me/tasks/{uid}/done":   s.handleToggleTask,
-		"DELETE /me/tasks/{uid}":     s.handleDeleteTask,
-		"GET /me/task-lists":         s.handleListTaskLists,
-		"POST /me/task-lists":        s.handleCreateTaskList,
-		"PATCH /me/task-lists/{id}":  s.handleUpdateTaskList,
-		"DELETE /me/task-lists/{id}": s.handleDeleteTaskList,
+		"GET /me/tasks":                               s.handleListTasks,
+		"POST /me/tasks":                              s.handleCreateTask,
+		"GET /me/tasks/{uid}":                         s.handleGetTask,
+		"PUT /me/tasks/{uid}":                         s.handleUpdateTask,
+		"PUT /me/tasks/{uid}/done":                    s.handleToggleTask,
+		"DELETE /me/tasks/{uid}":                      s.handleDeleteTask,
+		"GET /me/task-lists":                          s.handleListTaskLists,
+		"POST /me/task-lists":                         s.handleCreateTaskList,
+		"PATCH /me/task-lists/{id}":                   s.handleUpdateTaskList,
+		"DELETE /me/task-lists/{id}":                  s.handleDeleteTaskList,
+		"POST /me/task-lists/{id}/share":              s.handleShareTaskList,
+		"GET /me/task-lists/{id}/shares":              s.handleListTaskListShares,
+		"DELETE /me/task-lists/{id}/shares/{shareId}": s.handleDeleteTaskListShare,
 	} {
 		mux.Handle(pattern, svc.Middleware(h))
 	}
-	return &taskHarness{mux: mux, dav: d, tokA: tokA, tokB: tokB, uidA: mustUserID(t, svc, tokA)}
+	return &taskHarness{auth: svc, mux: mux, dav: d, tokA: tokA, tokB: tokB, uidA: mustUserID(t, svc, tokA)}
 }
 
 func (h *taskHarness) do(t *testing.T, tok, method, path string, body any, out any) int {
@@ -235,3 +243,138 @@ func TestTaskListDelete(t *testing.T) {
 		t.Fatalf("a Reminders-created list must be listed: %d", n)
 	}
 }
+
+func (h *taskHarness) register(t *testing.T, email string) string {
+	t.Helper()
+	tok, _, err := h.auth.Register(context.Background(), email, "password12")
+	if err != nil {
+		t.Fatalf("register %s: %v", email, err)
+	}
+	return tok
+}
+
+func TestTaskListSharedWithSeveralUsers(t *testing.T) {
+	h := newTaskHarness(t)
+	tokC := h.register(t, "c@x.test")
+	var shop taskListDTO
+	h.do(t, h.tokA, "POST", "/me/task-lists", map[string]string{"name": "Покупки"}, &shop)
+	for _, email := range []string{"b@x.test", "c@x.test", "b@x.test"} {
+		if code := h.do(t, h.tokA, "POST", "/me/task-lists/"+shop.ID+"/share", map[string]string{"email": email}, nil); code != http.StatusOK {
+			t.Fatalf("share with %s: %d", email, code)
+		}
+	}
+	var shares []struct{ ID, Email string }
+	h.do(t, h.tokA, "GET", "/me/task-lists/"+shop.ID+"/shares", nil, &shares)
+	if len(shares) != 2 {
+		t.Fatalf("two recipients, sharing twice with b is one share: %+v", shares)
+	}
+
+	// both recipients see the list as shared, with the owner's email
+	for _, tok := range []string{h.tokB, tokC} {
+		var got *taskListDTO
+		for _, l := range h.lists(t, tok) {
+			if l.ID == shop.ID {
+				l := l
+				got = &l
+			}
+		}
+		if got == nil || got.IsOwner || got.IsDefault || got.OwnerEmail != "a@x.test" || got.ShareID == "" {
+			t.Fatalf("shared list for a recipient: %+v", got)
+		}
+	}
+
+	// B adds, C ticks off and edits, A sees it all
+	var created map[string]string
+	if code := h.do(t, h.tokB, "POST", "/me/tasks", map[string]any{"summary": "Молоко", "list_id": shop.ID}, &created); code != http.StatusCreated {
+		t.Fatalf("B adds to the shared list: %d", code)
+	}
+	uid := created["uid"]
+	if code := h.do(t, tokC, "PUT", "/me/tasks/"+uid+"/done", map[string]bool{"completed": true}, nil); code != http.StatusOK {
+		t.Fatalf("C ticks off: %d", code)
+	}
+	if code := h.do(t, tokC, "PUT", "/me/tasks/"+uid, map[string]any{"summary": "Молоко 2 л", "completed": true}, nil); code != http.StatusOK {
+		t.Fatalf("C edits: %d", code)
+	}
+	own := h.tasks(t, h.tokA, "?list="+shop.ID)
+	if len(own) != 1 || own[0].Summary != "Молоко 2 л" || !own[0].Completed {
+		t.Fatalf("owner sees the recipients' changes: %+v", own)
+	}
+	// a shared list's tasks are in the recipient's "all" feed
+	if all := h.tasks(t, h.tokB, ""); len(all) != 1 || all[0].ListID != shop.ID {
+		t.Fatalf("B's all-lists feed: %+v", all)
+	}
+	// moving between one's own list and a shared one works both ways
+	bDef := h.lists(t, h.tokB)[0].ID
+	if code := h.do(t, h.tokB, "PUT", "/me/tasks/"+uid, map[string]any{"summary": "Молоко 2 л", "list_id": bDef}, nil); code != http.StatusOK {
+		t.Fatalf("B moves out of the shared list: %d", code)
+	}
+	if code := h.do(t, h.tokB, "PUT", "/me/tasks/"+uid, map[string]any{"summary": "Молоко 2 л", "list_id": shop.ID}, nil); code != http.StatusOK {
+		t.Fatalf("B moves back: %d", code)
+	}
+	if code := h.do(t, h.tokB, "DELETE", "/me/tasks/"+uid, nil, nil); code != http.StatusNoContent {
+		t.Fatalf("B deletes a task: %d", code)
+	}
+
+	// the list itself stays the owner's
+	if code := h.do(t, h.tokB, "PATCH", "/me/task-lists/"+shop.ID, map[string]string{"name": "x"}, nil); code != http.StatusForbidden {
+		t.Fatalf("B renames: %d", code)
+	}
+	if code := h.do(t, h.tokB, "DELETE", "/me/task-lists/"+shop.ID, nil, nil); code != http.StatusForbidden {
+		t.Fatalf("B deletes the list: %d", code)
+	}
+	if code := h.do(t, h.tokB, "POST", "/me/task-lists/"+shop.ID+"/share", map[string]string{"email": "c@x.test"}, nil); code != http.StatusForbidden {
+		t.Fatalf("B reshares: %d", code)
+	}
+	if code := h.do(t, h.tokB, "GET", "/me/task-lists/"+shop.ID+"/shares", nil, nil); code != http.StatusForbidden {
+		t.Fatalf("B lists recipients: %d", code)
+	}
+
+	// B leaves with their share id; C cannot remove B, A takes C's access away
+	var bShare, cShare string
+	for _, sh := range shares {
+		if sh.Email == "b@x.test" {
+			bShare = sh.ID
+		} else {
+			cShare = sh.ID
+		}
+	}
+	if code := h.do(t, tokC, "DELETE", "/me/task-lists/"+shop.ID+"/shares/"+bShare, nil, nil); code != http.StatusForbidden {
+		t.Fatalf("C removes B: %d", code)
+	}
+	if code := h.do(t, h.tokB, "DELETE", "/me/task-lists/"+shop.ID+"/shares/"+bShare, nil, nil); code != http.StatusNoContent {
+		t.Fatalf("B leaves: %d", code)
+	}
+	if code := h.do(t, h.tokA, "DELETE", "/me/task-lists/"+shop.ID+"/shares/"+cShare, nil, nil); code != http.StatusNoContent {
+		t.Fatalf("A revokes C: %d", code)
+	}
+	for _, tok := range []string{h.tokB, tokC} {
+		for _, l := range h.lists(t, tok) {
+			if l.ID == shop.ID {
+				t.Fatalf("the list is still visible after leaving/revoking")
+			}
+		}
+		if code := h.do(t, tok, "POST", "/me/tasks", map[string]any{"summary": "x", "list_id": shop.ID}, nil); code != http.StatusNotFound {
+			t.Fatalf("writes after access is gone: %d", code)
+		}
+	}
+	if n := len(h.lists(t, h.tokA)); n != 2 {
+		t.Fatalf("the owner keeps the list: %d", n)
+	}
+}
+
+func TestTaskListShareOnlyTaskLists(t *testing.T) {
+	h := newTaskHarness(t)
+	// a calendar (VEVENT) id is not a task list: no sharing through this endpoint
+	cal, err := h.dav.CreateCalendar(context.Background(), h.uidA, "Рабочий", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := h.do(t, h.tokA, "POST", "/me/task-lists/"+uidOf(cal.ID)+"/share", map[string]string{"email": "b@x.test"}, nil); code != http.StatusNotFound {
+		t.Fatalf("share a calendar via task lists: %d", code)
+	}
+	if code := h.do(t, h.tokA, "POST", "/me/task-lists/"+h.lists(t, h.tokA)[0].ID+"/share", map[string]string{"email": "a@x.test"}, nil); code != http.StatusBadRequest {
+		t.Fatalf("share with yourself: %d", code)
+	}
+}
+
+func uidOf(id pgtype.UUID) string { return db.UUIDString(id) }

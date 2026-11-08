@@ -368,6 +368,9 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("POST /me/task-lists", prot(http.HandlerFunc(s.handleCreateTaskList)))
 	mux.Handle("PATCH /me/task-lists/{id}", prot(http.HandlerFunc(s.handleUpdateTaskList)))
 	mux.Handle("DELETE /me/task-lists/{id}", prot(http.HandlerFunc(s.handleDeleteTaskList)))
+	mux.Handle("POST /me/task-lists/{id}/share", prot(http.HandlerFunc(s.handleShareTaskList)))
+	mux.Handle("GET /me/task-lists/{id}/shares", prot(http.HandlerFunc(s.handleListTaskListShares)))
+	mux.Handle("DELETE /me/task-lists/{id}/shares/{shareId}", prot(http.HandlerFunc(s.handleDeleteTaskListShare)))
 
 	// notification preferences
 	mux.Handle("GET /me/notifications", prot(http.HandlerFunc(s.handleGetMyNotifications)))

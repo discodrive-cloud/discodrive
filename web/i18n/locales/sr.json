@@ -650,7 +650,20 @@
     "confirm_delete_list": "Обрисати листу „{name}“?",
     "confirm_delete_list_tasks": "Биће обрисани и њени задаци: {n}. Листа ће нестати и из Подсетника на iPhone-у.",
     "error_list_save": "Чување листе није успело",
-    "error_list_delete": "Брисање листе није успело"
+    "error_list_delete": "Брисање листе није успело",
+    "share_list": "Подели",
+    "share_title": "Приступ листи „{name}“",
+    "share_email_ph": "Имејл корисника",
+    "share_add": "Додај",
+    "share_full_access": "Свако са ким поделите може да чита, додаје, мења и брише задатке. Листа ће се појавити и у његовим Подсетницима на iPhone-у.",
+    "share_nobody": "Још није подељено ни са ким",
+    "share_revoke": "Уклони приступ",
+    "shared_by": "Листа корисника {email}",
+    "leave_list": "Напусти листу",
+    "confirm_leave_list": "Напустити „{name}“?",
+    "confirm_leave_list_msg": "Листа ће нестати код вас, а {email} је задржава.",
+    "error_share": "Промена приступа није успела",
+    "error_leave": "Напуштање листе није успело"
   },
   "force_password": {
     "title": "Потребна је нова лозинка",

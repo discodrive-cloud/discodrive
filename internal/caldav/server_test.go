@@ -294,3 +294,52 @@ func TestProppatchPersistsCalendarOrder(t *testing.T) {
 		t.Fatalf("PROPFIND did not return the saved calendar-order (code %d):\n%s", after.Code, body)
 	}
 }
+
+// A task list (VTODO collection) shared with another user shows up in their Reminders
+// account as a task list, and they can add and remove reminders in it.
+func TestSharedTaskListVisibleAndWritable(t *testing.T) {
+	ctx := context.Background()
+	h, svc, ownerID, granteeID := setupTwo(t)
+	list, err := svc.CreateTaskList(ctx, ownerID, "Покупки", "#34d399")
+	if err != nil {
+		t.Fatalf("CreateTaskList: %v", err)
+	}
+	if _, err := svc.ShareCalendar(ctx, ownerID, db.UUIDString(list.ID), "grantee@x", nil); err != nil {
+		t.Fatalf("ShareCalendar: %v", err)
+	}
+
+	body := `<?xml version="1.0" encoding="UTF-8"?><propfind xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><prop><displayname/><resourcetype/><C:supported-calendar-component-set/></prop></propfind>`
+	req := httptest.NewRequest("PROPFIND", "/caldav/"+granteeID+"/cal/", strings.NewReader(body))
+	req.Header.Set("X-User-ID", granteeID)
+	req.Header.Set("Depth", "1")
+	req.Header.Set("Content-Type", "application/xml")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMultiStatus {
+		t.Fatalf("PROPFIND code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := rec.Body.String()
+	i := strings.Index(resp, list.Uri)
+	if i < 0 {
+		t.Fatalf("the shared task list is missing from the grantee's home set:\n%s", resp)
+	}
+	end := strings.Index(resp[i:], "</response>")
+	if end < 0 {
+		end = len(resp) - i
+	}
+	if entry := resp[i : i+end]; !strings.Contains(entry, "VTODO") || !strings.Contains(entry, "Покупки") {
+		t.Fatalf("the shared list must be a VTODO collection named Покупки:\n%s", entry)
+	}
+
+	todo := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\nBEGIN:VTODO\r\nUID:r1\r\nDTSTAMP:20261108T100000Z\r\nSUMMARY:Молоко\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
+	path := "/caldav/" + ownerID + "/cal/" + list.Uri + "/r1.ics"
+	if put := doAs(t, h, granteeID, http.MethodPut, path, todo); put.Code != http.StatusCreated && put.Code != http.StatusNoContent && put.Code != http.StatusOK {
+		t.Fatalf("grantee PUT code=%d body=%s", put.Code, put.Body.String())
+	}
+	if got := doAs(t, h, ownerID, http.MethodGet, path, ""); got.Code != http.StatusOK || !strings.Contains(got.Body.String(), "Молоко") {
+		t.Fatalf("owner GET code=%d body=%s", got.Code, got.Body.String())
+	}
+	if del := doAs(t, h, granteeID, http.MethodDelete, path, ""); del.Code != http.StatusNoContent && del.Code != http.StatusOK {
+		t.Fatalf("grantee DELETE code=%d body=%s", del.Code, del.Body.String())
+	}
+}

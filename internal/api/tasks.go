@@ -37,7 +37,7 @@ func (s *Server) findTask(r *http.Request, uid string) (db.Calendar, string, err
 		data, _, err := s.dav.GetCalendarObject(r.Context(), db.UUIDString(c.ID), uid)
 		return c, data, err
 	}
-	lists, _, err := s.taskLists(r)
+	lists, err := s.accessibleTaskLists(r)
 	if err != nil {
 		return db.Calendar{}, "", err
 	}
@@ -139,7 +139,7 @@ func taskToForm(uid string, cal *ical.Calendar) taskForm {
 // GET /me/tasks[?list=id] — tasks of one list or of all lists (incomplete first; sorted by
 // due date, then by name).
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
-	lists, _, err := s.taskLists(r)
+	lists, err := s.accessibleTaskLists(r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return

@@ -11,7 +11,7 @@ interface Task {
   completed: boolean
   list_id?: string
 }
-interface TaskList { id: string; name: string; color: string; is_default: boolean }
+interface TaskList { id: string; name: string; color: string; is_default: boolean; is_owner: boolean; owner_email?: string; share_id?: string }
 
 const PALETTE = ['#22d3ee', '#34d399', '#f59e0b', '#f43f5e', '#a78bfa', '#3b82f6', '#fb923c', '#e879f9']
 const ALL = 'all'
@@ -39,6 +39,7 @@ const listMenuFor = ref('')
 try { view.value = localStorage.getItem(VIEW_KEY) || ALL } catch {}
 watch(view, (v) => { try { localStorage.setItem(VIEW_KEY, v) } catch {} })
 
+const ownListCount = computed(() => lists.value.filter((l) => l.is_owner).length)
 const defaultList = computed(() => lists.value.find((l) => l.is_default) || lists.value[0])
 const currentList = computed(() => lists.value.find((l) => l.id === view.value))
 function listColor(id?: string): string {
@@ -99,6 +100,45 @@ async function setListColor(l: TaskList, color: string) {
   try { await request(`/me/task-lists/${l.id}`, { method: 'PATCH', body: { color } }); await loadLists() }
   catch (e: any) { error.value = e?.data?.error || t('tasks.error_list_save') }
 }
+async function leaveList(l: TaskList) {
+  if (!l.share_id) return
+  if (!(await confirm(t('tasks.confirm_leave_list', { name: l.name }), {
+    message: t('tasks.confirm_leave_list_msg', { email: l.owner_email || '' }), confirmText: t('tasks.leave_list'), danger: true,
+  }))) return
+  try {
+    await request(`/me/task-lists/${l.id}/shares/${l.share_id}`, { method: 'DELETE' })
+    if (view.value === l.id) view.value = ALL
+    await loadLists(); await loadList()
+  } catch (e: any) { error.value = e?.data?.error || t('tasks.error_leave') }
+}
+
+// sharing: one list, any number of recipients
+const share = reactive({ open: false, listId: '', name: '', email: '', busy: false, list: [] as { id: string; email: string }[] })
+async function loadShares() {
+  try { share.list = await request<{ id: string; email: string }[]>(`/me/task-lists/${share.listId}/shares`) }
+  catch { share.list = [] }
+}
+function openShare(l: TaskList) {
+  Object.assign(share, { open: true, listId: l.id, name: l.name, email: '', busy: false, list: [] })
+  loadShares()
+}
+async function submitShare() {
+  const email = share.email.trim()
+  if (!email) return
+  share.busy = true
+  try {
+    await request(`/me/task-lists/${share.listId}/share`, { method: 'POST', body: { email } })
+    share.email = ''
+    await loadShares()
+  } catch (e: any) { error.value = e?.data?.error || t('tasks.error_share') }
+  finally { share.busy = false }
+}
+async function revokeShare(id: string) {
+  try { await request(`/me/task-lists/${share.listId}/shares/${id}`, { method: 'DELETE' }); await loadShares() }
+  catch (e: any) { error.value = e?.data?.error || t('tasks.error_share') }
+}
+useModalEscape(computed(() => share.open), () => { share.open = false })
+
 async function deleteList(l: TaskList) {
   const n = list.value.filter((x) => x.list_id === l.id).length
   if (!(await confirm(t('tasks.confirm_delete_list', { name: l.name }), {
@@ -234,6 +274,8 @@ watch(view, () => { showCompleted.value = false; listMenuFor.value = '' })
           <button class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-sm" @click="view = l.id">
             <span class="h-3 w-3 shrink-0 rounded-full" :style="{ backgroundColor: listColor(l.id) }" />
             <span class="flex-1 truncate text-left" :class="view === l.id ? 'text-accent' : 'text-ink'">{{ l.name }}</span>
+            <Icon v-if="!l.is_owner" name="lucide:users" size="13" class="shrink-0 text-accent"
+              :title="t('tasks.shared_by', { email: l.owner_email || '' })" />
             <span class="text-xs text-muted group-hover:hidden">{{ openCount(l.id) || '' }}</span>
           </button>
           <div class="relative hidden shrink-0 pr-1 group-hover:block">
@@ -241,15 +283,26 @@ watch(view, () => { showCompleted.value = false; listMenuFor.value = '' })
               <Icon name="lucide:more-horizontal" size="14" />
             </button>
             <div v-if="listMenuFor === l.id" class="absolute right-0 z-10 mt-1 w-40 rounded-lg border border-line bg-panel p-2 shadow-xl">
-              <div class="mb-2 flex flex-wrap gap-1">
-                <button v-for="p in PALETTE" :key="p" class="h-5 w-5 rounded-sm ring-1 ring-line" :style="{ backgroundColor: p }" @click="setListColor(l, p); listMenuFor = ''" />
-              </div>
-              <button class="btn-ghost w-full justify-start px-2 py-1 text-xs" @click="renameList(l); listMenuFor = ''">
-                <Icon name="lucide:pencil" size="13" /> {{ t('tasks.rename_list') }}
-              </button>
-              <button v-if="lists.length > 1" class="btn-ghost w-full justify-start px-2 py-1 text-xs text-danger" @click="deleteList(l); listMenuFor = ''">
-                <Icon name="lucide:trash-2" size="13" /> {{ t('tasks.delete_list') }}
-              </button>
+              <template v-if="l.is_owner">
+                <div class="mb-2 flex flex-wrap gap-1">
+                  <button v-for="p in PALETTE" :key="p" class="h-5 w-5 rounded-sm ring-1 ring-line" :style="{ backgroundColor: p }" @click="setListColor(l, p); listMenuFor = ''" />
+                </div>
+                <button class="btn-ghost w-full justify-start px-2 py-1 text-xs" @click="renameList(l); listMenuFor = ''">
+                  <Icon name="lucide:pencil" size="13" /> {{ t('tasks.rename_list') }}
+                </button>
+                <button class="btn-ghost w-full justify-start px-2 py-1 text-xs" @click="openShare(l); listMenuFor = ''">
+                  <Icon name="lucide:share-2" size="13" /> {{ t('tasks.share_list') }}
+                </button>
+                <button v-if="ownListCount > 1" class="btn-ghost w-full justify-start px-2 py-1 text-xs text-danger" @click="deleteList(l); listMenuFor = ''">
+                  <Icon name="lucide:trash-2" size="13" /> {{ t('tasks.delete_list') }}
+                </button>
+              </template>
+              <template v-else>
+                <p class="mb-1 truncate px-2 text-xs text-muted">{{ t('tasks.shared_by', { email: l.owner_email || '' }) }}</p>
+                <button class="btn-ghost w-full justify-start px-2 py-1 text-xs text-danger" @click="leaveList(l); listMenuFor = ''">
+                  <Icon name="lucide:log-out" size="13" /> {{ t('tasks.leave_list') }}
+                </button>
+              </template>
             </div>
           </div>
         </li>
@@ -265,6 +318,12 @@ watch(view, () => { showCompleted.value = false; listMenuFor.value = '' })
         <option :value="ALL">{{ t('tasks.all_lists') }}</option>
         <option v-for="l in lists" :key="l.id" :value="l.id">{{ l.name }}</option>
       </select>
+      <button v-if="currentList?.is_owner" class="btn-ghost px-1.5 py-1.5 md:hidden" :title="t('tasks.share_list')" @click="openShare(currentList)">
+        <Icon name="lucide:share-2" size="18" />
+      </button>
+      <button v-if="currentList && !currentList.is_owner" class="btn-ghost px-1.5 py-1.5 text-danger md:hidden" :title="t('tasks.leave_list')" @click="leaveList(currentList)">
+        <Icon name="lucide:log-out" size="18" />
+      </button>
       <button class="btn-ghost px-1.5 py-1.5 md:hidden" :title="t('tasks.new_list')" @click="createList">
         <Icon name="lucide:list-plus" size="18" />
       </button>
@@ -323,6 +382,30 @@ watch(view, () => { showCompleted.value = false; listMenuFor.value = '' })
       </ul>
     </div>
 
+    </div>
+
+    <!-- share a list -->
+    <div v-if="share.open" class="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4" @click.self="share.open = false">
+      <div class="card w-full max-w-md p-5">
+        <div class="mb-4 flex items-center justify-between gap-2">
+          <h2 class="truncate font-semibold">{{ t('tasks.share_title', { name: share.name }) }}</h2>
+          <button class="btn-ghost px-1.5 py-1" @click="share.open = false"><Icon name="lucide:x" size="18" /></button>
+        </div>
+        <div class="mb-3 flex gap-2">
+          <input v-model="share.email" type="email" class="input flex-1" :placeholder="t('tasks.share_email_ph')" @keyup.enter="submitShare" />
+          <button class="btn-accent shrink-0" :disabled="share.busy" @click="submitShare">
+            <Icon name="lucide:user-plus" size="16" /> {{ t('tasks.share_add') }}
+          </button>
+        </div>
+        <p class="mb-2 text-xs text-muted">{{ t('tasks.share_full_access') }}</p>
+        <ul v-if="share.list.length" class="space-y-1">
+          <li v-for="sh in share.list" :key="sh.id" class="flex items-center justify-between rounded px-2 py-1.5 hover:bg-ink/5">
+            <span class="truncate text-sm">{{ sh.email }}</span>
+            <button class="btn-ghost px-2 py-1 text-danger" :title="t('tasks.share_revoke')" @click="revokeShare(sh.id)"><Icon name="lucide:x" size="14" /></button>
+          </li>
+        </ul>
+        <p v-else class="text-sm text-muted">{{ t('tasks.share_nobody') }}</p>
+      </div>
     </div>
 
     <!-- modal -->
