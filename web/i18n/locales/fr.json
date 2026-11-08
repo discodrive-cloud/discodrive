@@ -640,7 +640,17 @@
     "error_save": "Impossible d'enregistrer la tâche",
     "error_delete": "Impossible de supprimer la tâche",
     "error_update": "Impossible de mettre à jour le statut",
-    "error_name_required": "Veuillez saisir un nom pour la tâche"
+    "error_name_required": "Veuillez saisir un nom pour la tâche",
+    "lists": "Listes",
+    "all_lists": "Toutes",
+    "list": "Liste",
+    "new_list": "Nouvelle liste",
+    "rename_list": "Renommer",
+    "delete_list": "Supprimer la liste",
+    "confirm_delete_list": "Supprimer la liste « {name} » ?",
+    "confirm_delete_list_tasks": "Ses tâches seront aussi supprimées : {n}. La liste disparaîtra également de Rappels sur l’iPhone.",
+    "error_list_save": "Impossible d’enregistrer la liste",
+    "error_list_delete": "Impossible de supprimer la liste"
   },
   "force_password": {
     "title": "Nouveau mot de passe requis",

@@ -640,7 +640,17 @@
     "error_save": "Не удалось сохранить задачу",
     "error_delete": "Не удалось удалить задачу",
     "error_update": "Не удалось обновить статус",
-    "error_name_required": "Укажите название задачи"
+    "error_name_required": "Укажите название задачи",
+    "lists": "Списки",
+    "all_lists": "Все",
+    "list": "Список",
+    "new_list": "Новый список",
+    "rename_list": "Переименовать",
+    "delete_list": "Удалить список",
+    "confirm_delete_list": "Удалить список «{name}»?",
+    "confirm_delete_list_tasks": "Вместе с ним удалятся задачи: {n}. В Напоминаниях на iPhone список тоже пропадёт.",
+    "error_list_save": "Не удалось сохранить список",
+    "error_list_delete": "Не удалось удалить список"
   },
   "force_password": {
     "title": "Требуется новый пароль",

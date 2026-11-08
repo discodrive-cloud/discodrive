@@ -640,7 +640,17 @@
     "error_save": "Could not save task",
     "error_delete": "Could not delete task",
     "error_update": "Could not update status",
-    "error_name_required": "Please specify a task name"
+    "error_name_required": "Please specify a task name",
+    "lists": "Lists",
+    "all_lists": "All",
+    "list": "List",
+    "new_list": "New list",
+    "rename_list": "Rename",
+    "delete_list": "Delete list",
+    "confirm_delete_list": "Delete the list “{name}”?",
+    "confirm_delete_list_tasks": "Its tasks will be deleted too: {n}. The list will also disappear from Reminders on iPhone.",
+    "error_list_save": "Couldn't save the list",
+    "error_list_delete": "Couldn't delete the list"
   },
   "force_password": {
     "title": "New password required",

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strconv"
@@ -10,7 +11,6 @@ import (
 
 	"github.com/emersion/go-ical"
 
-	"discodrive/internal/auth"
 	"discodrive/internal/dav"
 	"discodrive/internal/db"
 )
@@ -23,14 +23,46 @@ type taskForm struct {
 	DueAllDay bool   `json:"due_all_day"`   // DUE as VALUE=DATE
 	Priority  int    `json:"priority"`      // 0=none, 1..9 (iCal; 1 = highest)
 	Completed bool   `json:"completed"`
+	ListID    string `json:"list_id,omitempty"` // the task's list; on create/update — the target list
 }
 
-func (s *Server) taskBook(r *http.Request) (string, bool) {
-	c, err := s.dav.EnsureDefaultTaskList(r.Context(), auth.UserID(r.Context()))
-	if err != nil {
-		return "", false
+// findTask locates a task by uid: in the list given by ?list=, otherwise in any of the
+// user's lists (older clients — the MCP tools — address tasks by uid alone).
+func (s *Server) findTask(r *http.Request, uid string) (db.Calendar, string, error) {
+	if id := r.URL.Query().Get("list"); id != "" {
+		c, err := s.taskList(r, id)
+		if err != nil {
+			return db.Calendar{}, "", err
+		}
+		data, _, err := s.dav.GetCalendarObject(r.Context(), db.UUIDString(c.ID), uid)
+		return c, data, err
 	}
-	return db.UUIDString(c.ID), true
+	lists, _, err := s.taskLists(r)
+	if err != nil {
+		return db.Calendar{}, "", err
+	}
+	for _, c := range lists {
+		data, _, err := s.dav.GetCalendarObject(r.Context(), db.UUIDString(c.ID), uid)
+		if err == nil {
+			return c, data, nil
+		}
+		if !errors.Is(err, dav.ErrNotFound) {
+			return db.Calendar{}, "", err
+		}
+	}
+	return db.Calendar{}, "", dav.ErrNotFound
+}
+
+// writeFindTaskError answers a findTask failure.
+func writeFindTaskError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, dav.ErrNotFound):
+		writeError(w, http.StatusNotFound, "task not found")
+	case errors.Is(err, errNoTaskList):
+		writeError(w, http.StatusNotFound, "task list not found")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal error")
+	}
 }
 
 // setIntProp writes a numeric property (PRIORITY/PERCENT-COMPLETE) without VALUE=TEXT
@@ -104,35 +136,49 @@ func taskToForm(uid string, cal *ical.Calendar) taskForm {
 	return f
 }
 
-// GET /me/tasks — list tasks (incomplete first; sorted by due date, then by name).
+// GET /me/tasks[?list=id] — tasks of one list or of all lists (incomplete first; sorted by
+// due date, then by name).
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
-	calID, ok := s.taskBook(r)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	objs, err := s.dav.ListCalendarObjects(r.Context(), calID)
+	lists, _, err := s.taskLists(r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	out := make([]taskForm, 0, len(objs))
-	for _, o := range objs {
-		cal, derr := ical.NewDecoder(strings.NewReader(o.Data)).Decode()
-		if derr != nil {
-			continue
+	if id := r.URL.Query().Get("list"); id != "" {
+		c, err := s.taskList(r, id)
+		if err != nil {
+			writeFindTaskError(w, err)
+			return
 		}
-		hasTodo := false
-		for _, c := range cal.Children {
-			if c.Name == ical.CompToDo {
-				hasTodo = true
-				break
+		lists = []db.Calendar{c}
+	}
+	out := make([]taskForm, 0)
+	for _, c := range lists {
+		listID := db.UUIDString(c.ID)
+		objs, err := s.dav.ListCalendarObjects(r.Context(), listID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		for _, o := range objs {
+			cal, derr := ical.NewDecoder(strings.NewReader(o.Data)).Decode()
+			if derr != nil {
+				continue
 			}
+			hasTodo := false
+			for _, c := range cal.Children {
+				if c.Name == ical.CompToDo {
+					hasTodo = true
+					break
+				}
+			}
+			if !hasTodo {
+				continue
+			}
+			f := taskToForm(o.Uid, cal)
+			f.ListID = listID
+			out = append(out, f)
 		}
-		if !hasTodo {
-			continue
-		}
-		out = append(out, taskToForm(o.Uid, cal))
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Completed != out[j].Completed {
@@ -150,20 +196,11 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// GET /me/tasks/{uid}
+// GET /me/tasks/{uid}[?list=id]
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
-	calID, ok := s.taskBook(r)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	data, _, err := s.dav.GetCalendarObject(r.Context(), calID, r.PathValue("uid"))
-	if err == dav.ErrNotFound {
-		writeError(w, http.StatusNotFound, "task not found")
-		return
-	}
+	c, data, err := s.findTask(r, r.PathValue("uid"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeFindTaskError(w, err)
 		return
 	}
 	cal, derr := ical.NewDecoder(strings.NewReader(data)).Decode()
@@ -171,21 +208,24 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to parse iCalendar")
 		return
 	}
-	writeJSON(w, http.StatusOK, taskToForm(r.PathValue("uid"), cal))
+	f := taskToForm(r.PathValue("uid"), cal)
+	f.ListID = db.UUIDString(c.ID)
+	writeJSON(w, http.StatusOK, f)
 }
 
-// POST /me/tasks
+// POST /me/tasks {…, list_id?} — into the given list, or the default one.
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
-	calID, ok := s.taskBook(r)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
 	var form taskForm
 	if err := json.NewDecoder(r.Body).Decode(&form); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	list, err := s.taskList(r, form.ListID)
+	if err != nil {
+		writeFindTaskError(w, err)
+		return
+	}
+	listID := db.UUIDString(list.ID)
 	uid := newContactUID()
 	cal := ical.NewCalendar()
 	cal.Props.SetText(ical.PropProductID, "-//discodrive//web//RU")
@@ -195,34 +235,33 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	todo.Props.SetDateTime(ical.PropDateTimeStamp, time.Now().UTC())
 	applyTaskForm(todo, form)
 	cal.Children = append(cal.Children, todo)
-	if err := s.putCal(r, calID, uid, cal); err != nil {
+	if err := s.putCal(r, listID, uid, cal); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save")
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"uid": uid})
+	writeJSON(w, http.StatusCreated, map[string]any{"uid": uid, "list_id": listID})
 }
 
-// PUT /me/tasks/{uid} — update an existing task.
+// PUT /me/tasks/{uid}[?list=id] — update an existing task; a list_id other than the
+// task's own moves it to that list.
 func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
-	calID, ok := s.taskBook(r)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
 	uid := r.PathValue("uid")
-	data, _, err := s.dav.GetCalendarObject(r.Context(), calID, uid)
-	if err == dav.ErrNotFound {
-		writeError(w, http.StatusNotFound, "task not found")
-		return
-	}
+	src, data, err := s.findTask(r, uid)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeFindTaskError(w, err)
 		return
 	}
 	var form taskForm
 	if err := json.NewDecoder(r.Body).Decode(&form); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
+	}
+	dst := src
+	if form.ListID != "" && form.ListID != db.UUIDString(src.ID) {
+		if dst, err = s.taskList(r, form.ListID); err != nil {
+			writeFindTaskError(w, err)
+			return
+		}
 	}
 	cal, derr := ical.NewDecoder(strings.NewReader(data)).Decode()
 	if derr != nil {
@@ -235,28 +274,27 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if err := s.putCal(r, calID, uid, cal); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save")
+	dstID := db.UUIDString(dst.ID)
+	if err := s.putCal(r, dstID, uid, cal); err != nil {
+		writePutCalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"uid": uid})
+	if dst.ID != src.ID {
+		// moved: the copy is in place, now drop the original (Reminders sees a delete + an add)
+		if err := s.dav.DeleteCalendarObject(r.Context(), db.UUIDString(src.ID), uid); err != nil && !errors.Is(err, dav.ErrNotFound) {
+			writeError(w, http.StatusInternalServerError, "failed to move")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"uid": uid, "list_id": dstID})
 }
 
-// PUT /me/tasks/{uid}/done — lightweight status toggle (modify-existing; everything else is preserved).
+// PUT /me/tasks/{uid}/done[?list=id] — lightweight status toggle (modify-existing; everything else is preserved).
 func (s *Server) handleToggleTask(w http.ResponseWriter, r *http.Request) {
-	calID, ok := s.taskBook(r)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
 	uid := r.PathValue("uid")
-	data, _, err := s.dav.GetCalendarObject(r.Context(), calID, uid)
-	if err == dav.ErrNotFound {
-		writeError(w, http.StatusNotFound, "task not found")
-		return
-	}
+	list, data, err := s.findTask(r, uid)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeFindTaskError(w, err)
 		return
 	}
 	var body struct {
@@ -277,26 +315,23 @@ func (s *Server) handleToggleTask(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if err := s.putCal(r, calID, uid, cal); err != nil {
+	if err := s.putCal(r, db.UUIDString(list.ID), uid, cal); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"uid": uid})
 }
 
-// DELETE /me/tasks/{uid}
+// DELETE /me/tasks/{uid}[?list=id]
 func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
-	calID, ok := s.taskBook(r)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "internal error")
+	uid := r.PathValue("uid")
+	list, _, err := s.findTask(r, uid)
+	if err != nil {
+		writeFindTaskError(w, err)
 		return
 	}
-	if err := s.dav.DeleteCalendarObject(r.Context(), calID, r.PathValue("uid")); err != nil {
-		if err == dav.ErrNotFound {
-			writeError(w, http.StatusNotFound, "task not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "internal error")
+	if err := s.dav.DeleteCalendarObject(r.Context(), db.UUIDString(list.ID), uid); err != nil {
+		writeFindTaskError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

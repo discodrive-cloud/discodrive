@@ -640,7 +640,17 @@
     "error_save": "Не вдалося зберегти завдання",
     "error_delete": "Не вдалося видалити завдання",
     "error_update": "Не вдалося оновити статус",
-    "error_name_required": "Вкажіть назву завдання"
+    "error_name_required": "Вкажіть назву завдання",
+    "lists": "Списки",
+    "all_lists": "Усі",
+    "list": "Список",
+    "new_list": "Новий список",
+    "rename_list": "Перейменувати",
+    "delete_list": "Видалити список",
+    "confirm_delete_list": "Видалити список «{name}»?",
+    "confirm_delete_list_tasks": "Разом із ним буде видалено завдання: {n}. Список також зникне з Нагадувань на iPhone.",
+    "error_list_save": "Не вдалося зберегти список",
+    "error_list_delete": "Не вдалося видалити список"
   },
   "force_password": {
     "title": "Потрібен новий пароль",

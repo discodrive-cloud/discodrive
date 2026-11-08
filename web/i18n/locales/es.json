@@ -640,7 +640,17 @@
     "error_save": "No se pudo guardar la tarea",
     "error_delete": "No se pudo eliminar la tarea",
     "error_update": "No se pudo actualizar el estado",
-    "error_name_required": "Por favor ingrese un nombre para la tarea"
+    "error_name_required": "Por favor ingrese un nombre para la tarea",
+    "lists": "Listas",
+    "all_lists": "Todas",
+    "list": "Lista",
+    "new_list": "Nueva lista",
+    "rename_list": "Renombrar",
+    "delete_list": "Eliminar lista",
+    "confirm_delete_list": "¿Eliminar la lista «{name}»?",
+    "confirm_delete_list_tasks": "También se eliminarán sus tareas: {n}. La lista desaparecerá también de Recordatorios en el iPhone.",
+    "error_list_save": "No se pudo guardar la lista",
+    "error_list_delete": "No se pudo eliminar la lista"
   },
   "force_password": {
     "title": "Se requiere una nueva contraseña",

@@ -246,6 +246,19 @@ func (s *Service) EnsureDefaultTaskList(ctx context.Context, userID string) (db.
 	})
 }
 
+// CreateTaskList creates a VTODO collection (a Reminders list) with a generated uri.
+func (s *Service) CreateTaskList(ctx context.Context, userID, name, color string) (db.Calendar, error) {
+	uid, err := db.ParseUUID(userID)
+	if err != nil {
+		return db.Calendar{}, err
+	}
+	return createSlug(func(uri string) (db.Calendar, error) {
+		return s.q.CreateCalendarWithComponents(ctx, db.CreateCalendarWithComponentsParams{
+			UserID: uid, Uri: uri, Name: name, Color: color, Components: "VTODO",
+		})
+	})
+}
+
 func (s *Service) PutCalendarObject(ctx context.Context, calID, uid, data string) (string, error) {
 	return s.PutCalendarObjectIf(ctx, calID, uid, data, nil)
 }

@@ -640,7 +640,17 @@
     "error_save": "Чување задатка није успело",
     "error_delete": "Брисање задатка није успело",
     "error_update": "Ажурирање статуса није успело",
-    "error_name_required": "Унесите назив задатка"
+    "error_name_required": "Унесите назив задатка",
+    "lists": "Листе",
+    "all_lists": "Све",
+    "list": "Листа",
+    "new_list": "Нова листа",
+    "rename_list": "Преименуј",
+    "delete_list": "Обриши листу",
+    "confirm_delete_list": "Обрисати листу „{name}“?",
+    "confirm_delete_list_tasks": "Биће обрисани и њени задаци: {n}. Листа ће нестати и из Подсетника на iPhone-у.",
+    "error_list_save": "Чување листе није успело",
+    "error_list_delete": "Брисање листе није успело"
   },
   "force_password": {
     "title": "Потребна је нова лозинка",

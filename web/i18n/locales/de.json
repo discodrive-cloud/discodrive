@@ -640,7 +640,17 @@
     "error_save": "Aufgabe konnte nicht gespeichert werden",
     "error_delete": "Aufgabe konnte nicht gelöscht werden",
     "error_update": "Status konnte nicht aktualisiert werden",
-    "error_name_required": "Bitte geben Sie einen Aufgabennamen an"
+    "error_name_required": "Bitte geben Sie einen Aufgabennamen an",
+    "lists": "Listen",
+    "all_lists": "Alle",
+    "list": "Liste",
+    "new_list": "Neue Liste",
+    "rename_list": "Umbenennen",
+    "delete_list": "Liste löschen",
+    "confirm_delete_list": "Liste „{name}“ löschen?",
+    "confirm_delete_list_tasks": "Ihre Aufgaben werden ebenfalls gelöscht: {n}. Die Liste verschwindet auch aus den Erinnerungen auf dem iPhone.",
+    "error_list_save": "Liste konnte nicht gespeichert werden",
+    "error_list_delete": "Liste konnte nicht gelöscht werden"
   },
   "force_password": {
     "title": "Neues Passwort erforderlich",
