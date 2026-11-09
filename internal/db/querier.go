@@ -71,6 +71,7 @@ type Querier interface {
 	AccessibleSongsByAlbum(ctx context.Context, arg AccessibleSongsByAlbumParams) ([]Song, error)
 	// Returns accessible songs for a given artist ordered by title, with album/artist names.
 	AccessibleSongsByArtist(ctx context.Context, arg AccessibleSongsByArtistParams) ([]AccessibleSongsByArtistRow, error)
+	AddDupDismissed(ctx context.Context, arg AddDupDismissedParams) error
 	AddPhotoAlbumItems(ctx context.Context, arg AddPhotoAlbumItemsParams) (int64, error)
 	AddPhotoAlbumMember(ctx context.Context, arg AddPhotoAlbumMemberParams) error
 	// Gallery sharing: partners, albums, album links (migration 29).
@@ -140,6 +141,9 @@ type Querier interface {
 	ConsumeAuthChallenge(ctx context.Context, arg ConsumeAuthChallengeParams) (int64, error)
 	// Atomically "claim" an approved pairing: a race between two polls → token exactly once.
 	ConsumePairingIfApproved(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
+	// Puts the kept card of a duplicate group into every album the removed copies are in;
+	// the copies keep their own rows. Returns the albums that got the card (once each).
+	CopyPhotoAlbumItems(ctx context.Context, arg CopyPhotoAlbumItemsParams) ([]pgtype.UUID, error)
 	// Returns the count of accessible albums for a given artist.
 	CountAccessibleAlbumsByArtist(ctx context.Context, arg CountAccessibleAlbumsByArtistParams) (int64, error)
 	// Returns the total count of books accessible to a user.
@@ -150,6 +154,8 @@ type Querier interface {
 	CountInboxLinks(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// Other live assets with the same content in the user's sources (copies of the card).
 	CountPhotoCopies(ctx context.Context, arg CountPhotoCopiesParams) (int64, error)
+	// Of the cards with a thumbnail, how many are hashed (flat ones too).
+	CountPhotoHashProgress(ctx context.Context, userID pgtype.UUID) (CountPhotoHashProgressRow, error)
 	CountPhotoIndexing(ctx context.Context, userID pgtype.UUID) (CountPhotoIndexingRow, error)
 	CountPlaylistSongs(ctx context.Context, playlistID pgtype.UUID) (int64, error)
 	// Returns how many documents the user has a stored position for.
@@ -435,6 +441,11 @@ type Querier interface {
 	ListChildren(ctx context.Context, arg ListChildrenParams) ([]Node, error)
 	ListCompletedEpisodesByChannelDesc(ctx context.Context, channelID pgtype.UUID) ([]ListCompletedEpisodesByChannelDescRow, error)
 	ListDevicesForUser(ctx context.Context, userID pgtype.UUID) ([]Device, error)
+	// One row per byte-identical group of top-level cards (the lowest id that has a ready
+	// thumbnail and a usable hash); bytes/copies cover every copy of the content, trashed ones
+	// excluded. key names the content for the dismissed pairs.
+	ListDupCandidates(ctx context.Context, userID pgtype.UUID) ([]ListDupCandidatesRow, error)
+	ListDupDismissed(ctx context.Context, userID pgtype.UUID) ([]ListDupDismissedRow, error)
 	ListEpisodesByChannel(ctx context.Context, channelID pgtype.UUID) ([]PodcastEpisode, error)
 	ListExpiredTombstones(ctx context.Context, deletedAt pgtype.Timestamptz) ([]ListExpiredTombstonesRow, error)
 	// Users with people turned on (the queue's passes after a restart).
@@ -495,6 +506,9 @@ type Querier interface {
 	ListPhotoFailedFiles(ctx context.Context, arg ListPhotoFailedFilesParams) ([]ListPhotoFailedFilesRow, error)
 	// Everything grouping looks at (Live Photo pairs by live_cid, RAW+JPEG by name and time).
 	ListPhotoGroupCandidates(ctx context.Context, userID pgtype.UUID) ([]ListPhotoGroupCandidatesRow, error)
+	// Top-level cards whose thumbnail is ready but whose hash is not computed; after_id pages
+	// through them so a card that cannot be hashed does not come back within one pass.
+	ListPhotoHashBackfill(ctx context.Context, arg ListPhotoHashBackfillParams) ([]PhotoAsset, error)
 	// The map's clusters: the feed's cards with a position inside the box, grouped by
 	// photo_map_cell at zoom z. Duplicates count once, as in the feed. A west edge east of the
 	// east edge means the box crosses the 180th meridian. place_id and country_code are set
@@ -742,6 +756,9 @@ type Querier interface {
 	SetPhotoDateEdited(ctx context.Context, nodeID pgtype.UUID) error
 	// A nil favorite or hidden leaves that flag as it is.
 	SetPhotoFlags(ctx context.Context, arg SetPhotoFlagsParams) error
+	// The backfill's write: only while the card still shows the picture that was hashed (still
+	// ready, unhashed, same file version and turn); otherwise a render wrote a fresher hash.
+	SetPhotoHash(ctx context.Context, arg SetPhotoHashParams) error
 	// The cursor only moves forward: a catch-up that started before a source change must
 	// not undo the cursor the change set.
 	SetPhotoIndexedSeq(ctx context.Context, arg SetPhotoIndexedSeqParams) error
@@ -765,6 +782,9 @@ type Querier interface {
 	// The title from the share sheet wins over the page's own.
 	SetSavedLinkEnriched(ctx context.Context, arg SetSavedLinkEnrichedParams) error
 	SetSharePasswordHash(ctx context.Context, arg SetSharePasswordHashParams) error
+	// A finished thumbnail and its hash in one write, so a card is never ready with the hash of
+	// its previous picture. phash NULL (the thumbnail could not be hashed) leaves it to the backfill.
+	SetThumbReady(ctx context.Context, arg SetThumbReadyParams) error
 	SetThumbState(ctx context.Context, arg SetThumbStateParams) error
 	SetTranscodeState(ctx context.Context, arg SetTranscodeStateParams) error
 	SetUserLanguage(ctx context.Context, arg SetUserLanguageParams) error

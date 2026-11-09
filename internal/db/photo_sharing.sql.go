@@ -63,6 +63,42 @@ func (q *Queries) AddPhotoPartner(ctx context.Context, arg AddPhotoPartnerParams
 	return err
 }
 
+const copyPhotoAlbumItems = `-- name: CopyPhotoAlbumItems :many
+INSERT INTO photo_album_items (album_id, asset_id, added_by)
+SELECT DISTINCT ON (album_id) album_id, $1::uuid, added_by FROM photo_album_items
+WHERE asset_id = ANY($2::uuid[])
+ORDER BY album_id, added_at
+ON CONFLICT DO NOTHING
+RETURNING album_id
+`
+
+type CopyPhotoAlbumItemsParams struct {
+	Keep    pgtype.UUID   `json:"keep"`
+	FromIds []pgtype.UUID `json:"from_ids"`
+}
+
+// Puts the kept card of a duplicate group into every album the removed copies are in;
+// the copies keep their own rows. Returns the albums that got the card (once each).
+func (q *Queries) CopyPhotoAlbumItems(ctx context.Context, arg CopyPhotoAlbumItemsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, copyPhotoAlbumItems, arg.Keep, arg.FromIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var album_id pgtype.UUID
+		if err := rows.Scan(&album_id); err != nil {
+			return nil, err
+		}
+		items = append(items, album_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createPhotoAlbum = `-- name: CreatePhotoAlbum :one
 INSERT INTO photo_albums (owner_id, name) VALUES ($1, $2) RETURNING id, owner_id, name, created_at, updated_at
 `
@@ -216,7 +252,7 @@ func (q *Queries) GetActivePhotoAlbumLink(ctx context.Context, token string) (Ge
 }
 
 const getAlbumPhotoAsset = `-- name: GetAlbumPhotoAsset :one
-SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation FROM photo_assets a
+SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation, a.phash, a.phash_flat FROM photo_assets a
 JOIN photo_assets c ON c.id = coalesce(a.parent_id, a.id)
 WHERE a.id = $1 AND a.trashed_at IS NULL
   AND NOT c.hidden AND c.trashed_at IS NULL
@@ -275,6 +311,8 @@ func (q *Queries) GetAlbumPhotoAsset(ctx context.Context, arg GetAlbumPhotoAsset
 		&i.FaceError,
 		&i.FaceModel,
 		&i.Rotation,
+		&i.Phash,
+		&i.PhashFlat,
 	)
 	return i, err
 }
@@ -317,7 +355,7 @@ func (q *Queries) GetPhotoAlbumRole(ctx context.Context, arg GetPhotoAlbumRolePa
 }
 
 const getViewablePhotoAsset = `-- name: GetViewablePhotoAsset :one
-SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation FROM photo_assets a
+SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation, a.phash, a.phash_flat FROM photo_assets a
 JOIN photo_assets c ON c.id = coalesce(a.parent_id, a.id)
 JOIN nodes cn ON cn.id = c.node_id
 WHERE a.id = $1 AND a.trashed_at IS NULL
@@ -385,6 +423,8 @@ func (q *Queries) GetViewablePhotoAsset(ctx context.Context, arg GetViewablePhot
 		&i.FaceError,
 		&i.FaceModel,
 		&i.Rotation,
+		&i.Phash,
+		&i.PhashFlat,
 	)
 	return i, err
 }
@@ -419,7 +459,7 @@ func (q *Queries) IsPhotoPartner(ctx context.Context, arg IsPhotoPartnerParams) 
 }
 
 const listPhotoAlbumAssetsInMonth = `-- name: ListPhotoAlbumAssetsInMonth :many
-SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation FROM photo_album_visible_items i JOIN photo_assets a ON a.id = i.asset_id
+SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation, a.phash, a.phash_flat FROM photo_album_visible_items i JOIN photo_assets a ON a.id = i.asset_id
 WHERE i.album_id = $1
   AND a.taken_local >= $2::timestamp
   AND a.taken_local < $2::timestamp + interval '1 month'
@@ -488,6 +528,8 @@ func (q *Queries) ListPhotoAlbumAssetsInMonth(ctx context.Context, arg ListPhoto
 			&i.FaceError,
 			&i.FaceModel,
 			&i.Rotation,
+			&i.Phash,
+			&i.PhashFlat,
 		); err != nil {
 			return nil, err
 		}
@@ -500,7 +542,7 @@ func (q *Queries) ListPhotoAlbumAssetsInMonth(ctx context.Context, arg ListPhoto
 }
 
 const listPhotoAlbumAssetsPage = `-- name: ListPhotoAlbumAssetsPage :many
-SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation FROM photo_album_visible_items i JOIN photo_assets a ON a.id = i.asset_id
+SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation, a.phash, a.phash_flat FROM photo_album_visible_items i JOIN photo_assets a ON a.id = i.asset_id
 WHERE i.album_id = $1
   AND a.parent_id IS NULL AND NOT a.hidden AND a.trashed_at IS NULL
   AND (a.content_hash IS NULL OR NOT EXISTS (
@@ -578,6 +620,8 @@ func (q *Queries) ListPhotoAlbumAssetsPage(ctx context.Context, arg ListPhotoAlb
 			&i.FaceError,
 			&i.FaceModel,
 			&i.Rotation,
+			&i.Phash,
+			&i.PhashFlat,
 		); err != nil {
 			return nil, err
 		}
@@ -758,7 +802,7 @@ func (q *Queries) ListPhotoAlbumsFor(ctx context.Context, userID pgtype.UUID) ([
 }
 
 const listPhotoAssetsByIDs = `-- name: ListPhotoAssetsByIDs :many
-SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model, rotation FROM photo_assets WHERE id = ANY($1::uuid[])
+SELECT id, user_id, node_id, kind, taken_at, taken_local, tz_offset_min, date_source, lat, lon, place_id, country_code, place_cleared, make, model, lens, f_number, focal_mm, exposure, iso, width, height, duration_ms, video_codec, is_hdr, live_cid, content_hash, parent_id, role, favorite, hidden, trashed_at, thumb_state, thumb_error, index_error, transcode_state, indexed_at, node_version, face_state, face_error, face_model, rotation, phash, phash_flat FROM photo_assets WHERE id = ANY($1::uuid[])
 `
 
 func (q *Queries) ListPhotoAssetsByIDs(ctx context.Context, ids []pgtype.UUID) ([]PhotoAsset, error) {
@@ -813,6 +857,8 @@ func (q *Queries) ListPhotoAssetsByIDs(ctx context.Context, ids []pgtype.UUID) (
 			&i.FaceError,
 			&i.FaceModel,
 			&i.Rotation,
+			&i.Phash,
+			&i.PhashFlat,
 		); err != nil {
 			return nil, err
 		}

@@ -57,6 +57,7 @@ type Server struct {
 	photoEditor  *photos.Editor // nil in the lite build
 	maps         *maps.Manager  // nil in the lite build
 	sections     Sections       // optional sections the operator left on
+	dupLocks     userLocks      // one duplicates resolve/dismiss at a time per user
 }
 
 // quotaChecker is the same checker the storage layer enforces writes with, so the admin
@@ -255,6 +256,9 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("PUT /me/photos/v1/assets/metadata", prot(http.HandlerFunc(s.handlePutPhotoMetadata)))
 	mux.Handle("POST /me/photos/v1/assets/rotate", prot(http.HandlerFunc(s.handleRotatePhotoAssets)))
 	mux.Handle("POST /me/photos/v1/assets/delete", prot(http.HandlerFunc(s.handleDeletePhotoAssets)))
+	mux.Handle("GET /me/photos/v1/duplicates", prot(http.HandlerFunc(s.handlePhotoDuplicates)))
+	mux.Handle("POST /me/photos/v1/duplicates/resolve", prot(http.HandlerFunc(s.handleResolvePhotoDuplicates)))
+	mux.Handle("POST /me/photos/v1/duplicates/dismiss", prot(http.HandlerFunc(s.handleDismissPhotoDuplicates)))
 	mux.Handle("POST /me/photos/v1/hidden/unlock", prot(http.HandlerFunc(s.rateLimited(s.handlePhotosHiddenUnlock))))
 	mux.Handle("GET /me/photos/v1/hidden/buckets", prot(http.HandlerFunc(s.handlePhotosHiddenBuckets)))
 	mux.Handle("GET /me/photos/v1/hidden", prot(http.HandlerFunc(s.handlePhotosHidden)))

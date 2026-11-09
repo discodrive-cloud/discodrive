@@ -2,8 +2,10 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -302,30 +304,47 @@ func (s *Server) handleDeletePhotoAssets(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	nodes, err := s.q.ListPhotoDeleteNodes(r.Context(), db.ListPhotoDeleteNodesParams{UserID: uid, Ids: ids})
-	if err != nil {
+	deleted, err := s.trashPhotoCards(r.Context(), uid, ids)
+	if errors.Is(err, errPhotoNodeList) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
+	}
+	if err != nil {
+		writeStorageErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"deletedNodes": deleted})
+}
+
+// errPhotoNodeList: the nodes of the cards could not be listed (nothing was deleted).
+var errPhotoNodeList = errors.New("photos: list delete nodes")
+
+// trashPhotoCards sends the cards' files (children and every copy of the same content in
+// the sources included) to the file trash and the cards to the gallery trash. It stops at
+// the first file that fails, returning how many went before it with the storage error.
+func (s *Server) trashPhotoCards(ctx context.Context, uid pgtype.UUID, ids []pgtype.UUID) (int, error) {
+	nodes, err := s.q.ListPhotoDeleteNodes(ctx, db.ListPhotoDeleteNodesParams{UserID: uid, Ids: ids})
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", errPhotoNodeList, err)
 	}
 	deleted := 0
 	for _, n := range nodes {
 		nid := db.UUIDString(n)
-		err := s.files.Delete(r.Context(), auth.UserID(r.Context()), nid)
+		err := s.files.Delete(ctx, db.UUIDString(uid), nid)
 		if errors.Is(err, storage.ErrNotFound) {
 			continue // already gone (a folder trashed meanwhile)
 		}
 		if err != nil {
 			log.Printf("discodrive: photos delete %s: %v", nid, err)
-			writeStorageErr(w, err)
-			return
+			return deleted, err
 		}
 		deleted++
 		// The change-log pass would do the same; doing it now keeps the answer current.
-		if err := s.photos.Remove(r.Context(), nid); err != nil {
+		if err := s.photos.Remove(ctx, nid); err != nil {
 			log.Printf("discodrive: photos trash %s: %v", nid, err)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"deletedNodes": deleted})
+	return deleted, nil
 }
 
 // POST /me/photos/v1/hidden/unlock {"approvalToken"} -> {"token","expiresAt"}

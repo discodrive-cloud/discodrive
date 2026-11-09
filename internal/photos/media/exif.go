@@ -677,3 +677,8 @@ func applySidecar(meta *Meta, sm map[string]any) {
 		meta.Lat, meta.Lon = lat, lon
 	}
 }
+
+// IsRawName reports whether the file name has a RAW camera extension.
+func IsRawName(name string) bool {
+	return rawExts[strings.ToLower(filepath.Ext(name))]
+}

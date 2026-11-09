@@ -112,6 +112,20 @@ func main() {
 		os.Exit(code)
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "dups" {
+		if cfg.DatabaseURL == "" {
+			log.Fatal("discodrive: DATABASE_URL is not set")
+		}
+		ctx := context.Background()
+		pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("discodrive: connecting to database: %v", err)
+		}
+		code := runDups(ctx, db.New(pool), os.Args[2:], os.Stdout)
+		pool.Close()
+		os.Exit(code)
+	}
+
 	runServer(cfg)
 }
 

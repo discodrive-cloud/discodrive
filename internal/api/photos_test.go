@@ -172,6 +172,12 @@ type assetOpts struct {
 	trash  bool
 	place  int32 // a tinyGeo place id
 	jpeg   bool  // write a real JPEG file
+	// For the duplicates finder: a phash makes the card a candidate (thumbnail ready).
+	name        string  // file name instead of a generated one
+	phash       *uint64 // perceptual hash; also sets thumb_state = 'ready'
+	make        string  // camera make
+	contentHash string  // byte identity shared by copies
+	size        int64   // file size in bytes (content is that many bytes)
 }
 
 // asset creates a node (and file) plus its asset row for u.
@@ -182,6 +188,9 @@ func (e *photosEnv) asset(u db.User, o assetOpts) db.PhotoAsset {
 		o.kind = "photo"
 	}
 	name := "f" + strings.Repeat("x", e.seq) + ".jpg"
+	if o.name != "" {
+		name = o.name
+	}
 	rel := db.UUIDString(u.ID) + "/" + name
 	_ = os.MkdirAll(filepath.Join(e.root, db.UUIDString(u.ID)), 0o755)
 	var content []byte
@@ -195,6 +204,8 @@ func (e *photosEnv) asset(u db.User, o assetOpts) db.PhotoAsset {
 		var buf bytes.Buffer
 		_ = jpeg.Encode(&buf, img, nil)
 		content = buf.Bytes()
+	} else if o.size > 0 {
+		content = bytes.Repeat([]byte("x"), int(o.size))
 	} else {
 		content = []byte("x")
 	}
@@ -227,8 +238,29 @@ func (e *photosEnv) asset(u db.User, o assetOpts) db.PhotoAsset {
 			e.t.Fatal(err)
 		}
 	}
+	if o.phash != nil {
+		if _, err := e.pool.Exec(e.ctx, `UPDATE photo_assets SET phash = $2, thumb_state = 'ready' WHERE id = $1`, a.ID, int64(*o.phash)); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	if o.make != "" {
+		if _, err := e.pool.Exec(e.ctx, `UPDATE photo_assets SET make = $2 WHERE id = $1`, a.ID, o.make); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	if o.contentHash != "" {
+		if _, err := e.pool.Exec(e.ctx, `UPDATE photo_assets SET content_hash = $2 WHERE id = $1`, a.ID, o.contentHash); err != nil {
+			e.t.Fatal(err)
+		}
+	}
 	if o.trash {
 		e.q.TrashPhotoAssetByNode(e.ctx, n.ID)
+	}
+	if o.phash != nil || o.make != "" || o.contentHash != "" {
+		var err error
+		if a, err = e.q.GetPhotoAssetByID(e.ctx, a.ID); err != nil {
+			e.t.Fatal(err)
+		}
 	}
 	return a
 }

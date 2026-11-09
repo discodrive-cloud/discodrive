@@ -29,7 +29,7 @@ func (q *Queries) AssignFaces(ctx context.Context, arg AssignFacesParams) error 
 
 const claimPendingFaces = `-- name: ClaimPendingFaces :many
 
-SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation FROM photo_assets a
+SELECT a.id, a.user_id, a.node_id, a.kind, a.taken_at, a.taken_local, a.tz_offset_min, a.date_source, a.lat, a.lon, a.place_id, a.country_code, a.place_cleared, a.make, a.model, a.lens, a.f_number, a.focal_mm, a.exposure, a.iso, a.width, a.height, a.duration_ms, a.video_codec, a.is_hdr, a.live_cid, a.content_hash, a.parent_id, a.role, a.favorite, a.hidden, a.trashed_at, a.thumb_state, a.thumb_error, a.index_error, a.transcode_state, a.indexed_at, a.node_version, a.face_state, a.face_error, a.face_model, a.rotation, a.phash, a.phash_flat FROM photo_assets a
 JOIN photo_settings s ON s.user_id = a.user_id AND s.enabled AND s.faces_enabled
 WHERE a.face_state IS NULL AND a.parent_id IS NULL AND a.thumb_state = 'ready'
   AND a.id <> ALL(COALESCE($1::uuid[], '{}'))
@@ -98,6 +98,8 @@ func (q *Queries) ClaimPendingFaces(ctx context.Context, arg ClaimPendingFacesPa
 			&i.FaceError,
 			&i.FaceModel,
 			&i.Rotation,
+			&i.Phash,
+			&i.PhashFlat,
 		); err != nil {
 			return nil, err
 		}

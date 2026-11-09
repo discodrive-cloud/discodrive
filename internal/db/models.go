@@ -359,6 +359,15 @@ type PhotoAsset struct {
 	FaceError      pgtype.Text        `json:"face_error"`
 	FaceModel      pgtype.Text        `json:"face_model"`
 	Rotation       int16              `json:"rotation"`
+	Phash          pgtype.Int8        `json:"phash"`
+	PhashFlat      bool               `json:"phash_flat"`
+}
+
+type PhotoDupDismissed struct {
+	UserID    pgtype.UUID        `json:"user_id"`
+	A         string             `json:"a"`
+	B         string             `json:"b"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type PhotoFace struct {

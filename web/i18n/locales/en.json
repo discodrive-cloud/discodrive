@@ -972,6 +972,7 @@
       "shared": "Shared",
       "map": "Map",
       "hidden": "Hidden",
+      "duplicates": "Duplicates",
       "trash": "Trash"
     },
     "select": "Select",
@@ -1198,6 +1199,20 @@
     "face_remove": "Nobody — just remove",
     "face_edit": "Wrong person?",
     "faces_moved": "Photos moved: {n}",
-    "faces_removed": "Photos removed: {n}"
+    "faces_removed": "Photos removed: {n}",
+    "dups": {
+      "group_of": "Group {n} of {m}",
+      "keep": "Keep",
+      "delete_rest": "Delete the others",
+      "keep_all": "Keep all",
+      "skip": "Skip",
+      "reclaim": "{size} can be freed once the trash is emptied",
+      "scanning": "Looking for duplicates: {done} of {total} checked",
+      "none": "No duplicates found",
+      "done": "Moved to the trash. {size} will be freed once the trash is emptied",
+      "warn_live": "The Live video goes along with the copy being deleted",
+      "warn_edited": "The unedited original goes along with the copy being deleted",
+      "edited": "Edited"
+    }
   }
 }

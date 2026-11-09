@@ -972,6 +972,7 @@
       "shared": "Compartidas",
       "map": "Mapa",
       "hidden": "Oculto",
+      "duplicates": "Duplicados",
       "trash": "Papelera"
     },
     "select": "Seleccionar",
@@ -1198,6 +1199,20 @@
     "face_remove": "Nadie — solo quitar",
     "face_edit": "¿Persona equivocada?",
     "faces_moved": "Fotos movidas: {n}",
-    "faces_removed": "Fotos quitadas: {n}"
+    "faces_removed": "Fotos quitadas: {n}",
+    "dups": {
+      "group_of": "Grupo {n} de {m}",
+      "keep": "Conservar",
+      "delete_rest": "Eliminar el resto",
+      "keep_all": "Conservar todas",
+      "skip": "Omitir",
+      "reclaim": "Se pueden liberar {size} al vaciar la papelera",
+      "scanning": "Buscando duplicados: {done} de {total} revisados",
+      "none": "No se encontraron duplicados",
+      "done": "Movido a la papelera. Se liberarán {size} al vaciar la papelera",
+      "warn_live": "Con la copia que se elimina también se eliminará el vídeo Live",
+      "warn_edited": "Con la copia que se elimina también se eliminará el original sin editar",
+      "edited": "Editado"
+    }
   }
 }

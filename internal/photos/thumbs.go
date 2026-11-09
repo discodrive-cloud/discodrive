@@ -57,6 +57,10 @@ type Thumbs struct {
 
 	renders atomic.Int64 // renders started, for tests
 
+	hashPause   time.Duration // pause between assets of the hash backfill
+	hashRetry   time.Duration // wait after the backfill failed to list its work
+	backfilling atomic.Bool   // the hash backfill is running
+
 	// OnReady, when set (before Run), is called after a thumbnail was recorded as ready;
 	// it must not block (Faces.Kick: the card can be looked at for faces now).
 	OnReady func()
@@ -76,7 +80,7 @@ func NewThumbs(q *db.Queries, storageRoot string, tools media.Tools, workers int
 		workers = 0
 	}
 	n := max(workers, 1)
-	t := &Thumbs{tcKick: make(chan struct{}, 1), q: q, storageRoot: storageRoot, tools: tools, exif: exif, workers: workers,
+	t := &Thumbs{hashPause: hashBackfillPause, hashRetry: hashBackfillRetry, tcKick: make(chan struct{}, 1), q: q, storageRoot: storageRoot, tools: tools, exif: exif, workers: workers,
 		sem:      make(chan struct{}, n),
 		inflight: map[pgtype.UUID]bool{}, flights: map[string]*flight{}, failed: map[string]time.Time{}}
 	for i := 0; i < workers; i++ {
@@ -101,7 +105,8 @@ func (t *Thumbs) Kick() {
 	}
 }
 
-// Run starts the workers and blocks until ctx ends. In economy mode it only waits.
+// Run starts the workers and blocks until ctx ends. In economy mode only the hash
+// backfill runs (it reads small thumbnails, never the originals).
 func (t *Thumbs) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	for i := 0; i < t.workers; i++ {
@@ -119,8 +124,80 @@ func (t *Thumbs) Run(ctx context.Context) {
 			t.work(ctx, t.tcKick, true)
 		}()
 	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t.backfillHashes(ctx)
+	}()
 	wg.Wait()
 	<-ctx.Done()
+}
+
+const (
+	hashBackfillBatch = 200
+	hashBackfillPause = 50 * time.Millisecond
+	hashBackfillRetry = time.Minute
+)
+
+// Backfilling reports whether the hash backfill is still going through the library: the
+// duplicates finder says it is still looking meanwhile.
+func (t *Thumbs) Backfilling() bool { return t.backfilling.Load() }
+
+// thumbHash hashes a finished thumbnail. A failure is only logged (valid=false): the hash
+// is for the duplicates finder and the thumbnail stands without it.
+func thumbHash(a db.PhotoAsset, thumbPath string) (h pgtype.Int8, flat bool) {
+	v, flat, err := DHashFile(thumbPath)
+	if err != nil {
+		log.Printf("discodrive: photos: hashing %s: %v", db.UUIDString(a.ID), err)
+		return pgtype.Int8{}, false
+	}
+	return pgtype.Int8{Int64: int64(v), Valid: true}, flat
+}
+
+// backfillHashes hashes the thumbnails that were made before hashes were kept, from the
+// files on disk (no renders, the originals are not opened). It pages by id within the
+// pass, so a card with no thumbnail file is skipped, not retried, and ends on an empty page:
+// thumbnails made later are hashed as they render. A database error is waited out
+// (hashRetry) and the pass goes on where it stopped.
+func (t *Thumbs) backfillHashes(ctx context.Context) {
+	t.backfilling.Store(true)
+	defer t.backfilling.Store(false)
+	after := pgtype.UUID{Valid: true}
+	for {
+		rows, err := t.q.ListPhotoHashBackfill(ctx, db.ListPhotoHashBackfillParams{AfterID: after, MaxRows: hashBackfillBatch})
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("discodrive: photos: listing hashes to fill (retrying in %v): %v", t.hashRetry, err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(t.hashRetry):
+			}
+			continue
+		}
+		if len(rows) == 0 {
+			return
+		}
+		for _, a := range rows {
+			after = a.ID
+			p := AssetDerivPath(t.storageRoot, a, "thumb")
+			if exists(p) {
+				if h, flat := thumbHash(a, p); h.Valid {
+					if err := t.q.SetPhotoHash(ctx, db.SetPhotoHashParams{ID: a.ID, Phash: h, PhashFlat: flat,
+						Rotation: a.Rotation, NodeVersion: a.NodeVersion}); err != nil && ctx.Err() == nil {
+						log.Printf("discodrive: photos: recording hash of %s: %v", db.UUIDString(a.ID), err)
+					}
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(t.hashPause):
+			}
+		}
+	}
 }
 
 func (t *Thumbs) work(ctx context.Context, kick chan struct{}, transcode bool) {
@@ -397,8 +474,10 @@ func (t *Thumbs) render(ctx context.Context, a db.PhotoAsset, kind string) (stri
 	}
 	if kind == "thumb" {
 		// The thumbnail is there; a failure to record it only leaves the row pending (it is
-		// claimed and rendered again later), it must not mark a good file as failed.
-		if e := t.q.SetThumbState(ctx, db.SetThumbStateParams{ID: a.ID, ThumbState: "ready"}); e != nil && ctx.Err() == nil {
+		// claimed and rendered again later), it must not mark a good file as failed. The
+		// hash goes in the same write, so the card is never ready with an old picture's hash.
+		h, flat := thumbHash(a, dst)
+		if e := t.q.SetThumbReady(ctx, db.SetThumbReadyParams{ID: a.ID, Phash: h, PhashFlat: flat}); e != nil && ctx.Err() == nil {
 			log.Printf("discodrive: photos: recording thumbnail of %s: %v", db.UUIDString(a.ID), e)
 		} else if e == nil && t.OnReady != nil {
 			t.OnReady()

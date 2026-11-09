@@ -126,6 +126,23 @@ export interface PhotoAlbumLink {
 
 export interface TrashRow extends PhotoRow { trashedAt: string }
 
+// «Дубли»: a copy in a group of near-identical cards (internal/api/photos_dups.go).
+export interface DupAsset extends PhotoRow {
+  name: string
+  path: string // the file's folder, relative to the user's root ('' = root)
+  format: string // the extension, upper case: "DNG", "HEIC"
+  bytes: number // every byte copy of the content together
+  copies: number // byte copies, the card itself included
+}
+
+// GET duplicates: groups[i].assets[0] is the suggested keep; more groups may come while
+// progress.scanning (the server is still hashing the library's thumbnails).
+export interface DupGroups {
+  groups: { assets: DupAsset[] }[]
+  reclaimBytes: number
+  progress: { hashed: number; total: number; scanning: boolean }
+}
+
 export interface PlayInfo { url: string | null; ready: boolean; unsupported?: boolean }
 
 // PUT assets/metadata body (ids aside).
@@ -421,6 +438,13 @@ export function usePhotosApi() {
       setPhotosHiddenToken(res.token, res.expiresAt)
       return res
     },
+    duplicates: () => request<DupGroups>(`${PHOTOS_API}/duplicates`),
+    // Keeps one copy of a group and moves the others to the trash.
+    resolveDuplicates: (keep: string, del: string[]) =>
+      request<{ deletedNodes: number }>(`${PHOTOS_API}/duplicates/resolve`, { method: 'POST', body: { keep, delete: del } }),
+    // «Оставить все»: the cards are not duplicates of each other.
+    dismissDuplicates: (ids: string[]) =>
+      request(`${PHOTOS_API}/duplicates/dismiss`, { method: 'POST', body: { ids } }),
     trash: () => request<TrashRow[]>(`${PHOTOS_API}/trash`, { headers: h() }),
     async restore(ids: string[]) {
       for (const part of chunk(ids, PHOTO_BATCH)) {

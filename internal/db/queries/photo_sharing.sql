@@ -180,3 +180,13 @@ WHERE l.token = $1 AND (l.expires_at IS NULL OR l.expires_at > now());
 -- Whether somebody opened a gallery or an album to the user.
 SELECT (EXISTS (SELECT 1 FROM photo_partners WHERE viewer_id = $1)
      OR EXISTS (SELECT 1 FROM photo_album_members WHERE user_id = $1))::bool;
+
+-- name: CopyPhotoAlbumItems :many
+-- Puts the kept card of a duplicate group into every album the removed copies are in;
+-- the copies keep their own rows. Returns the albums that got the card (once each).
+INSERT INTO photo_album_items (album_id, asset_id, added_by)
+SELECT DISTINCT ON (album_id) album_id, sqlc.arg(keep)::uuid, added_by FROM photo_album_items
+WHERE asset_id = ANY(sqlc.arg(from_ids)::uuid[])
+ORDER BY album_id, added_at
+ON CONFLICT DO NOTHING
+RETURNING album_id;

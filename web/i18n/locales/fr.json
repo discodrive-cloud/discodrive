@@ -972,6 +972,7 @@
       "shared": "Partagées",
       "map": "Carte",
       "hidden": "Masqué",
+      "duplicates": "Doublons",
       "trash": "Corbeille"
     },
     "select": "Sélectionner",
@@ -1198,6 +1199,20 @@
     "face_remove": "Personne — simplement retirer",
     "face_edit": "Mauvaise personne ?",
     "faces_moved": "Photos déplacées : {n}",
-    "faces_removed": "Photos retirées : {n}"
+    "faces_removed": "Photos retirées : {n}",
+    "dups": {
+      "group_of": "Groupe {n} sur {m}",
+      "keep": "Garder",
+      "delete_rest": "Supprimer les autres",
+      "keep_all": "Tout garder",
+      "skip": "Passer",
+      "reclaim": "{size} peuvent être libérés une fois la corbeille vidée",
+      "scanning": "Recherche de doublons : {done} sur {total} vérifiés",
+      "none": "Aucun doublon trouvé",
+      "done": "Déplacé dans la corbeille. {size} seront libérés une fois la corbeille vidée",
+      "warn_live": "La vidéo Live sera supprimée avec la copie",
+      "warn_edited": "L’original avant retouche sera supprimé avec la copie",
+      "edited": "Modifié"
+    }
   }
 }

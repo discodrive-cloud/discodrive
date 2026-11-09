@@ -11,6 +11,7 @@ import SelectionBar from '~/components/photos/SelectionBar.vue'
 import PhotoViewer from '~/components/photos/PhotoViewer.vue'
 import PhotoMemories from '~/components/photos/PhotoMemories.vue'
 import PhotoTrash from '~/components/photos/PhotoTrash.vue'
+import PhotoDuplicates from '~/components/photos/PhotoDuplicates.vue'
 import PhotoMap from '~/components/photos/PhotoMap.vue'
 import HiddenUnlock from '~/components/photos/HiddenUnlock.vue'
 import EditDateDialog from '~/components/photos/EditDateDialog.vue'
@@ -41,7 +42,7 @@ const { confirm, prompt } = useDialog()
 const photosEnabled = usePhotosEnabled()
 
 // ---- sections ----
-const tabs = ['photos', 'memories', 'albums', 'people', 'shared', 'map', 'hidden', 'trash'] as const
+const tabs = ['photos', 'memories', 'albums', 'people', 'shared', 'map', 'hidden', 'duplicates', 'trash'] as const
 type Tab = (typeof tabs)[number]
 const settings = ref<PhotoSettings | null>(null)
 // With one's own gallery off, «Фото» is what others opened: «Альбомы» and «Общие».
@@ -791,6 +792,9 @@ async function afterEdit(r: EditResult) {
       <!-- Корзина -->
       <PhotoTrash v-else-if="tab === 'trash'" @restored="(n) => say(t('photos.restored_done', { n }))" />
 
+      <!-- Дубли -->
+      <PhotoDuplicates v-else-if="tab === 'duplicates'" @resolved="(bytes) => say(t('photos.dups.done', { size: formatBytes(bytes) }))" />
+
       <!-- the grid over a list: a map pin's area, an album, a partner's gallery -->
       <div v-if="scoped" class="relative flex min-h-0 flex-1 flex-col">
         <div class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 md:px-6">
@@ -892,7 +896,7 @@ async function afterEdit(r: EditResult) {
       @album="(id) => (albumIds = [id])"
       @rotate="(id, turn) => rotateIds([id], turn)"
     />
-    <div v-if="notice && (viewer || tab === 'memories' || tab === 'trash' || (tab === 'albums' && !album) || (tab === 'people' && !person) || (tab === 'shared' && !owner))" class="pointer-events-none fixed inset-x-0 bottom-20 z-[55] flex justify-center px-4" role="status">
+    <div v-if="notice && (viewer || tab === 'memories' || tab === 'trash' || tab === 'duplicates' || (tab === 'albums' && !album) || (tab === 'people' && !person) || (tab === 'shared' && !owner))" class="pointer-events-none fixed inset-x-0 bottom-20 z-[55] flex justify-center px-4" role="status">
       <span class="rounded-full bg-black/75 px-3 py-1.5 text-xs text-white">{{ notice }}</span>
     </div>
     <EditDateDialog v-if="editDateIds" :ids="editDateIds" @close="editDateIds = null" @done="afterEdit" />
