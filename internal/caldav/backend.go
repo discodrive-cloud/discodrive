@@ -111,6 +111,19 @@ func toDAVCalendar(uid string, c db.Calendar) caldav.Calendar {
 
 // resolveCalendar looks up the calendar by URI and checks access (owner or share).
 func (b *Backend) resolveCalendar(ctx context.Context, uri string) (db.Calendar, error) {
+	m := reportMemoOf(ctx)
+	if m == nil {
+		return b.lookupCalendar(ctx, uri)
+	}
+	r, ok := m.calendars[uri]
+	if !ok {
+		r.cal, r.err = b.lookupCalendar(ctx, uri)
+		m.calendars[uri] = r
+	}
+	return r.cal, r.err
+}
+
+func (b *Backend) lookupCalendar(ctx context.Context, uri string) (db.Calendar, error) {
 	c, err := b.svc.CalendarByURI(ctx, uri)
 	if errors.Is(err, dav.ErrNotFound) {
 		return db.Calendar{}, notFound()
@@ -135,7 +148,7 @@ func (b *Backend) GetCalendarObject(ctx context.Context, path string, req *calda
 	if err != nil {
 		return nil, err
 	}
-	data, etag, err := b.svc.GetCalendarObject(ctx, db.UUIDString(cal.ID), obj)
+	data, etag, err := b.object(ctx, db.UUIDString(cal.ID), obj)
 	if errors.Is(err, dav.ErrNotFound) {
 		return nil, notFound()
 	}

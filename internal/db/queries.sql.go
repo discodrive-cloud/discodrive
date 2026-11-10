@@ -1007,6 +1007,43 @@ func (q *Queries) GetAddressbookObject(ctx context.Context, arg GetAddressbookOb
 	return i, err
 }
 
+const getAddressbookObjectsByUIDs = `-- name: GetAddressbookObjectsByUIDs :many
+SELECT uid, data, etag FROM addressbook_objects
+WHERE addressbook_id = $1 AND uid = ANY($2::text[])
+`
+
+type GetAddressbookObjectsByUIDsParams struct {
+	AddressbookID pgtype.UUID `json:"addressbook_id"`
+	Uids          []string    `json:"uids"`
+}
+
+type GetAddressbookObjectsByUIDsRow struct {
+	Uid  string `json:"uid"`
+	Data string `json:"data"`
+	Etag string `json:"etag"`
+}
+
+// The cards a multiget names, in one query.
+func (q *Queries) GetAddressbookObjectsByUIDs(ctx context.Context, arg GetAddressbookObjectsByUIDsParams) ([]GetAddressbookObjectsByUIDsRow, error) {
+	rows, err := q.db.Query(ctx, getAddressbookObjectsByUIDs, arg.AddressbookID, arg.Uids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAddressbookObjectsByUIDsRow{}
+	for rows.Next() {
+		var i GetAddressbookObjectsByUIDsRow
+		if err := rows.Scan(&i.Uid, &i.Data, &i.Etag); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getCalendar = `-- name: GetCalendar :one
 SELECT id, user_id, uri, name, color, ctag, created_at, components, sort_order FROM calendars WHERE id = $1
 `
@@ -1072,6 +1109,43 @@ func (q *Queries) GetCalendarObject(ctx context.Context, arg GetCalendarObjectPa
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getCalendarObjectsByUIDs = `-- name: GetCalendarObjectsByUIDs :many
+SELECT uid, data, etag FROM calendar_objects
+WHERE calendar_id = $1 AND uid = ANY($2::text[])
+`
+
+type GetCalendarObjectsByUIDsParams struct {
+	CalendarID pgtype.UUID `json:"calendar_id"`
+	Uids       []string    `json:"uids"`
+}
+
+type GetCalendarObjectsByUIDsRow struct {
+	Uid  string `json:"uid"`
+	Data string `json:"data"`
+	Etag string `json:"etag"`
+}
+
+// The objects a multiget names, in one query.
+func (q *Queries) GetCalendarObjectsByUIDs(ctx context.Context, arg GetCalendarObjectsByUIDsParams) ([]GetCalendarObjectsByUIDsRow, error) {
+	rows, err := q.db.Query(ctx, getCalendarObjectsByUIDs, arg.CalendarID, arg.Uids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetCalendarObjectsByUIDsRow{}
+	for rows.Next() {
+		var i GetCalendarObjectsByUIDsRow
+		if err := rows.Scan(&i.Uid, &i.Data, &i.Etag); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getDevice = `-- name: GetDevice :one

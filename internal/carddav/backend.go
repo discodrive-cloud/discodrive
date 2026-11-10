@@ -128,6 +128,19 @@ func toDAVAddressbook(uid string, a db.Addressbook) carddav.AddressBook {
 
 // resolveAddressbook looks up the address book by URI and checks access (owner or share).
 func (b *Backend) resolveAddressbook(ctx context.Context, uri string) (db.Addressbook, error) {
+	m := reportMemoOf(ctx)
+	if m == nil {
+		return b.lookupAddressbook(ctx, uri)
+	}
+	r, ok := m.books[uri]
+	if !ok {
+		r.book, r.err = b.lookupAddressbook(ctx, uri)
+		m.books[uri] = r
+	}
+	return r.book, r.err
+}
+
+func (b *Backend) lookupAddressbook(ctx context.Context, uri string) (db.Addressbook, error) {
 	a, err := b.svc.AddressbookByURI(ctx, uri)
 	if errors.Is(err, dav.ErrNotFound) {
 		return db.Addressbook{}, notFound()
@@ -152,7 +165,7 @@ func (b *Backend) GetAddressObject(ctx context.Context, path string, req *cardda
 	if err != nil {
 		return nil, err
 	}
-	data, etag, err := b.svc.GetAddressbookObject(ctx, db.UUIDString(ab.ID), obj)
+	data, etag, err := b.object(ctx, db.UUIDString(ab.ID), obj)
 	if errors.Is(err, dav.ErrNotFound) {
 		return nil, notFound()
 	}

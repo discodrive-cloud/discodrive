@@ -830,6 +830,11 @@ SELECT * FROM calendar_objects WHERE calendar_id = $1 AND uid = $2;
 -- name: ListCalendarObjects :many
 SELECT * FROM calendar_objects WHERE calendar_id = $1 ORDER BY uid;
 
+-- The objects a multiget names, in one query.
+-- name: GetCalendarObjectsByUIDs :many
+SELECT uid, data, etag FROM calendar_objects
+WHERE calendar_id = $1 AND uid = ANY(sqlc.arg(uids)::text[]);
+
 -- name: DeleteCalendarObject :execrows
 DELETE FROM calendar_objects WHERE calendar_id = $1 AND uid = $2;
 
@@ -876,6 +881,11 @@ SELECT * FROM addressbook_objects WHERE addressbook_id = $1 ORDER BY uid;
 -- vCard with its base64 photo — hundreds of megabytes across a large address book.
 -- name: ListAddressbookSummaries :many
 SELECT uid, parsed FROM addressbook_objects WHERE addressbook_id = $1 ORDER BY uid;
+
+-- The cards a multiget names, in one query.
+-- name: GetAddressbookObjectsByUIDs :many
+SELECT uid, data, etag FROM addressbook_objects
+WHERE addressbook_id = $1 AND uid = ANY(sqlc.arg(uids)::text[]);
 
 -- name: DeleteAddressbookObject :execrows
 DELETE FROM addressbook_objects WHERE addressbook_id = $1 AND uid = $2;

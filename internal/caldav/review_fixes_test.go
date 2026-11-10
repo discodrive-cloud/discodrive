@@ -3,15 +3,18 @@ package caldav_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	godavcaldav "github.com/emersion/go-webdav/caldav"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
@@ -26,7 +29,17 @@ type reviewEnv struct {
 	svc             *dav.Service
 	ownerID, sharee string
 	calID, calDir   string
+	queries         *queryCounter
 }
+
+// queryCounter counts the statements sent to the database.
+type queryCounter struct{ n atomic.Int64 }
+
+func (c *queryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	c.n.Add(1)
+	return ctx
+}
+func (c *queryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // setupReview: two users, the owner's calendar, and a handler that dispatches like the
 // middleware (PROPPATCH, PROPFIND, raw PUT body) with the user taken from X-User-ID.
@@ -44,7 +57,10 @@ func setupReview(t *testing.T) *reviewEnv {
 	if err := db.MigrateUp(dsn); err != nil {
 		t.Fatalf("migrations: %v", err)
 	}
-	pool, _ := pgxpool.New(ctx, dsn)
+	cfg, _ := pgxpool.ParseConfig(dsn)
+	queries := &queryCounter{}
+	cfg.ConnConfig.Tracer = queries
+	pool, _ := pgxpool.NewWithConfig(ctx, cfg)
 	t.Cleanup(pool.Close)
 	q := db.New(pool)
 	tenant, _ := q.CreateTenant(ctx, "t")
@@ -69,12 +85,15 @@ func setupReview(t *testing.T) *reviewEnv {
 		case "PROPFIND":
 			backend.HandlePropfind(w, r.WithContext(ctx), gh)
 			return
+		case "REPORT":
+			backend.HandleReport(w, r.WithContext(ctx), gh)
+			return
 		case http.MethodPut:
 			ctx = caldav.WithRawBody(ctx, raw)
 		}
 		gh.ServeHTTP(w, r.WithContext(ctx))
 	})
-	return &reviewEnv{h: h, pool: pool, svc: svc, ownerID: ownerID, sharee: db.UUIDString(sharee.ID),
+	return &reviewEnv{queries: queries, h: h, pool: pool, svc: svc, ownerID: ownerID, sharee: db.UUIDString(sharee.ID),
 		calID: db.UUIDString(cal.ID), calDir: "/caldav/" + ownerID + "/cal/" + cal.Uri + "/"}
 }
 
@@ -214,5 +233,43 @@ func TestProppatchByShareeIsForbidden(t *testing.T) {
 	}
 	if rec := e.req(t, e.ownerID, "PROPPATCH", e.calDir, body, nil); !strings.Contains(rec.Body.String(), "200 OK") {
 		t.Fatalf("owner PROPPATCH: %s", rec.Body.String())
+	}
+}
+
+// A calendar-multiget (what a client sends after a sync report lists changed events) used
+// to resolve the calendar and check access for every href. The number of queries must not
+// grow with the number of events.
+func TestMultigetQueriesDoNotGrowWithEvents(t *testing.T) {
+	e := setupReview(t)
+	const events = 40
+	var body strings.Builder
+	body.WriteString(`<?xml version="1.0" encoding="UTF-8"?><C:calendar-multiget xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:prop><D:getetag/><C:calendar-data/></D:prop>`)
+	for i := 0; i < events; i++ {
+		uid := fmt.Sprintf("ev-%02d", i)
+		href := e.calDir + uid + ".ics"
+		if rec := e.req(t, e.ownerID, http.MethodPut, href, eventWith(uid, "summary-"+uid), nil); rec.Code/100 != 2 {
+			t.Fatalf("PUT %s: %d %s", uid, rec.Code, rec.Body)
+		}
+		body.WriteString("<D:href>" + href + "</D:href>")
+	}
+	body.WriteString("<D:href>" + e.calDir + "missing.ics</D:href></C:calendar-multiget>")
+
+	e.queries.n.Store(0)
+	rep := e.req(t, e.ownerID, "REPORT", e.calDir, body.String(), map[string]string{"Depth": "1"})
+	if rep.Code != http.StatusMultiStatus {
+		t.Fatalf("REPORT: %d %s", rep.Code, rep.Body)
+	}
+	used := e.queries.n.Load()
+	out := rep.Body.String()
+	for i := 0; i < events; i++ {
+		if want := fmt.Sprintf("summary-ev-%02d", i); !strings.Contains(out, want) {
+			t.Fatalf("the report misses %q", want)
+		}
+	}
+	if !strings.Contains(out, "missing.ics") || !strings.Contains(out, "404") {
+		t.Error("the event that does not exist is not reported as 404")
+	}
+	if used > 12 {
+		t.Fatalf("a multiget of %d events made %d queries, want a constant handful", events, used)
 	}
 }

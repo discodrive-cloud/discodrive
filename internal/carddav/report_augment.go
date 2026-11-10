@@ -1,8 +1,10 @@
 package carddav
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +22,12 @@ import (
 // (CR → &#13; so that CRLF survives XML-parser normalization on the client).
 
 func (b *Backend) serveReport(w http.ResponseWriter, r *http.Request, dav http.Handler) {
+	// One memo for the whole REPORT, and the cards of a multiget read ahead in one query.
+	r = r.WithContext(withReportMemo(r.Context()))
+	if raw, err := io.ReadAll(r.Body); err == nil {
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		b.prefetchMultiget(r.Context(), raw)
+	}
 	buf := newBufRW()
 	dav.ServeHTTP(buf, r)
 	body := []byte(buf.body.String())
@@ -70,7 +78,7 @@ func (b *Backend) augmentReport(ctx context.Context, body []byte) []byte {
 		if err != nil {
 			continue
 		}
-		data, _, err := b.svc.GetAddressbookObject(ctx, db.UUIDString(ab.ID), obj)
+		data, _, err := b.object(ctx, db.UUIDString(ab.ID), obj)
 		if err != nil {
 			continue
 		}

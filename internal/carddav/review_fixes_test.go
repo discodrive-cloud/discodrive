@@ -3,15 +3,18 @@ package carddav
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	godavcarddav "github.com/emersion/go-webdav/carddav"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
@@ -25,7 +28,17 @@ type reviewEnv struct {
 	svc                *dav.Service
 	ownerID, sharee    string
 	abURI, abID, abDir string
+	queries            *queryCounter
 }
+
+// queryCounter counts the statements sent to the database.
+type queryCounter struct{ n atomic.Int64 }
+
+func (c *queryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	c.n.Add(1)
+	return ctx
+}
+func (c *queryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // setupReview: two users, the owner's address book, and a handler that dispatches the way
 // Handler does (PROPPATCH, REPORT, raw GET, raw PUT body) with the user taken from X-User-ID.
@@ -43,7 +56,10 @@ func setupReview(t *testing.T) *reviewEnv {
 	if err := db.MigrateUp(dsn); err != nil {
 		t.Fatalf("migrations: %v", err)
 	}
-	pool, _ := pgxpool.New(ctx, dsn)
+	cfg, _ := pgxpool.ParseConfig(dsn)
+	queries := &queryCounter{}
+	cfg.ConnConfig.Tracer = queries
+	pool, _ := pgxpool.NewWithConfig(ctx, cfg)
 	t.Cleanup(pool.Close)
 	q := db.New(pool)
 	tenant, _ := q.CreateTenant(ctx, "t")
@@ -77,7 +93,7 @@ func setupReview(t *testing.T) *reviewEnv {
 		}
 		gh.ServeHTTP(w, r.WithContext(ctx))
 	})
-	return &reviewEnv{h: h, pool: pool, svc: svc, ownerID: ownerID, sharee: db.UUIDString(sharee.ID),
+	return &reviewEnv{queries: queries, h: h, pool: pool, svc: svc, ownerID: ownerID, sharee: db.UUIDString(sharee.ID),
 		abURI: ab.Uri, abID: db.UUIDString(ab.ID), abDir: "/carddav/" + ownerID + "/card/" + ab.Uri + "/"}
 }
 
@@ -245,5 +261,42 @@ func TestSecondCardWithSameUIDIsRefused(t *testing.T) {
 	}
 	if len(objs) != 1 {
 		t.Fatalf("address book holds %d cards, want 1", len(objs))
+	}
+}
+
+// A multiget of a whole address book (what a phone sends on first sync) used to cost
+// several queries per card: the collection was resolved and its access checked for every
+// href, and every card was read twice. The number of queries must not grow with the
+// number of cards.
+func TestMultigetQueriesDoNotGrowWithCards(t *testing.T) {
+	e := setupReview(t)
+	const cards = 40
+	hrefs := make([]string, cards)
+	for i := range hrefs {
+		uid := fmt.Sprintf("card-%02d", i)
+		hrefs[i] = e.abDir + uid + ".vcf"
+		if rec := e.req(t, e.ownerID, http.MethodPut, hrefs[i], vcardWith(uid, "NOTE:n"+uid+"\r\n"), nil); rec.Code/100 != 2 {
+			t.Fatalf("PUT %s: %d %s", uid, rec.Code, rec.Body)
+		}
+	}
+	hrefs = append(hrefs, e.abDir+"missing.vcf")
+
+	e.queries.n.Store(0)
+	rep := e.req(t, e.ownerID, "REPORT", e.abDir, multiget(hrefs...), map[string]string{"Depth": "1"})
+	if rep.Code != http.StatusMultiStatus {
+		t.Fatalf("REPORT: %d %s", rep.Code, rep.Body)
+	}
+	used := e.queries.n.Load()
+	body := rep.Body.String()
+	for i := 0; i < cards; i++ {
+		if want := fmt.Sprintf("NOTE:ncard-%02d", i); !strings.Contains(body, want) {
+			t.Fatalf("the report misses %q", want)
+		}
+	}
+	if !strings.Contains(body, "missing.vcf") || !strings.Contains(body, "404") {
+		t.Error("the card that does not exist is not reported as 404")
+	}
+	if used > 12 {
+		t.Fatalf("a multiget of %d cards made %d queries, want a constant handful", cards, used)
 	}
 }

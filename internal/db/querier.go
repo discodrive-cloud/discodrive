@@ -276,6 +276,8 @@ type Querier interface {
 	GetAddressbook(ctx context.Context, id pgtype.UUID) (Addressbook, error)
 	GetAddressbookByURI(ctx context.Context, uri string) (Addressbook, error)
 	GetAddressbookObject(ctx context.Context, arg GetAddressbookObjectParams) (AddressbookObject, error)
+	// The cards a multiget names, in one query.
+	GetAddressbookObjectsByUIDs(ctx context.Context, arg GetAddressbookObjectsByUIDsParams) ([]GetAddressbookObjectsByUIDsRow, error)
 	// A card of the album (or a part of one), for its public link.
 	GetAlbumPhotoAsset(ctx context.Context, arg GetAlbumPhotoAssetParams) (PhotoAsset, error)
 	// Returns album plus artist name in one query for songChild assembly.
@@ -288,6 +290,8 @@ type Querier interface {
 	GetCalendar(ctx context.Context, id pgtype.UUID) (Calendar, error)
 	GetCalendarByURI(ctx context.Context, uri string) (Calendar, error)
 	GetCalendarObject(ctx context.Context, arg GetCalendarObjectParams) (CalendarObject, error)
+	// The objects a multiget names, in one query.
+	GetCalendarObjectsByUIDs(ctx context.Context, arg GetCalendarObjectsByUIDsParams) ([]GetCalendarObjectsByUIDsRow, error)
 	// Device by id (middleware verifies the device token is still live → instant revocation).
 	GetDevice(ctx context.Context, id pgtype.UUID) (Device, error)
 	GetDeviceByTokenHash(ctx context.Context, tokenHash pgtype.Text) (Device, error)

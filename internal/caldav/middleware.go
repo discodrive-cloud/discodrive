@@ -62,6 +62,11 @@ func Handler(authSvc *auth.Service, settings SettingsReader, backend *Backend, d
 			backend.HandlePropfind(w, r.WithContext(ctx), dav)
 			return
 		}
+		// REPORT: a per-request memo, and a multiget's objects read ahead (see report_memo.go).
+		if r.Method == "REPORT" {
+			backend.HandleReport(w, r.WithContext(ctx), dav)
+			return
+		}
 		// DELETE of a collection is not dispatched by go-webdav (see delete_collection.go).
 		if r.Method == http.MethodDelete {
 			backend.HandleDelete(w, r.WithContext(ctx), dav)

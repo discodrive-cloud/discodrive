@@ -628,3 +628,41 @@ func (s *Service) DeleteAddressbookObject(ctx context.Context, abID, uid string)
 	}
 	return tx.Commit(ctx)
 }
+
+// StoredObject is one calendar object or contact card as stored: its data and ETag.
+type StoredObject struct{ Data, ETag string }
+
+// AddressbookObjectsByUIDs returns the cards of an address book with these uids, keyed by
+// uid; a uid without a card is simply absent.
+func (s *Service) AddressbookObjectsByUIDs(ctx context.Context, abID string, uids []string) (map[string]StoredObject, error) {
+	aid, err := db.ParseUUID(abID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.q.GetAddressbookObjectsByUIDs(ctx, db.GetAddressbookObjectsByUIDsParams{AddressbookID: aid, Uids: uids})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]StoredObject, len(rows))
+	for _, r := range rows {
+		out[r.Uid] = StoredObject{Data: r.Data, ETag: r.Etag}
+	}
+	return out, nil
+}
+
+// CalendarObjectsByUIDs is AddressbookObjectsByUIDs for a calendar.
+func (s *Service) CalendarObjectsByUIDs(ctx context.Context, calID string, uids []string) (map[string]StoredObject, error) {
+	cid, err := db.ParseUUID(calID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.q.GetCalendarObjectsByUIDs(ctx, db.GetCalendarObjectsByUIDsParams{CalendarID: cid, Uids: uids})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]StoredObject, len(rows))
+	for _, r := range rows {
+		out[r.Uid] = StoredObject{Data: r.Data, ETag: r.Etag}
+	}
+	return out, nil
+}
