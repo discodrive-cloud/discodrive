@@ -49,7 +49,7 @@ func (l *Limiter) Blocked(r *http.Request) bool {
 	if l == nil {
 		return false
 	}
-	k := key(r)
+	k := Key(r)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	e := l.peers[k]
@@ -61,7 +61,7 @@ func (l *Limiter) Fail(r *http.Request) {
 	if l == nil {
 		return
 	}
-	k := key(r)
+	k := Key(r)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -89,9 +89,9 @@ func (l *Limiter) Fail(r *http.Request) {
 	e.failures++
 }
 
-// key groups IPv6 clients by /64 (one host usually owns the whole prefix) and
-// IPv4 clients by address.
-func key(r *http.Request) string {
+// Key groups IPv6 clients by /64 (one host usually owns the whole prefix) and
+// IPv4 clients by address. Every per-client attempt limiter keys on it.
+func Key(r *http.Request) string {
 	raw := httpsecurity.ClientIP(r)
 	ip, err := netip.ParseAddr(raw)
 	if err != nil {

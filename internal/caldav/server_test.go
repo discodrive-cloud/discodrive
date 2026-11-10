@@ -54,6 +54,9 @@ func setup(t *testing.T) (http.Handler, string, string) {
 		case "PROPFIND":
 			backend.HandlePropfind(w, r.WithContext(c), h)
 			return
+		case http.MethodDelete:
+			backend.HandleDelete(w, r.WithContext(c), h)
+			return
 		}
 		if r.Method == http.MethodPut {
 			raw, _ := io.ReadAll(r.Body)
@@ -341,5 +344,34 @@ func TestSharedTaskListVisibleAndWritable(t *testing.T) {
 	}
 	if del := doAs(t, h, granteeID, http.MethodDelete, path, ""); del.Code != http.StatusNoContent && del.Code != http.StatusOK {
 		t.Fatalf("grantee DELETE code=%d body=%s", del.Code, del.Body.String())
+	}
+}
+
+// Deleting a list in Reminders (or a calendar in Calendar) sends DELETE for the
+// collection. go-webdav treats every DELETE as an object delete and answered 404, so the
+// list came back on the next sync.
+func TestDeleteCollection(t *testing.T) {
+	h, userID, calURI := setup(t)
+	col := "/caldav/" + userID + "/cal/" + calURI + "/"
+	ics := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//t//EN\r\nBEGIN:VEVENT\r\nUID:e1\r\nDTSTAMP:20260101T000000Z\r\nDTSTART:20260102T100000Z\r\nSUMMARY:x\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+	if rec := do(t, h, http.MethodPut, col+"e1.ics", ics); rec.Code/100 != 2 {
+		t.Fatalf("PUT object: %d %s", rec.Code, rec.Body)
+	}
+	// An object delete still goes the usual way.
+	if rec := do(t, h, http.MethodDelete, col+"e1.ics", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE object: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, h, http.MethodDelete, col, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE collection: %d %s, want 204", rec.Code, rec.Body)
+	}
+	if rec := do(t, h, "PROPFIND", col, ""); rec.Code != http.StatusNotFound {
+		t.Errorf("PROPFIND of the deleted collection: %d, want 404", rec.Code)
+	}
+	if rec := do(t, h, http.MethodDelete, col, ""); rec.Code != http.StatusNotFound {
+		t.Errorf("second DELETE: %d, want 404", rec.Code)
+	}
+	// The home set and the principal are not collections a client may delete.
+	if rec := do(t, h, http.MethodDelete, "/caldav/"+userID+"/cal/", ""); rec.Code != http.StatusForbidden {
+		t.Errorf("DELETE home set: %d, want 403", rec.Code)
 	}
 }

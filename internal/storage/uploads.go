@@ -3,9 +3,12 @@ package storage
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path"
@@ -45,6 +48,11 @@ type uploadSession struct {
 	modifiedAt  time.Time // content date the client declared at Init; zero = use server time
 	nextChunk   int
 	lastTouch   time.Time
+	// sum is the sha256 of the first summed bytes of the staging file, fed as the chunks
+	// arrive, so Complete does not have to read the assembled file again. nil once it
+	// lost track of the file; Complete then hashes the file itself.
+	sum    hash.Hash
+	summed int64
 }
 
 // Uploads manages resumable chunked uploads: sessions are held in memory,
@@ -164,7 +172,7 @@ func (u *Uploads) init(ctx context.Context, userID string, parentID *string, nam
 	u.m[id] = &uploadSession{userID: userID, parentID: parentID, name: name,
 		relPath: relPath, baseVersion: baseVersion,
 		tmpRel: ".uploads/" + id, total: total,
-		modifiedAt: meta.ModifiedAt, lastTouch: time.Now()}
+		modifiedAt: meta.ModifiedAt, lastTouch: time.Now(), sum: sha256.New()}
 	u.mu.Unlock()
 	return id, nil
 }
@@ -305,7 +313,11 @@ func (u *Uploads) Chunk(ctx context.Context, id, userID string, n int, r io.Read
 	if reservation != nil {
 		limited = reservation.Reader(r)
 	}
+	// The running hash takes the chunk as it is written, and is put back if the chunk
+	// does not stay.
+	hashed, undoHash := s.hashChunk(&limited, before)
 	if err := u.st.Append(s.tmpRel, limited); err != nil {
+		undoHash()
 		if terr := u.st.Truncate(s.tmpRel, before); terr != nil {
 			return s.nextChunk, terr
 		}
@@ -325,6 +337,7 @@ func (u *Uploads) Chunk(ctx context.Context, id, userID string, n int, r io.Read
 			return s.nextChunk, err
 		}
 		if after > s.total {
+			undoHash()
 			if terr := u.st.Truncate(s.tmpRel, before); terr != nil {
 				return s.nextChunk, terr
 			}
@@ -335,6 +348,10 @@ func (u *Uploads) Chunk(ctx context.Context, id, userID string, n int, r io.Read
 			}
 			return s.nextChunk, ErrUploadSize
 		}
+	}
+	// The chunk is in the staging file for good: the hash now covers it.
+	if s.sum != nil {
+		s.summed = before + hashed.n
 	}
 	if reservation != nil {
 		actual, e := u.st.Size(s.tmpRel)
@@ -347,6 +364,42 @@ func (u *Uploads) Chunk(ctx context.Context, id, userID string, n int, r io.Read
 	}
 	s.nextChunk++
 	return s.nextChunk, nil
+}
+
+// hashChunk routes the chunk about to be appended at offset before through the running
+// hash. It returns the count of bytes hashed and the undo for a chunk that is rolled
+// back. The hash only follows a staging file it has covered from the first byte;
+// otherwise it is dropped.
+func (s *uploadSession) hashChunk(chunk *io.Reader, before int64) (*countingWriter, func()) {
+	counted := &countingWriter{w: io.Discard}
+	state, ok := s.sum.(encoding.BinaryMarshaler)
+	if !ok || s.summed != before {
+		s.sum = nil
+		return counted, func() {}
+	}
+	saved, err := state.MarshalBinary()
+	if err != nil {
+		s.sum = nil
+		return counted, func() {}
+	}
+	counted.w = s.sum
+	*chunk = io.TeeReader(*chunk, counted)
+	return counted, func() {
+		if s.sum.(encoding.BinaryUnmarshaler).UnmarshalBinary(saved) != nil {
+			s.sum = nil
+		}
+	}
+}
+
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // Status returns the next expected chunk number (for resuming an upload).
@@ -407,6 +460,11 @@ func (u *Uploads) Complete(ctx context.Context, id, userID string) (PushResult, 
 		}
 		ctx = reservation.WithCredit(ctx, actual)
 		fs = u.fs.onConn(reservation.Connection(), reservation.Queries(), reservation.Checker())
+		// The chunks were hashed on their way in: publication takes that hash instead of
+		// reading the assembled file once more (see stage).
+		if s.sum != nil && s.summed == actual {
+			ctx = withStagedSum(ctx, hex.EncodeToString(s.sum.Sum(nil)))
+		}
 	}
 
 	// Verify before publishing: without this the session happily pushes whatever chunks
@@ -423,20 +481,24 @@ func (u *Uploads) Complete(ctx context.Context, id, userID string) (PushResult, 
 			return PushResult{}, fmt.Errorf("%w: staged %d of %d declared bytes", ErrUploadSize, staged, s.total)
 		}
 	}
-	f, err := u.st.Open(s.tmpRel)
-	if err != nil {
-		s.mu.Unlock()
-		return PushResult{}, err
+	body, closeBody := io.Reader(strings.NewReader("")), func() {}
+	if _, known := stagedSum(ctx); !known {
+		f, err := u.st.Open(s.tmpRel)
+		if err != nil {
+			s.mu.Unlock()
+			return PushResult{}, err
+		}
+		body, closeBody = f, func() { _ = f.Close() }
 	}
 	var res PushResult
 	if s.relPath != "" {
-		res, err = fs.PushByPathWithMeta(ctx, s.userID, s.relPath, s.baseVersion, f,
+		res, err = fs.PushByPathWithMeta(ctx, s.userID, s.relPath, s.baseVersion, body,
 			PushMeta{ModifiedAt: s.modifiedAt})
 	} else {
-		res, err = fs.PushWithMeta(ctx, s.userID, s.parentID, s.name, s.baseVersion, "", f,
+		res, err = fs.PushWithMeta(ctx, s.userID, s.parentID, s.name, s.baseVersion, "", body,
 			PushMeta{ModifiedAt: s.modifiedAt})
 	}
-	_ = f.Close()
+	closeBody()
 	if err != nil {
 		s.mu.Unlock()
 		return PushResult{}, err

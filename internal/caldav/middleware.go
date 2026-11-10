@@ -62,6 +62,11 @@ func Handler(authSvc *auth.Service, settings SettingsReader, backend *Backend, d
 			backend.HandlePropfind(w, r.WithContext(ctx), dav)
 			return
 		}
+		// DELETE of a collection is not dispatched by go-webdav (see delete_collection.go).
+		if r.Method == http.MethodDelete {
+			backend.HandleDelete(w, r.WithContext(ctx), dav)
+			return
+		}
 		if r.Method == http.MethodPut {
 			ctx = WithRawBody(ctx, raw)
 		}

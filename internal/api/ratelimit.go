@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"discodrive/internal/auth"
+	"discodrive/internal/authlimit"
 )
 
 // rateLimiter is a fixed-window per-key attempt counter (login brute-force protection).
@@ -63,7 +64,7 @@ func (rl *rateLimiter) roll() {
 // rateLimited wraps a handler, rejecting requests that exceed the per-IP limit.
 func (s *Server) rateLimited(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.loginLimiter.allow(clientIP(r)) {
+		if !s.loginLimiter.allow(authlimit.Key(r)) {
 			writeError(w, http.StatusTooManyRequests, "too many attempts, please try again later")
 			return
 		}
@@ -88,7 +89,7 @@ func (sr *statusRecorder) WriteHeader(code int) {
 // while brute-forcing invalid tokens is still limited.
 func (s *Server) authLimited(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := clientIP(r)
+		ip := authlimit.Key(r)
 		if !s.loginLimiter.peek(ip) {
 			writeError(w, http.StatusTooManyRequests, "too many attempts, please try again later")
 			return
@@ -109,7 +110,7 @@ func newPollLimiter() *rateLimiter {
 // pollLimited is like rateLimited but uses the more generous poll-specific limiter.
 func (s *Server) pollLimited(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.pollLimiter.allow(clientIP(r)) {
+		if !s.pollLimiter.allow(authlimit.Key(r)) {
 			writeError(w, http.StatusTooManyRequests, "too many requests, please try again later")
 			return
 		}
@@ -172,7 +173,7 @@ func newAccountLimiter() *rateLimiter {
 // budget that only refused attempts (401/403) consume.
 func (s *Server) passwordChecked(h http.HandlerFunc) http.HandlerFunc {
 	return s.rateLimited(func(w http.ResponseWriter, r *http.Request) {
-		refund, ok := s.accountLimiter.reserve(auth.UserID(r.Context()))
+		refund, ok := s.reserveGuess(auth.UserID(r.Context()))
 		if !ok {
 			writeError(w, http.StatusTooManyRequests, "too many attempts, please try again later")
 			return
@@ -183,4 +184,14 @@ func (s *Server) passwordChecked(h http.HandlerFunc) http.HandlerFunc {
 			refund()
 		}
 	})
+}
+
+// reserveGuess takes one attempt from the account's budget of wrong secrets; refund
+// gives it back when the attempt turned out not to be a wrong guess. A Server built
+// without the limiter (tests) does not limit.
+func (s *Server) reserveGuess(account string) (refund func(), ok bool) {
+	if s.accountLimiter == nil {
+		return func() {}, true
+	}
+	return s.accountLimiter.reserve(account)
 }

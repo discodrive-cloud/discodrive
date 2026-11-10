@@ -272,6 +272,15 @@ func (s *Service) DisableTOTP(ctx context.Context, userID, password, code string
 	return tx.Commit(ctx)
 }
 
+// MFASubject returns the account a valid MFA-pending token was issued for.
+func (s *Service) MFASubject(mfaToken string) (string, bool) {
+	claims, err := s.issuer.Parse(mfaToken)
+	if err != nil || claims.Pur != "mfa" || claims.Subject == "" {
+		return "", false
+	}
+	return claims.Subject, true
+}
+
 // CompleteMFATOTP finishes a login that requires a second factor: it validates the
 // MFA-pending token, then the code (TOTP or, failing that, a one-time backup code),
 // and issues a full session.
@@ -385,7 +394,9 @@ func (s *Service) consumeBackupCode(ctx context.Context, uid pgtype.UUID, code s
 
 func consumeBackupCodeWithQueries(ctx context.Context, q *db.Queries, uid pgtype.UUID, code string) bool {
 	norm := normalizeBackupCode(code)
-	if norm == "" {
+	// Each candidate below costs an Argon2 run, up to ten in a row: a mistyped 6-digit
+	// TOTP code must not get that far.
+	if !backupCodeShaped(norm) {
 		return false
 	}
 	rows, err := q.ListUnusedBackupCodes(ctx, uid)
@@ -418,4 +429,18 @@ func newBackupCode() (plain, hash string, err error) {
 // does not affect verification.
 func normalizeBackupCode(code string) string {
 	return strings.ToLower(strings.NewReplacer("-", "", " ", "").Replace(strings.TrimSpace(code)))
+}
+
+// backupCodeShaped reports whether a normalized code could have come from newBackupCode:
+// eight characters of the lower-case base32 alphabet.
+func backupCodeShaped(norm string) bool {
+	if len(norm) != 8 {
+		return false
+	}
+	for _, c := range norm {
+		if (c < 'a' || c > 'z') && (c < '2' || c > '7') {
+			return false
+		}
+	}
+	return true
 }

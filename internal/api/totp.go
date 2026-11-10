@@ -128,7 +128,20 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	// Wrong codes are counted per account, across addresses and sign-in tokens: with the
+	// password known, six digits are otherwise within reach of a distributed guesser.
+	refund := func() {}
+	if account, ok := s.auth.MFASubject(req.MFAToken); ok {
+		var allowed bool
+		if refund, allowed = s.reserveGuess("mfa:" + account); !allowed {
+			writeError(w, http.StatusTooManyRequests, "too many attempts, please try again later")
+			return
+		}
+	}
 	res, err := s.auth.CompleteMFATOTP(r.Context(), req.MFAToken, req.Code)
+	if !errors.Is(err, auth.ErrInvalidTOTPCode) {
+		refund()
+	}
 	switch {
 	case errors.Is(err, auth.ErrInvalidMFAToken):
 		writeError(w, http.StatusUnauthorized, "sign-in session expired, start over")

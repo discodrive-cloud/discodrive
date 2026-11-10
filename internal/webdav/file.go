@@ -147,69 +147,92 @@ func (d *dirFile) Readdir(count int) ([]fs.FileInfo, error) {
 	return out, nil
 }
 
-// writeFile is a webdav.File for PUT: buffers into a temp file, then Push on Close.
+// writeFile is a webdav.File for PUT. The body is piped straight into Push, which stages
+// it on the storage disk under the user's quota and publishes it when the body ends; the
+// file is never buffered elsewhere first. Close decides how the body ends: cleanly (the
+// file is published) or with an error (nothing is).
 type writeFile struct {
-	ctx      context.Context
-	svc      *storage.FileService
-	userID   string
-	deviceID string
-	parentID *string
-	name     string
-	tmp      *os.File
-	expect   int64 // declared Content-Length; -1 when the client did not state one
-	written  int64 // bytes actually buffered so far
-	limit    int64 // the user's allowance when the PUT began; quota.Unlimited if none
-	failed   error // the first Write error: the body is not whole, Close must not publish it
+	ctx     context.Context
+	name    string
+	body    *io.PipeWriter
+	pushed  chan error // the result of Push
+	expect  int64      // declared Content-Length; -1 when the client did not state one
+	written int64      // bytes handed to storage so far
+	failed  error      // the first Write error: the body is not whole, Close must not publish it
 }
 
-func (w *writeFile) Write(p []byte) (int, error) {
-	// The user's other PUTs in flight share the limit (see spooled).
-	if !spoolTake(w.userID, int64(len(p)), w.limit) {
+// newWriteFile starts the Push that will receive the PUT body.
+func newWriteFile(ctx context.Context, svc *storage.FileService, userID, deviceID string, parentID *string, name string, expect int64) *writeFile {
+	pr, pw := io.Pipe()
+	w := &writeFile{ctx: ctx, name: name, body: pw, pushed: make(chan error, 1), expect: expect}
+	go func() {
+		_, err := svc.Push(ctx, userID, parentID, name, nil, deviceID, pr)
+		// Whatever is still being written has nowhere to go: fail it with the reason.
+		if err != nil {
+			_ = pr.CloseWithError(err)
+		} else {
+			_ = pr.Close()
+		}
+		w.pushed <- err
+	}()
+	return w
+}
+
+// refused notes a body cut off at the user's allowance, so the handler answers 507.
+func (w *writeFile) refused(err error) {
+	if errors.Is(err, quota.ErrExceeded) {
 		if pq := putQuotaOf(w.ctx); pq != nil {
 			pq.exceeded = true
 		}
-		w.failed = fmt.Errorf("upload of %q: %w", w.name, quota.ErrExceeded)
-		return 0, w.failed
 	}
-	n, err := w.tmp.Write(p)
-	spoolGive(w.userID, int64(len(p)-n))
+}
+
+func (w *writeFile) Write(p []byte) (int, error) {
+	n, err := w.body.Write(p)
 	w.written += int64(n)
-	if err != nil && w.failed == nil {
-		w.failed = fmt.Errorf("upload of %q stopped after %d bytes: %w", w.name, w.written, err)
+	if err != nil {
+		w.refused(err)
+		if w.failed == nil {
+			w.failed = fmt.Errorf("upload of %q stopped after %d bytes: %w", w.name, w.written, err)
+		}
 	}
 	return n, err
 }
-func (w *writeFile) Read([]byte) (int, error)            { return 0, os.ErrInvalid }
-func (w *writeFile) Seek(o int64, wh int) (int64, error) { return w.tmp.Seek(o, wh) }
-func (w *writeFile) Readdir(int) ([]fs.FileInfo, error)  { return nil, errNotDir }
+func (w *writeFile) Read([]byte) (int, error)           { return 0, os.ErrInvalid }
+func (w *writeFile) Seek(int64, int) (int64, error)     { return 0, os.ErrInvalid }
+func (w *writeFile) Readdir(int) ([]fs.FileInfo, error) { return nil, errNotDir }
 func (w *writeFile) Stat() (fs.FileInfo, error) {
 	return nodeInfo{name: w.name, dir: false, mtime: time.Now()}, nil
 }
 func (w *writeFile) Close() error {
-	defer func() { _ = w.tmp.Close(); _ = os.Remove(w.tmp.Name()); spoolGive(w.userID, w.written); w.written = 0 }()
 	// x/net/webdav's handlePut calls Close() even when copying the request body FAILED
 	// (webdav.go: closeErr is taken before copyErr is inspected) — and this Close is what
 	// publishes the file. Committing unconditionally turns any mid-transfer failure into a
 	// silently truncated file that looks complete: it appears in listings at its short
 	// length, and content_hash is computed over the bytes that did arrive, so no later
 	// integrity check can tell it apart from a genuine upload. Verify before publishing.
-	if err := w.ctx.Err(); err != nil {
-		return fmt.Errorf("upload of %q aborted after %d bytes: %w", w.name, w.written, err)
-	}
-	// A chunked body declares no length, so the check below cannot catch it: a body cut
+	var abort error
+	switch {
+	case w.ctx.Err() != nil:
+		abort = fmt.Errorf("upload of %q aborted after %d bytes: %w", w.name, w.written, w.ctx.Err())
+	// A chunked body declares no length, so the length check cannot catch it: a body cut
 	// off at the allowance or by a full disk would be published as it stood (down to an
 	// empty file over a good one).
-	if w.failed != nil {
-		return w.failed
-	}
-	if w.expect >= 0 && w.written != w.expect {
-		return fmt.Errorf("upload of %q incomplete: received %d of %d declared bytes",
+	case w.failed != nil:
+		abort = w.failed
+	case w.expect >= 0 && w.written != w.expect:
+		abort = fmt.Errorf("upload of %q incomplete: received %d of %d declared bytes",
 			w.name, w.written, w.expect)
 	}
-	if _, err := w.tmp.Seek(0, io.SeekStart); err != nil {
-		return err
+	if abort != nil {
+		// Ending the body with an error makes staging fail, so Push publishes nothing.
+		_ = w.body.CloseWithError(abort)
+		<-w.pushed
+		return abort
 	}
-	_, err := w.svc.Push(w.ctx, w.userID, w.parentID, w.name, nil, w.deviceID, w.tmp)
+	_ = w.body.Close()
+	err := <-w.pushed
+	w.refused(err)
 	memoFrom(w.ctx).clear() // the handler Stats the file right after, for its ETag
 	return mapErr(err)
 }

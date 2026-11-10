@@ -208,19 +208,7 @@ func (f *fsImpl) OpenFile(ctx context.Context, name string, flag int, _ os.FileM
 		if err != nil {
 			return nil, err
 		}
-		// The body is buffered whole before Push applies the quota, so bound the buffer
-		// here: a body without a declared length skips Handler's up-front check.
-		allowance, err := f.svc.Allowance(ctx, f.userID)
-		if err != nil {
-			return nil, mapErr(err)
-		}
-		limit := spoolLimit(allowance, tempFree())
-		tmp, err := os.CreateTemp("", "kfdav-*")
-		if err != nil {
-			return nil, err
-		}
-		return &writeFile{ctx: ctx, svc: f.svc, userID: f.userID, deviceID: deviceOf(ctx),
-			parentID: parentID, name: leaf, tmp: tmp, expect: declaredLength(ctx), limit: limit}, nil
+		return newWriteFile(ctx, f.svc, f.userID, deviceOf(ctx), parentID, leaf, declaredLength(ctx)), nil
 	}
 	if name == "/" {
 		return f.dir(ctx, "/", nodeInfo{name: "/", dir: true}, ""), nil

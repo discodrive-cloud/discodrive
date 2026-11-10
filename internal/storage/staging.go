@@ -27,6 +27,11 @@ func (s *FileService) stage(ctx context.Context, owner pgtype.UUID, source io.Re
 	if id, bytes, ok := quota.Credit(ctx, owner); ok {
 		file.rel = ".uploads/" + id
 		file.reused = true
+		// A resumable upload hashed its chunks as they arrived (Uploads.Complete).
+		if sum, ok := stagedSum(ctx); ok {
+			file.size, file.hash = bytes, sum
+			return file, nil
+		}
 		hash := sha256.New()
 		n, err := io.Copy(hash, source)
 		if err != nil {
@@ -81,4 +86,17 @@ func (f *stagedFile) cleanup(st Storage) {
 		}
 		f.reservation.Close()
 	}
+}
+
+type stagedSumKey struct{}
+
+// withStagedSum tells stage the sha256 of the already-accounted file (quota.Credit), so
+// it is not read again just to be hashed.
+func withStagedSum(ctx context.Context, sum string) context.Context {
+	return context.WithValue(ctx, stagedSumKey{}, sum)
+}
+
+func stagedSum(ctx context.Context) (string, bool) {
+	sum, ok := ctx.Value(stagedSumKey{}).(string)
+	return sum, ok
 }

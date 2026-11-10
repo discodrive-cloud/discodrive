@@ -988,6 +988,11 @@ func (s *FileService) finishPush(ctx context.Context, tx pgx.Tx, qtx *db.Queries
 		}
 		return PushResult{Node: node, Conflicted: conflicted}, nil
 	}
+	// The row is new, so whatever sits at dst is unknown to the database: a file put
+	// on the disk directly, not imported yet. The rename below would replace it.
+	if err := s.setAsideStray(dst); err != nil {
+		return PushResult{}, err
+	}
 	if err := s.st.Move(tmpRel, dst); err != nil {
 		return PushResult{}, err
 	}
@@ -1037,6 +1042,30 @@ func (s *FileService) commitReplacing(ctx context.Context, tx pgx.Tx, src, dst, 
 		return err
 	}
 	return nil
+}
+
+// setAsideStray renames a file found at rel, where the database has none, to a free
+// "name (conflict, disk, date).ext" beside it; the next rescan imports it under that
+// name. The check and the rename are not atomic with the write that follows: a file
+// appearing in between is still replaced, as before.
+func (s *FileService) setAsideStray(rel string) error {
+	there, err := s.st.Exists(rel)
+	if err != nil || !there {
+		return err
+	}
+	dir, now := strings.TrimSuffix(rel, baseName(rel)), time.Now() // "" or "path/"
+	for n := 1; n <= 20; n++ {
+		aside := dir + conflictName(baseName(rel), "disk", now, n)
+		taken, err := s.st.Exists(aside)
+		if err != nil {
+			return err
+		}
+		if !taken {
+			log.Printf("discodrive: %s exists on disk but not in the database; kept as %s", rel, aside)
+			return s.st.Move(rel, aside)
+		}
+	}
+	return ErrBusy
 }
 
 // ReplaceContentInPlace overwrites the content of an existing file node without
@@ -1154,6 +1183,12 @@ func (s *FileService) snapshot(ctx context.Context, qtx *db.Queries, node db.Nod
 	}
 	vpath := versionPath(db.UUIDString(node.UserID), db.UUIDString(node.ID), node.Version)
 	if err := s.st.Copy(node.DiskPath.String, vpath); err != nil {
+		// The live file is gone from the disk (removed outside the service, no rescan
+		// yet): there is no old content to keep, and refusing would fail every push of
+		// this path until someone rescans. Like commitReplacing and deleteOnce, carry on.
+		if there, xerr := s.st.Exists(node.DiskPath.String); errors.Is(err, fs.ErrNotExist) && xerr == nil && !there {
+			return "", nil
+		}
 		return "", err
 	}
 	n, err := qtx.InsertFileVersion(ctx, db.InsertFileVersionParams{
