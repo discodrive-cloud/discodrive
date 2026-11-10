@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/emersion/go-ical"
 	"github.com/emersion/go-webdav"
@@ -166,6 +167,31 @@ func (b *Backend) GetCalendarObject(ctx context.Context, path string, req *calda
 }
 
 func (b *Backend) ListCalendarObjects(ctx context.Context, path string, req *caldav.CalendarCompRequest) ([]caldav.CalendarObject, error) {
+	return b.listObjects(ctx, path, nil)
+}
+
+// timeWindow is the time range a calendar-query asks about; a zero bound is open.
+type timeWindow struct{ start, end time.Time }
+
+// eventWindow returns the time range a query puts on events, if it puts one: a
+// time-range on the VEVENT comp-filter. Comp-filters are conjunctive, so whatever else
+// the query asks, an object with events outside that range cannot match it.
+func eventWindow(query *caldav.CalendarQuery) *timeWindow {
+	if query == nil || query.CompFilter.IsNotDefined {
+		return nil
+	}
+	for _, c := range query.CompFilter.Comps {
+		if c.Name == ical.CompEvent && !c.IsNotDefined && (!c.Start.IsZero() || !c.End.IsZero()) {
+			return &timeWindow{c.Start, c.End}
+		}
+	}
+	return nil
+}
+
+// listObjects lists a calendar's objects; with a window, only those that can have an
+// occurrence in it (see dav.CalendarObjectsInWindow — recurring objects and objects
+// without events always can).
+func (b *Backend) listObjects(ctx context.Context, path string, window *timeWindow) ([]caldav.CalendarObject, error) {
 	uid := userID(ctx)
 	_, uri, _ := parsePath(path)
 	cal, err := b.resolveCalendar(ctx, uri)
@@ -187,7 +213,19 @@ func (b *Backend) ListCalendarObjects(ctx context.Context, path string, req *cal
 		}
 		return out, nil
 	}
-	objs, err := b.svc.ListCalendarObjects(ctx, db.UUIDString(cal.ID))
+	var objs []db.CalendarObject
+	if window != nil {
+		start, end := window.start, window.end
+		if start.IsZero() {
+			start = time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
+		}
+		if end.IsZero() {
+			end = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+		}
+		objs, err = b.svc.CalendarObjectsInWindow(ctx, db.UUIDString(cal.ID), start, end)
+	} else {
+		objs, err = b.svc.ListCalendarObjects(ctx, db.UUIDString(cal.ID))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +244,7 @@ func (b *Backend) ListCalendarObjects(ctx context.Context, path string, req *cal
 }
 
 func (b *Backend) QueryCalendarObjects(ctx context.Context, path string, query *caldav.CalendarQuery) ([]caldav.CalendarObject, error) {
-	objs, err := b.ListCalendarObjects(ctx, path, nil)
+	objs, err := b.listObjects(ctx, path, eventWindow(query))
 	if err != nil {
 		return nil, err
 	}

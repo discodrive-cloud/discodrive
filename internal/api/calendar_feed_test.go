@@ -70,3 +70,59 @@ func TestCalendarFeedPublic(t *testing.T) {
 		t.Fatalf("expected 404 for an unknown token, got %d", rec4.Code)
 	}
 }
+
+// A subscriber polls the feed on a schedule. When nothing in the calendar changed since
+// its last fetch it is told so, instead of every event being read and encoded again.
+func TestCalendarFeedIsNotRebuiltForAnUnchangedCalendar(t *testing.T) {
+	svc, ownerID, ctx := setupCalendars(t)
+	cal, _ := svc.CreateCalendar(ctx, ownerID, "Фид", "")
+	calID := dbUUID(t, cal)
+	event := func(uid string) string {
+		return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\nBEGIN:VEVENT\r\nUID:" + uid +
+			"\r\nDTSTAMP:20260611T000000Z\r\nDTSTART:20260620T100000Z\r\nDTEND:20260620T110000Z\r\nSUMMARY:" + uid + "\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+	}
+	if _, err := svc.PutCalendarObject(ctx, calID, "one", event("one")); err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := auth.HashPassword("secret")
+	tok, err := svc.CreateCalendarFeedLink(ctx, ownerID, calID, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{dav: svc, feedLimiter: newLoginLimiter()}
+	get := func(etag, password string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/cal/"+tok+".ics", nil)
+		req.SetPathValue("file", tok+".ics")
+		if etag != "" {
+			req.Header.Set("If-None-Match", etag)
+		}
+		if password != "" {
+			req.SetBasicAuth("x", password)
+		}
+		s.handleCalendarFeed(rec, req)
+		return rec
+	}
+	first := get("", "secret")
+	etag := first.Header().Get("ETag")
+	if first.Code != http.StatusOK || etag == "" {
+		t.Fatalf("first fetch: %d, ETag %q", first.Code, etag)
+	}
+	if again := get(etag, "secret"); again.Code != http.StatusNotModified || again.Body.Len() != 0 {
+		t.Fatalf("an unchanged calendar: %d with %d bytes, want 304 and no body", again.Code, again.Body.Len())
+	}
+	// Knowing the ETag is not knowing the password.
+	if rec := get(etag, ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a conditional request without the password: %d, want 401", rec.Code)
+	}
+	if _, err := svc.PutCalendarObject(ctx, calID, "two", event("two")); err != nil {
+		t.Fatal(err)
+	}
+	changed := get(etag, "secret")
+	if changed.Code != http.StatusOK || !strings.Contains(changed.Body.String(), "SUMMARY:two") {
+		t.Fatalf("after a new event: %d, want 200 with it", changed.Code)
+	}
+	if changed.Header().Get("ETag") == etag {
+		t.Error("the ETag did not change with the calendar")
+	}
+}

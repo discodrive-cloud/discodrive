@@ -1,7 +1,9 @@
 package api
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -39,15 +41,32 @@ func (s *Server) handleCalendarFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		refund()
 	}
+	// The feed is a function of the calendar's objects and its name. The ctag counts every
+	// change to the objects, so a subscriber polling an unchanged calendar is answered
+	// without the events being read. The headers are set before the check: a 304 carries them.
+	c, cerr := s.dav.GetCalendar(r.Context(), calID)
+	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+	// The feed may be password-protected and carries private data: no shared caches.
+	w.Header().Set("Cache-Control", "private, no-store")
+	if cerr == nil {
+		name := sha256.Sum256([]byte(c.Name))
+		etag := fmt.Sprintf(`"%d-%x"`, c.Ctag, name[:6])
+		w.Header().Set("ETag", etag)
+		if match := r.Header.Get("If-None-Match"); match != "" && (match == etag || match == "W/"+etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
 	objs, err := s.dav.ListCalendarObjects(r.Context(), calID)
 	if err != nil {
+		w.Header().Del("ETag")
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	out := ical.NewCalendar()
 	out.Props.SetText(ical.PropProductID, "-//discodrive//feed//RU")
 	out.Props.SetText(ical.PropVersion, "2.0")
-	if c, e := s.dav.GetCalendar(r.Context(), calID); e == nil && c.Name != "" {
+	if cerr == nil && c.Name != "" {
 		p := ical.NewProp("X-WR-CALNAME")
 		p.Value = c.Name
 		out.Props.Set(p)
@@ -72,9 +91,6 @@ func (s *Server) handleCalendarFeed(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
-	// The feed may be password-protected and carries private data: no shared caches.
-	w.Header().Set("Cache-Control", "private, no-store")
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return

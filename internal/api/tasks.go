@@ -145,12 +145,19 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if id := r.URL.Query().Get("list"); id != "" {
-		c, err := s.taskList(r, id)
-		if err != nil {
-			writeFindTaskError(w, err)
+		// One of the lists just read (taskList would read them all again).
+		var one []db.Calendar
+		for _, c := range lists {
+			if db.UUIDString(c.ID) == id {
+				one = []db.Calendar{c}
+				break
+			}
+		}
+		if one == nil {
+			writeFindTaskError(w, errNoTaskList)
 			return
 		}
-		lists = []db.Calendar{c}
+		lists = one
 	}
 	out := make([]taskForm, 0)
 	for _, c := range lists {

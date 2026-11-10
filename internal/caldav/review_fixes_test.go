@@ -338,3 +338,64 @@ func TestPropfindListingDoesNotLoadEvents(t *testing.T) {
 		t.Errorf("PROPFIND with calendar-data: %d, data present: %v", rec.Code, strings.Contains(rec.Body.String(), "secret-a"))
 	}
 }
+
+func eventAt(uid, props string) string {
+	return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\nBEGIN:VEVENT\r\nUID:" + uid +
+		"\r\nDTSTAMP:20260101T000000Z\r\n" + props + "END:VEVENT\r\nEND:VCALENDAR\r\n"
+}
+
+// A client syncing a window of time (calendar-query with a time-range: what phones send)
+// is answered from the events that can fall into the window, not from a pass over the
+// calendar's whole history.
+func TestCalendarQueryWithTimeRangeReadsOnlyItsWindow(t *testing.T) {
+	e := setupReview(t)
+	for uid, props := range map[string]string{
+		"june":      "DTSTART:20260612T120000Z\r\nDTEND:20260612T130000Z\r\n",
+		"last-year": "DTSTART:20250612T120000Z\r\nDTEND:20250612T130000Z\r\n",
+		"next-year": "DTSTART:20270612T120000Z\r\nDTEND:20270612T130000Z\r\n",
+		"weekly":    "DTSTART:20200106T090000Z\r\nDTEND:20200106T100000Z\r\nRRULE:FREQ=WEEKLY\r\n",
+		"edge":      "DTSTART;TZID=Pacific/Kiritimati:20260701T010000\r\nDTEND;TZID=Pacific/Kiritimati:20260701T020000\r\n",
+	} {
+		if rec := e.req(t, e.ownerID, http.MethodPut, e.calDir+uid+".ics", eventAt(uid, props), nil); rec.Code/100 != 2 {
+			t.Fatalf("PUT %s: %d %s", uid, rec.Code, rec.Body)
+		}
+	}
+	query := func(timeRange string) string {
+		return `<?xml version="1.0" encoding="UTF-8"?><C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">` +
+			`<D:prop><D:getetag/></D:prop><C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT">` +
+			timeRange + `</C:comp-filter></C:comp-filter></C:filter></C:calendar-query>`
+	}
+	found := func(body string) string {
+		var got []string
+		for _, uid := range []string{"edge", "june", "last-year", "next-year", "weekly"} {
+			if strings.Contains(body, uid+".ics") {
+				got = append(got, uid)
+			}
+		}
+		return strings.Join(got, ",")
+	}
+	for _, c := range []struct{ name, timeRange, want string }{
+		// 01:00 on 1 July in Kiritimati (UTC+14) is 11:00 UTC on 30 June: inside June.
+		{"a month", `<C:time-range start="20260601T000000Z" end="20260701T000000Z"/>`, "edge,june,weekly"},
+		{"from a date on", `<C:time-range start="20260601T000000Z"/>`, "edge,june,next-year,weekly"},
+		{"up to a date", `<C:time-range end="20260101T000000Z"/>`, "last-year,weekly"},
+	} {
+		e.queries.reset()
+		rec := e.req(t, e.ownerID, "REPORT", e.calDir, query(c.timeRange), map[string]string{"Depth": "1"})
+		if rec.Code != http.StatusMultiStatus {
+			t.Fatalf("%s: REPORT %d %s", c.name, rec.Code, rec.Body)
+		}
+		if got := found(rec.Body.String()); got != c.want {
+			t.Errorf("%s: found %s, want %s", c.name, got, c.want)
+		}
+		if e.queries.ran("ListCalendarObjects") {
+			t.Errorf("%s: the query read the whole calendar", c.name)
+		}
+	}
+
+	// Without a time range there is nothing to narrow by: everything is still found.
+	rec := e.req(t, e.ownerID, "REPORT", e.calDir, query(""), map[string]string{"Depth": "1"})
+	if got := found(rec.Body.String()); got != "edge,june,last-year,next-year,weekly" {
+		t.Errorf("no time range: found %s", got)
+	}
+}
