@@ -29,7 +29,15 @@ var (
 	// ErrUploadSize is returned when the staged bytes do not add up to the total the
 	// client declared at Init — either Complete was called early or a chunk overshot.
 	ErrUploadSize = errors.New("upload size mismatch")
+	// ErrTooManyUploads is returned by Init when the user already has maxOpenUploads
+	// sessions open. Handlers answer 429.
+	ErrTooManyUploads = errors.New("too many open uploads")
 )
+
+// maxOpenUploads bounds the upload sessions one user may hold open. A session costs a
+// map entry and a reservation row until it completes or the GC takes it; a loop of
+// inits must not grow both faster than they are collected. Clients run a handful at once.
+const maxOpenUploads = 200
 
 type uploadSession struct {
 	mu       sync.Mutex
@@ -148,6 +156,17 @@ func (u *Uploads) init(ctx context.Context, userID string, parentID *string, nam
 	}
 	if total < 0 {
 		return "", ErrUploadSize
+	}
+	u.mu.Lock()
+	open := 0
+	for _, s := range u.m {
+		if s.userID == userID {
+			open++
+		}
+	}
+	u.mu.Unlock()
+	if open >= maxOpenUploads {
+		return "", ErrTooManyUploads
 	}
 	id := randomHex()
 	if u.quota != nil {

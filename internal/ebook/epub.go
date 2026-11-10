@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -264,9 +265,15 @@ func epubBuildMeta(pkg *opfPackage, zr *zip.ReadCloser, opfDir string) (Meta, er
 	coverHref, coverType := epubFindCover(pkg, md)
 	if coverHref != "" {
 		// Resolve href relative to the OPF directory.
-		coverPath := coverHref
+		// The href is a URL reference: it may be percent-encoded ("cover%20art.jpg")
+		// and may climb out of the OPF's folder ("../Images/cover.jpg"), while zip
+		// entries are named by their plain path from the root.
+		if u, err := url.PathUnescape(coverHref); err == nil {
+			coverHref = u
+		}
+		coverPath := path.Clean(coverHref)
 		if opfDir != "." && opfDir != "" {
-			coverPath = opfDir + "/" + coverHref
+			coverPath = path.Clean(path.Join(opfDir, coverHref))
 		}
 		if data, err := epubReadFile(zr, coverPath, maxEbookCoverBytes); err == nil {
 			m.CoverData = data

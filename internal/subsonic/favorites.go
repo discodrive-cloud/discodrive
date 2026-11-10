@@ -19,7 +19,7 @@ func init() {
 
 // starOp handles both star and unstar for repeated id / albumId / artistId params.
 func starOp(h *Handler, c *reqCtx, add bool) {
-	ctx := context.Background()
+	ctx := c.r.Context()
 	userUUID, err := db.ParseUUID(c.userID)
 	if err != nil {
 		c.fail(ErrGeneric, "invalid user id")
@@ -113,7 +113,7 @@ func unstar(h *Handler, c *reqCtx) { starOp(h, c, false) }
 
 // setRating stores or removes a rating for an item.
 func setRating(h *Handler, c *reqCtx) {
-	ctx := context.Background()
+	ctx := c.r.Context()
 	userUUID, err := db.ParseUUID(c.userID)
 	if err != nil {
 		c.fail(ErrGeneric, "invalid user id")
@@ -259,7 +259,7 @@ func buildStarredPayload(ctx context.Context, h *Handler, userUUID pgtype.UUID, 
 
 // getStarred returns starred items (v1-style wrapper key "starred").
 func getStarred(h *Handler, c *reqCtx) {
-	ctx := context.Background()
+	ctx := c.r.Context()
 	userUUID, err := db.ParseUUID(c.userID)
 	if err != nil {
 		c.fail(ErrGeneric, "invalid user id")
@@ -270,7 +270,7 @@ func getStarred(h *Handler, c *reqCtx) {
 
 // getStarred2 returns starred items (v2-style wrapper key "starred2").
 func getStarred2(h *Handler, c *reqCtx) {
-	ctx := context.Background()
+	ctx := c.r.Context()
 	userUUID, err := db.ParseUUID(c.userID)
 	if err != nil {
 		c.fail(ErrGeneric, "invalid user id")

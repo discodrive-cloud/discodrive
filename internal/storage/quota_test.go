@@ -3,6 +3,7 @@ package storage_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -181,5 +182,35 @@ func TestQuota_ChunksStopAtTheLimit(t *testing.T) {
 	// 800 bytes staged against a 1000-byte quota: a third 400-byte chunk does not fit.
 	if _, err := u.Chunk(context.Background(), id, userID, 2, strings.NewReader(chunk)); !errors.Is(err, quota.ErrExceeded) {
 		t.Fatalf("want ErrExceeded on the chunk crossing the quota, got %v", err)
+	}
+}
+
+// One account cannot hold an unbounded number of unfinished uploads open: each costs
+// memory and a reservation row until it completes or is collected.
+func TestUploads_OpenSessionsPerUserAreBounded(t *testing.T) {
+	fs, _, userID, root := setupFS(t)
+	u := storage.NewUploads(storage.NewLocalDisk(root), fs)
+	ctx := context.Background()
+	var last string
+	for i := 0; ; i++ {
+		id, err := u.Init(ctx, userID, nil, fmt.Sprintf("f%d.bin", i), 10, storage.PushMeta{})
+		if errors.Is(err, storage.ErrTooManyUploads) {
+			if i < 100 {
+				t.Fatalf("refused after only %d open uploads", i)
+			}
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		last = id
+		if i > 5000 {
+			t.Fatal("5000 uploads were opened without a refusal")
+		}
+	}
+	// Finishing or cancelling one makes room again.
+	u.Abort(userID, last)
+	if _, err := u.Init(ctx, userID, nil, "after.bin", 10, storage.PushMeta{}); err != nil {
+		t.Fatalf("after cancelling one upload: %v", err)
 	}
 }

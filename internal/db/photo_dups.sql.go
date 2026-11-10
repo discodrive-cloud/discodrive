@@ -405,17 +405,29 @@ const setThumbReady = `-- name: SetThumbReady :exec
 UPDATE photo_assets SET thumb_state = 'ready', thumb_error = NULL,
        phash = $1, phash_flat = $2
 WHERE id = $3
+  AND rotation = $4 AND node_version IS NOT DISTINCT FROM $5
 `
 
 type SetThumbReadyParams struct {
-	Phash     pgtype.Int8 `json:"phash"`
-	PhashFlat bool        `json:"phash_flat"`
-	ID        pgtype.UUID `json:"id"`
+	Phash       pgtype.Int8 `json:"phash"`
+	PhashFlat   bool        `json:"phash_flat"`
+	ID          pgtype.UUID `json:"id"`
+	Rotation    int16       `json:"rotation"`
+	NodeVersion pgtype.Int8 `json:"node_version"`
 }
 
 // A finished thumbnail and its hash in one write, so a card is never ready with the hash of
 // its previous picture. phash NULL (the thumbnail could not be hashed) leaves it to the backfill.
+// Only while the card is still the picture that was rendered (same file version and
+// turn): a render that started before a rotation or an overwrite and finished after it
+// must not mark the card ready with the old thumbnail and the old hash.
 func (q *Queries) SetThumbReady(ctx context.Context, arg SetThumbReadyParams) error {
-	_, err := q.db.Exec(ctx, setThumbReady, arg.Phash, arg.PhashFlat, arg.ID)
+	_, err := q.db.Exec(ctx, setThumbReady,
+		arg.Phash,
+		arg.PhashFlat,
+		arg.ID,
+		arg.Rotation,
+		arg.NodeVersion,
+	)
 	return err
 }

@@ -2746,6 +2746,17 @@ func (q *Queries) ListStarredSongs(ctx context.Context, userID pgtype.UUID) ([]S
 	return items, nil
 }
 
+const lockPlaylist = `-- name: LockPlaylist :one
+SELECT id FROM playlists WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockPlaylist(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockPlaylist, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const lockPodcastChannel = `-- name: LockPodcastChannel :one
 SELECT id, user_id, feed_url, title, description, cover_url, cover_path, created_at, last_fetched_at, cover_size FROM podcast_channels WHERE id=$1 AND user_id=$2 FOR UPDATE
 `

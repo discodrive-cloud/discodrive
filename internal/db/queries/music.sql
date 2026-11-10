@@ -470,6 +470,9 @@ DELETE FROM playlists WHERE id = $1 AND user_id = $2;
 -- name: AddPlaylistSong :exec
 INSERT INTO playlist_songs (playlist_id, song_id, position) VALUES ($1, $2, $3);
 
+-- name: LockPlaylist :one
+SELECT id FROM playlists WHERE id = $1 FOR UPDATE;
+
 -- name: ClearPlaylistSongs :exec
 DELETE FROM playlist_songs WHERE playlist_id = $1;
 

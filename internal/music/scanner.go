@@ -235,6 +235,13 @@ func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath strin
 	suffixPg := pgtype.Text{String: meta.Suffix, Valid: meta.Suffix != ""}
 	ctPg := pgtype.Text{String: meta.ContentType, Valid: meta.ContentType != ""}
 
+	// Where the track was before this pass, if it was indexed: a retag can move it to
+	// another album, and the one it leaves has to be counted again too.
+	var leftAlbum pgtype.UUID
+	if prev, perr := ix.q.GetSongByNode(ctx, nid); perr == nil && prev.AlbumID != album.ID {
+		leftAlbum = prev.AlbumID
+	}
+
 	song, err := ix.q.UpsertSong(ctx, db.UpsertSongParams{
 		UserID:      uid,
 		AlbumID:     album.ID,
@@ -259,6 +266,9 @@ func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath strin
 	if err := ix.q.RefreshAlbumSongCount(ctx, album.ID); err != nil {
 		return err
 	}
+	if leftAlbum.Valid {
+		_ = ix.q.RefreshAlbumSongCount(ctx, leftAlbum)
+	}
 
 	// Resolve cover art: prefer a sibling image file, fall back to this node.
 	dir := filepath.Dir(diskPath)
@@ -277,8 +287,10 @@ func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath strin
 				})
 			}
 		}
-	} else if !album.CoverArt.Valid {
-		// Fall back: use the song's own node as embedded-art source.
+	} else if !album.CoverArt.Valid || !ix.nodeLive(ctx, album.CoverArt.String) {
+		// Fall back: use the song's own node as embedded-art source. Also when the
+		// node on record is gone — the track that carried the cover was uploaded anew
+		// and is a new node — or the album would answer 404 for its cover from then on.
 		_ = ix.q.SetAlbumCover(ctx, db.SetAlbumCoverParams{
 			ID:       album.ID,
 			CoverArt: pgtype.Text{String: nodeID, Valid: true},
@@ -305,14 +317,31 @@ func (ix *Indexer) findNodeIDByDiskPath(ctx context.Context, userID pgtype.UUID,
 	return db.UUIDString(node.ID), true
 }
 
-// RemoveNode deletes the song for a node. Album/artist orphan cleanup is
-// best-effort and handled via ON DELETE cascade from nodes.
+// nodeLive reports whether id names a node that exists and is not in the trash.
+func (ix *Indexer) nodeLive(ctx context.Context, id string) bool {
+	nid, err := db.ParseUUID(id)
+	if err != nil {
+		return false
+	}
+	_, err = ix.q.GetNode(ctx, nid)
+	return err == nil
+}
+
+// RemoveNode deletes the song for a node and counts its album again. Albums and artists
+// left without songs stay as rows (nothing removes them yet).
 func (ix *Indexer) RemoveNode(ctx context.Context, nodeID string) error {
 	nid, err := db.ParseUUID(nodeID)
 	if err != nil {
 		return err
 	}
-	return ix.q.DeleteSongByNode(ctx, nid)
+	prev, perr := ix.q.GetSongByNode(ctx, nid)
+	if err := ix.q.DeleteSongByNode(ctx, nid); err != nil {
+		return err
+	}
+	if perr == nil {
+		_ = ix.q.RefreshAlbumSongCount(ctx, prev.AlbumID)
+	}
+	return nil
 }
 
 // scans keeps one music scan per user and folder in flight: the scan button, a folder

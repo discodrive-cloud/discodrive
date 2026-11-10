@@ -47,6 +47,13 @@ func (req tagEditRequest) has(field string) bool {
 	return false
 }
 
+// tagNumbersValid reports whether the numbers of an edit fit what the formats store
+// (MP4 keeps track and disc in 16 bits: 40000 would be written as -25536).
+func tagNumbersValid(t tagwrite.Tags) bool {
+	in := func(p *int, limit int) bool { return p == nil || (*p >= 0 && *p <= limit) }
+	return in(t.Year, 9999) && in(t.Track, 9999) && in(t.Disc, 999)
+}
+
 func (req tagEditRequest) toTags() tagwrite.Tags {
 	var t tagwrite.Tags
 	str := func(k string) *string {
@@ -102,6 +109,8 @@ func mapTagErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, music.ErrReadOnlyFormat):
 		writeError(w, http.StatusUnprocessableEntity, "format is read-only")
+	case errors.Is(err, music.ErrUnreadableTags):
+		writeError(w, http.StatusUnprocessableEntity, "the file's tags cannot be read")
 	case errors.Is(err, music.ErrNotInMusicFolder), errors.Is(err, music.ErrNotAudio):
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, music.ErrTagConflict):
@@ -149,6 +158,10 @@ func (s *Server) handlePutMusicTags(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid cover")
 		return
 	}
+	if !tagNumbersValid(req.toTags()) {
+		writeError(w, http.StatusBadRequest, "year, track or disc is out of range")
+		return
+	}
 	if err := s.tagEditor.Write(r.Context(), auth.UserID(r.Context()), r.PathValue("id"), req.toTags(), cc, cover); err != nil {
 		mapTagErr(w, err)
 		return
@@ -174,6 +187,10 @@ func (s *Server) handlePostMusicTagsFolder(w http.ResponseWriter, r *http.Reques
 	cc, cover, err := req.coverChange()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cover")
+		return
+	}
+	if !tagNumbersValid(req.toTags()) {
+		writeError(w, http.StatusBadRequest, "year, track or disc is out of range")
 		return
 	}
 	res, err := s.tagEditor.WriteFolder(r.Context(), auth.UserID(r.Context()), r.PathValue("id"), req.toTags(), cc, cover)

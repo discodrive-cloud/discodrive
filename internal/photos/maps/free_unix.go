@@ -2,16 +2,16 @@
 
 package maps
 
-import "syscall"
+import "discodrive/internal/storage"
 
 // freeBytes is the space available to unprivileged writes on the volume holding dir
-// (or its nearest existing parent).
+// (or its nearest existing parent). storage.DiskUsage counts in the filesystem's
+// fragment size: block size times free blocks overstates it 256 times on virtiofs.
 func freeBytes(dir string) (uint64, error) {
 	for {
-		var st syscall.Statfs_t
-		err := syscall.Statfs(dir, &st)
+		_, free, err := storage.DiskUsage(dir)
 		if err == nil {
-			return uint64(st.Bavail) * uint64(st.Bsize), nil
+			return free, nil
 		}
 		parent := dirOf(dir)
 		if parent == dir {

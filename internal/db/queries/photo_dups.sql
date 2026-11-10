@@ -1,9 +1,13 @@
 -- A finished thumbnail and its hash in one write, so a card is never ready with the hash of
 -- its previous picture. phash NULL (the thumbnail could not be hashed) leaves it to the backfill.
+-- Only while the card is still the picture that was rendered (same file version and
+-- turn): a render that started before a rotation or an overwrite and finished after it
+-- must not mark the card ready with the old thumbnail and the old hash.
 -- name: SetThumbReady :exec
 UPDATE photo_assets SET thumb_state = 'ready', thumb_error = NULL,
        phash = sqlc.narg(phash), phash_flat = sqlc.arg(phash_flat)
-WHERE id = sqlc.arg(id);
+WHERE id = sqlc.arg(id)
+  AND rotation = sqlc.arg(rotation) AND node_version IS NOT DISTINCT FROM sqlc.narg(node_version);
 
 -- The backfill's write: only while the card still shows the picture that was hashed (still
 -- ready, unhashed, same file version and turn); otherwise a render wrote a fresher hash.

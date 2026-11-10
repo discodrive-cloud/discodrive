@@ -74,6 +74,12 @@ func readAlarmPreset(comp *ical.Component) string {
 	if !ok || !alarmPresetMinutes[mins] {
 		return "keep"
 	}
+	// The presets are "N minutes before the start". A trigger after the start, or one
+	// counted from the end, is something else and is left as it is.
+	before := strings.HasPrefix(strings.TrimSpace(trig.Value), "-") || mins == 0
+	if !before || strings.EqualFold(trig.Params.Get("RELATED"), "END") {
+		return "keep"
+	}
 	return strconv.Itoa(mins)
 }
 

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-ical"
@@ -248,12 +249,36 @@ func cloneParams(p ical.Params) ical.Params {
 	return out
 }
 
+// knownZones remembers which zone names the system knows: time.LoadLocation reads the
+// zone file every time, and a calendar asks about the same few names for every date of
+// every event. The names come from clients, so the memory is bounded.
+var knownZones = struct {
+	mu sync.Mutex
+	m  map[string]bool
+}{m: map[string]bool{}}
+
+func knownZone(tzid string) bool {
+	knownZones.mu.Lock()
+	known, seen := knownZones.m[tzid]
+	knownZones.mu.Unlock()
+	if seen {
+		return known
+	}
+	_, err := time.LoadLocation(tzid)
+	knownZones.mu.Lock()
+	if len(knownZones.m) < 1024 {
+		knownZones.m[tzid] = err == nil
+	}
+	knownZones.mu.Unlock()
+	return err == nil
+}
+
 func fixTZID(p *ical.Prop, vtz func(string) *vtimezone) {
 	tzid := p.Params.Get(ical.PropTimezoneID)
 	if tzid == "" {
 		return
 	}
-	if _, err := time.LoadLocation(tzid); err == nil {
+	if knownZone(tzid) {
 		return
 	}
 	if loc, ok := resolveTZName(tzid); ok {

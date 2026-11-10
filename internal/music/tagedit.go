@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,7 +103,20 @@ func (e *TagEditor) assertInMusicFolder(ctx context.Context, uid pgtype.UUID, no
 }
 
 // Read returns the current tags and cover metadata for a file.
-func (e *TagEditor) Read(ctx context.Context, userID, nodeID string) (TagInfo, error) {
+// ErrUnreadableTags is returned when a tag library gave up on a file by panicking (a
+// malformed box or frame it does not expect). One bad file must not take the request —
+// or a whole folder edit — down with it.
+var ErrUnreadableTags = errors.New("the file's tags cannot be read")
+
+func tagPanic(err *error) {
+	if p := recover(); p != nil {
+		log.Printf("discodrive: tag library panic: %v", p)
+		*err = ErrUnreadableTags
+	}
+}
+
+func (e *TagEditor) Read(ctx context.Context, userID, nodeID string) (_ TagInfo, err error) {
+	defer tagPanic(&err)
 	_, abs, err := e.resolve(ctx, userID, nodeID)
 	if err != nil {
 		return TagInfo{}, err
@@ -125,7 +139,8 @@ func (e *TagEditor) Read(ctx context.Context, userID, nodeID string) (TagInfo, e
 }
 
 // Cover returns the embedded cover art bytes and MIME type.
-func (e *TagEditor) Cover(ctx context.Context, userID, nodeID string) ([]byte, string, bool, error) {
+func (e *TagEditor) Cover(ctx context.Context, userID, nodeID string) (_ []byte, _ string, _ bool, err error) {
+	defer tagPanic(&err)
 	_, abs, err := e.resolve(ctx, userID, nodeID)
 	if err != nil {
 		return nil, "", false, err
@@ -272,7 +287,8 @@ var bulkTagEdits = make(chan struct{}, 1)
 // For the versioned mode (TagEditVersioning=true) a new sync version is created
 // via PushByPath. For the in-place mode ReplaceContentInPlaceAt is used instead.
 // The temp file is always cleaned up regardless of outcome.
-func (e *TagEditor) Write(ctx context.Context, userID, nodeID string, t tagwrite.Tags, cc tagwrite.CoverChange, cover *tagwrite.Cover) error {
+func (e *TagEditor) Write(ctx context.Context, userID, nodeID string, t tagwrite.Tags, cc tagwrite.CoverChange, cover *tagwrite.Cover) (err error) {
+	defer tagPanic(&err)
 	node, abs, err := e.resolve(ctx, userID, nodeID)
 	if err != nil {
 		return err
@@ -363,6 +379,12 @@ func (e *TagEditor) Write(ctx context.Context, userID, nodeID string, t tagwrite
 	}
 
 	// Re-read abs path: after PushByPath the disk content is updated in-place at the same path.
+	// The new content is committed by now. A failed re-index must not be reported as a
+	// failed edit: the client would repeat it and get a conflict or one more version.
+	// The library catches up on the next scan.
 	ix := NewIndexer(e.q, e.storageRoot)
-	return ix.IndexNode(ctx, userID, nodeID, abs)
+	if err := ix.IndexNode(ctx, userID, nodeID, abs); err != nil {
+		log.Printf("discodrive: tags of %s are written, re-indexing failed: %v", nodeID, err)
+	}
+	return nil
 }

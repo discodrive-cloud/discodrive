@@ -8,7 +8,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -40,7 +42,23 @@ func RefreshChannel(ctx context.Context, q *db.Queries, storageRoot string, ch d
 	}); err != nil {
 		log.Printf("discodrive: podcast set-meta channel=%s: %v", db.UUIDString(ch.ID), err)
 	}
-	for _, ep := range feed.Episodes {
+	// A feed is somebody else's document: the newest maxEpisodes of it are kept, and a
+	// description is kept up to maxDescription. These rows are outside the quota.
+	episodes := feed.Episodes
+	if len(episodes) > maxEpisodes {
+		// Feeds usually list the newest first, but nothing makes them.
+		episodes = append([]Episode(nil), episodes...)
+		sort.SliceStable(episodes, func(i, j int) bool {
+			a, b := episodes[i].PubDate, episodes[j].PubDate
+			if a == nil || b == nil {
+				return a != nil && b == nil
+			}
+			return a.After(*b)
+		})
+		episodes = episodes[:maxEpisodes]
+	}
+	for _, ep := range episodes {
+		ep.Description = clip(ep.Description, maxDescription)
 		var pub pgtype.Timestamptz
 		if ep.PubDate != nil {
 			pub = pgtype.Timestamptz{Time: *ep.PubDate, Valid: true}
@@ -59,6 +77,22 @@ func RefreshChannel(ctx context.Context, q *db.Queries, storageRoot string, ch d
 	}
 	cacheCover(ctx, q, storageRoot, ch, feed.ImageURL, limits...)
 	return nil
+}
+
+const (
+	maxEpisodes    = 1000
+	maxDescription = 16 << 10
+)
+
+// clip cuts s to at most n bytes without splitting a character.
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // cacheCover downloads the channel image once (best-effort) and records its path.

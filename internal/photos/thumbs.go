@@ -360,12 +360,21 @@ func (t *Thumbs) Ensure(ctx context.Context, a db.PhotoAsset, kind string) (stri
 // sem, when not nil, bounds the renders that requests start (a worker has its own limit):
 // the leader holds a slot while it renders, and a call that joined needs none.
 func (t *Thumbs) build(ctx context.Context, a db.PhotoAsset, kind string, sem chan struct{}) (string, error) {
-	key := db.UUIDString(a.ID) + "/" + kind
+	// The key names the picture, not just the card: a render of the file as it was before
+	// a rotation or an overwrite is not the one a later request is waiting for.
+	key := fmt.Sprintf("%s/%s/%d/%d", db.UUIDString(a.ID), kind, a.NodeVersion.Int64, a.Rotation)
 	t.mu.Lock()
 	if f, ok := t.flights[key]; ok {
 		t.mu.Unlock()
 		select {
 		case <-f.done:
+			// The render belonged to the request that started it. If that request went
+			// away (a swipe past the photo) while this one is still here, its
+			// cancellation is not this one's answer: render again.
+			if f.err != nil && ctx.Err() == nil &&
+				(errors.Is(f.err, context.Canceled) || errors.Is(f.err, context.DeadlineExceeded)) {
+				return t.build(ctx, a, kind, sem)
+			}
 			return f.path, f.err
 		case <-ctx.Done():
 			return "", ctx.Err()
@@ -477,7 +486,9 @@ func (t *Thumbs) render(ctx context.Context, a db.PhotoAsset, kind string) (stri
 		// claimed and rendered again later), it must not mark a good file as failed. The
 		// hash goes in the same write, so the card is never ready with an old picture's hash.
 		h, flat := thumbHash(a, dst)
-		if e := t.q.SetThumbReady(ctx, db.SetThumbReadyParams{ID: a.ID, Phash: h, PhashFlat: flat}); e != nil && ctx.Err() == nil {
+		if e := t.q.SetThumbReady(ctx, db.SetThumbReadyParams{
+			ID: a.ID, Phash: h, PhashFlat: flat, Rotation: a.Rotation, NodeVersion: a.NodeVersion,
+		}); e != nil && ctx.Err() == nil {
 			log.Printf("discodrive: photos: recording thumbnail of %s: %v", db.UUIDString(a.ID), e)
 		} else if e == nil && t.OnReady != nil {
 			t.OnReady()

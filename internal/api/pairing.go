@@ -77,22 +77,26 @@ func (s *Server) handlePairToken(w http.ResponseWriter, r *http.Request) {
 	case "pending":
 		writeJSON(w, http.StatusOK, map[string]any{"status": "pending"})
 	case "approved":
-		// atomically consume the pairing: if two polls race, the token is issued exactly once
-		if _, err := s.q.ConsumePairingIfApproved(r.Context(), p.ID); errors.Is(err, pgx.ErrNoRows) {
-			writeJSON(w, http.StatusGone, map[string]any{"status": "consumed"})
-			return
-		} else if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
 		deviceToken, err := auth.NewDeviceToken()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		if err := s.q.SetDeviceTokenHash(r.Context(), db.SetDeviceTokenHashParams{
-			ID: p.DeviceID, TokenHash: pgtype.Text{String: auth.TokenHash(deviceToken), Valid: true},
-		}); err != nil {
+		// Consuming the pairing and giving the device its token are one step: if two polls
+		// race, the token is issued exactly once, and a failure between the two cannot
+		// leave a consumed pairing with a device that has no token.
+		err = s.q.InTx(r.Context(), func(q *db.Queries) error {
+			if _, err := q.ConsumePairingIfApproved(r.Context(), p.ID); err != nil {
+				return err
+			}
+			return q.SetDeviceTokenHash(r.Context(), db.SetDeviceTokenHashParams{
+				ID: p.DeviceID, TokenHash: pgtype.Text{String: auth.TokenHash(deviceToken), Valid: true},
+			})
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusGone, map[string]any{"status": "consumed"})
+			return
+		} else if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}

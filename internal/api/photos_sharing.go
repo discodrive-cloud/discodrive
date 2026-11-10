@@ -461,8 +461,26 @@ func (s *Server) seenCards(w http.ResponseWriter, r *http.Request, uid pgtype.UU
 			continue
 		}
 		seen[id] = true
-		a, err := s.q.GetPhotoAsset(r.Context(), db.GetPhotoAssetParams{ID: id, UserID: uid})
-		if errors.Is(err, pgx.ErrNoRows) {
+		ids = append(ids, id)
+	}
+	// The user's own cards — nearly always all of them — are read together; only what is
+	// not among them (a partner's card, one seen through an album) is looked up singly.
+	// A batch of 5000 used to be 5000 to 10000 queries.
+	own := map[pgtype.UUID]db.PhotoAsset{}
+	if len(ids) > 0 {
+		list, err := s.q.ListOwnPhotoAssets(r.Context(), db.ListOwnPhotoAssetsParams{UserID: uid, Ids: ids})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return nil, false
+		}
+		for _, a := range list {
+			own[a.ID] = a
+		}
+	}
+	for _, id := range ids {
+		a, mine := own[id]
+		var err error
+		if !mine {
 			a, err = s.q.GetViewablePhotoAsset(r.Context(), db.GetViewablePhotoAssetParams{ID: id, ViewerID: uid})
 		}
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -477,7 +495,6 @@ func (s *Server) seenCards(w http.ResponseWriter, r *http.Request, uid pgtype.UU
 			writeError(w, http.StatusBadRequest, "not a gallery card")
 			return nil, false
 		}
-		ids = append(ids, id)
 	}
 	return ids, true
 }

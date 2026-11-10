@@ -235,3 +235,65 @@ func TestMissingSyncFolder(t *testing.T) {
 	}
 	expectMissing("purged")
 }
+
+// A daemon syncing one folder is woken by every change in the vault. What happens
+// outside its folder must still move its cursor on: otherwise each wake-up reads the
+// same growing tail of changes again, for as long as the user works elsewhere.
+func TestScopedFeedCursorMovesPastChangesOutsideTheScope(t *testing.T) {
+	ctx := context.Background()
+	pool, q, svc := bootstrapPairingDB(t)
+	root := t.TempDir()
+	s := &Server{auth: svc, q: q, files: storage.NewFileService(pool, storage.NewLocalDisk(root)), storageRoot: root}
+	tok, user, err := svc.Register(ctx, "elsewhere@x.test", "password12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid := db.UUIDString(user.ID)
+	dir, err := s.files.EnsureDirByPath(ctx, uid, "sync")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.UpsertSyncSettings(ctx, db.UpsertSyncSettingsParams{UserID: user.ID, Enabled: true, FolderNodeID: dir.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.files.PushByPath(ctx, uid, "sync/a.txt", nil, strings.NewReader("a")); err != nil {
+		t.Fatal(err)
+	}
+	h := svc.Middleware(http.HandlerFunc(s.handleSyncChanges))
+	_, cursor := feed(t, h, tok, 0, true)
+
+	for _, name := range []string{"photos/1.jpg", "photos/2.jpg", "photos/3.jpg"} {
+		if _, err := s.files.PushByPath(ctx, uid, name, nil, strings.NewReader("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, whole := feed(t, h, tok, 0, false)
+	modern := func(since int64) ([]feedEntry, int64) {
+		t.Helper()
+		body := changesReqFeatures(t, h, "/sync/changes?since="+itoa(since), tok, true, "delete-by-id")
+		raw, _ := json.Marshal(body)
+		var out struct {
+			Changes []feedEntry `json:"changes"`
+			Cursor  int64       `json:"cursor"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Changes, out.Cursor
+	}
+	changes, next := modern(cursor)
+	if len(changes) != 0 {
+		t.Fatalf("the scoped feed reports changes outside the folder: %+v", changes)
+	}
+	if next != whole {
+		t.Fatalf("the scoped cursor stays at %d while the vault is at %d", next, whole)
+	}
+	// And nothing in the folder is skipped by it.
+	if _, err := s.files.PushByPath(ctx, uid, "sync/b.txt", nil, strings.NewReader("b")); err != nil {
+		t.Fatal(err)
+	}
+	changes, _ = modern(next)
+	if len(changes) != 1 || changes[0].Path != "b.txt" {
+		t.Fatalf("after the cursor moved on, the folder's next change reads %+v", changes)
+	}
+}

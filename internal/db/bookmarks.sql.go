@@ -368,12 +368,19 @@ func (q *Queries) ListBrowserBookmarksAtSeq(ctx context.Context, arg ListBrowser
 }
 
 const listBrowserBookmarksNeedingFavicon = `-- name: ListBrowserBookmarksNeedingFavicon :many
-SELECT id, user_id, parent_id, is_folder, title, url, position, deleted, seq, favicon_ext, favicon_tried_at, created_at, updated_at, favicon_size FROM browser_bookmarks
-WHERE favicon_tried_at IS NULL AND NOT deleted AND NOT is_folder
-ORDER BY created_at
+SELECT b.id, b.user_id, b.parent_id, b.is_folder, b.title, b.url, b.position, b.deleted, b.seq, b.favicon_ext, b.favicon_tried_at, b.created_at, b.updated_at, b.favicon_size FROM browser_bookmarks b
+JOIN (
+    SELECT id, row_number() OVER (PARTITION BY user_id ORDER BY created_at) AS rn
+    FROM browser_bookmarks
+    WHERE favicon_tried_at IS NULL AND NOT deleted AND NOT is_folder
+) pending ON pending.id = b.id
+ORDER BY pending.rn, b.created_at
 LIMIT $1
 `
 
+// The batch goes round the users, each one's oldest first (as ListLinksNeedingEnrich):
+// one account importing twenty thousand bookmarks must not make everyone else's wait
+// for hours behind it.
 func (q *Queries) ListBrowserBookmarksNeedingFavicon(ctx context.Context, limit int32) ([]BrowserBookmark, error) {
 	rows, err := q.db.Query(ctx, listBrowserBookmarksNeedingFavicon, limit)
 	if err != nil {

@@ -67,10 +67,19 @@ type endpoint func(h *Handler, c *reqCtx)
 // System endpoints are registered in system.go's init(); later tasks add browse/stream/etc.
 var endpoints = map[string]endpoint{}
 
+// maxFormBody bounds the POST body of a Subsonic call.
+const maxFormBody = 1 << 20
+
 // ServeHTTP implements http.Handler. It parses the method from the URL path, authenticates
 // the request, and dispatches to the registered endpoint.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Parse both query-string and POST-form body so FormValue works for all params.
+	// This runs before authentication, and /rest/ is outside the API's body limit: the
+	// form of a Subsonic call is its parameters (a playlist's song ids at most), so a
+	// megabyte is plenty and an anonymous caller cannot make the server hold more.
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxFormBody)
+	}
 	if err := r.ParseForm(); err != nil {
 		writeFail(w, "xml", ErrGeneric, "bad request")
 		return

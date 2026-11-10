@@ -137,3 +137,34 @@ func TestParseTriggerMinutes(t *testing.T) {
 		}
 	}
 }
+
+// A reminder that fires after the start, or counts from the end of the event, is not one
+// of the "N minutes before" presets: shown as one, saving the form would rewrite it into
+// a reminder before the start.
+func TestReadAlarmPresetLeavesOtherRemindersAlone(t *testing.T) {
+	with := func(value, related string) *ical.Component {
+		c := ical.NewComponent(ical.CompEvent)
+		va := ical.NewComponent(ical.CompAlarm)
+		va.Props.SetText(ical.PropAction, "DISPLAY")
+		tr := ical.NewProp(ical.PropTrigger)
+		tr.Value = value
+		if related != "" {
+			tr.Params.Set("RELATED", related)
+		}
+		va.Props.Set(tr)
+		c.Children = append(c.Children, va)
+		return c
+	}
+	for _, c := range []struct{ value, related, want string }{
+		{"-PT15M", "", "15"},
+		{"-PT15M", "START", "15"},
+		{"PT0S", "", "0"},
+		{"PT15M", "", "keep"},
+		{"+PT15M", "", "keep"},
+		{"-PT15M", "END", "keep"},
+	} {
+		if got := readAlarmPreset(with(c.value, c.related)); got != c.want {
+			t.Errorf("TRIGGER%s:%s reads as %q, want %q", c.related, c.value, got, c.want)
+		}
+	}
+}

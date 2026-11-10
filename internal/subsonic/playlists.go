@@ -152,11 +152,18 @@ func createPlaylist(h *Handler, c *reqCtx) {
 			c.fail(ErrNotFound, "playlist not found")
 			return
 		}
-		if err := h.q.ClearPlaylistSongs(ctx, p.ID); err != nil {
-			c.fail(ErrGeneric, "database error")
-			return
-		}
-		if err := insertSongs(ctx, h, userUUID, p.ID, songIDParams, 0); err != nil {
+		// Clearing and refilling are one step: an error halfway must not leave the
+		// playlist cut short.
+		err = h.q.InTx(ctx, func(q *db.Queries) error {
+			if _, err := q.LockPlaylist(ctx, p.ID); err != nil {
+				return err
+			}
+			if err := q.ClearPlaylistSongs(ctx, p.ID); err != nil {
+				return err
+			}
+			return insertSongs(ctx, q, userUUID, p.ID, songIDParams, 0)
+		})
+		if err != nil {
 			c.fail(ErrGeneric, "database error")
 			return
 		}
@@ -180,7 +187,7 @@ func createPlaylist(h *Handler, c *reqCtx) {
 		return
 	}
 
-	if err := insertSongs(ctx, h, userUUID, p.ID, songIDParams, 0); err != nil {
+	if err := insertSongs(ctx, h.q, userUUID, p.ID, songIDParams, 0); err != nil {
 		c.fail(ErrGeneric, "database error")
 		return
 	}
@@ -232,59 +239,69 @@ func updatePlaylist(h *Handler, c *reqCtx) {
 		return
 	}
 
-	// Load current songs, apply index removals, append additions.
-	songs, err := h.q.GetPlaylistSongs(ctx, p.ID)
+	// Read, change and write back under a lock on the playlist, in one transaction: two
+	// updates at once used to collide on the positions and lose tracks, and an error
+	// halfway left the playlist cut short.
+	err = h.q.InTx(ctx, func(q *db.Queries) error {
+		if _, err := q.LockPlaylist(ctx, p.ID); err != nil {
+			return err
+		}
+		// Load current songs, apply index removals, append additions.
+		songs, err := q.GetPlaylistSongs(ctx, p.ID)
+		if err != nil {
+			return err
+		}
+
+		// Parse removal indexes.
+		removeIdxSet := map[int]bool{}
+		for _, s := range c.paramList("songIndexToRemove") {
+			if idx, err := strconv.Atoi(s); err == nil && idx >= 0 && idx < len(songs) {
+				removeIdxSet[idx] = true
+			}
+		}
+
+		// Build surviving ordered list.
+		remaining := make([]pgtype.UUID, 0, len(songs))
+		for i, s := range songs {
+			if !removeIdxSet[i] {
+				remaining = append(remaining, s.ID)
+			}
+		}
+
+		// Append new songs (skip inaccessible).
+		for _, rawID := range c.paramList("songIdToAdd") {
+			kind, sUUID, ok := decID(rawID)
+			if !ok || kind != "tr" {
+				continue
+			}
+			songUUID, err := db.ParseUUID(sUUID)
+			if err != nil {
+				continue
+			}
+			if _, err := q.AccessibleSong(ctx, db.AccessibleSongParams{UserID: userUUID, ID: songUUID}); err != nil {
+				continue
+			}
+			remaining = append(remaining, songUUID)
+		}
+
+		// Replace playlist songs atomically (clear + re-insert).
+		if err := q.ClearPlaylistSongs(ctx, p.ID); err != nil {
+			return err
+		}
+		for i, sid := range remaining {
+			if err := q.AddPlaylistSong(ctx, db.AddPlaylistSongParams{
+				PlaylistID: p.ID,
+				SongID:     sid,
+				Position:   int32(i),
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		c.fail(ErrGeneric, "database error")
 		return
-	}
-
-	// Parse removal indexes.
-	removeIdxSet := map[int]bool{}
-	for _, s := range c.paramList("songIndexToRemove") {
-		if idx, err := strconv.Atoi(s); err == nil && idx >= 0 && idx < len(songs) {
-			removeIdxSet[idx] = true
-		}
-	}
-
-	// Build surviving ordered list.
-	remaining := make([]pgtype.UUID, 0, len(songs))
-	for i, s := range songs {
-		if !removeIdxSet[i] {
-			remaining = append(remaining, s.ID)
-		}
-	}
-
-	// Append new songs (skip inaccessible).
-	for _, rawID := range c.paramList("songIdToAdd") {
-		kind, sUUID, ok := decID(rawID)
-		if !ok || kind != "tr" {
-			continue
-		}
-		songUUID, err := db.ParseUUID(sUUID)
-		if err != nil {
-			continue
-		}
-		if _, err := h.q.AccessibleSong(ctx, db.AccessibleSongParams{UserID: userUUID, ID: songUUID}); err != nil {
-			continue
-		}
-		remaining = append(remaining, songUUID)
-	}
-
-	// Replace playlist songs atomically (clear + re-insert).
-	if err := h.q.ClearPlaylistSongs(ctx, p.ID); err != nil {
-		c.fail(ErrGeneric, "database error")
-		return
-	}
-	for i, sid := range remaining {
-		if err := h.q.AddPlaylistSong(ctx, db.AddPlaylistSongParams{
-			PlaylistID: p.ID,
-			SongID:     sid,
-			Position:   int32(i),
-		}); err != nil {
-			c.fail(ErrGeneric, "database error")
-			return
-		}
 	}
 
 	c.ok(map[string]any{})
@@ -322,7 +339,7 @@ func deletePlaylist(h *Handler, c *reqCtx) {
 }
 
 // insertSongs inserts accessible songs into a playlist starting at startPos.
-func insertSongs(ctx context.Context, h *Handler, userUUID, plUUID pgtype.UUID, rawIDs []string, startPos int) error {
+func insertSongs(ctx context.Context, q *db.Queries, userUUID, plUUID pgtype.UUID, rawIDs []string, startPos int) error {
 	pos := startPos
 	for _, rawID := range rawIDs {
 		kind, sUUID, ok := decID(rawID)
@@ -333,10 +350,10 @@ func insertSongs(ctx context.Context, h *Handler, userUUID, plUUID pgtype.UUID, 
 		if err != nil {
 			continue
 		}
-		if _, err := h.q.AccessibleSong(ctx, db.AccessibleSongParams{UserID: userUUID, ID: songUUID}); err != nil {
+		if _, err := q.AccessibleSong(ctx, db.AccessibleSongParams{UserID: userUUID, ID: songUUID}); err != nil {
 			continue // skip inaccessible songs
 		}
-		if err := h.q.AddPlaylistSong(ctx, db.AddPlaylistSongParams{
+		if err := q.AddPlaylistSong(ctx, db.AddPlaylistSongParams{
 			PlaylistID: plUUID,
 			SongID:     songUUID,
 			Position:   int32(pos),

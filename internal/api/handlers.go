@@ -371,6 +371,9 @@ func writeStorageErr(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, storage.ErrUploadSize):
 		writeError(w, http.StatusBadRequest, "upload is incomplete: staged bytes do not match the declared size")
+	case errors.Is(err, storage.ErrTooManyUploads):
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "too many unfinished uploads; finish or cancel some first")
 	case errors.Is(err, db.ErrUploadConnectionsBusy):
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusTooManyRequests, "too many active uploads; retry shortly")
@@ -880,6 +883,15 @@ func (s *Server) handleSyncChanges(w http.ResponseWriter, r *http.Request) {
 	// Rows of nodes removed for good go only to clients that delete by id (hasFeature).
 	purged := hasFeature(r, featureDeleteByID)
 	var rows []db.ListChangesSinceRow
+	// Read before the rows: sequence numbers are handed out under a lock on the user's
+	// row and committed in order, so every change up to this number is visible to the
+	// query that follows.
+	var vaultSeq int64
+	if scope.RelPrefix != "" {
+		if u, uerr := s.q.GetUserByID(r.Context(), uid); uerr == nil {
+			vaultSeq = u.ChangeSeq
+		}
+	}
 	if scope.RelPrefix == "" {
 		rows, err = s.q.ListChangesSince(r.Context(), db.ListChangesSinceParams{
 			UserID: uid, Seq: since, Lim: int32(limit + 1), IncludePurged: purged,
@@ -913,6 +925,15 @@ func (s *Server) handleSyncChanges(w http.ResponseWriter, r *http.Request) {
 			Size: c.Size.Int64, ContentHash: c.ContentHash.String, Deleted: c.Deleted,
 		})
 		cursor = c.Seq
+	}
+	// A scoped feed skips the changes outside its folder. With nothing more to send, the
+	// cursor moves past them too: left at the last matching row, every poll would scan
+	// the same tail of skipped changes again, and it only grows.
+	// Only for clients that take every kind of row: one that does not delete by id is
+	// not sent the rows of purged nodes, and its cursor stays behind them so that it
+	// gets them once it can.
+	if !hasMore && purged && vaultSeq > cursor {
+		cursor = vaultSeq
 	}
 	// The rows depend on X-Discodrive-Features: a cache must never hand a response to a
 	// client that sent a different header (an old client must not get purged rows).

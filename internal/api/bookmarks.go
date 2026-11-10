@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -282,8 +284,15 @@ func (s *Server) handleBookmarksBulk(w http.ResponseWriter, r *http.Request) {
 		st, err = s.q.GetBookmarkSyncState(r.Context(), uid)
 		cursor = st.BookmarkSeq
 	}
-	if err != nil {
+	if errors.Is(err, bookmarks.ErrInvalidImport) {
+		// The message says what is wrong with the import; it is written for the client.
 		writeError(w, http.StatusBadRequest, "import failed: "+err.Error())
+		return
+	}
+	if err != nil {
+		// Anything else is ours (a database error): its text is not for the client.
+		log.Printf("discodrive: bookmark import: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"count": count, "cursor": cursor, "skipped": skipped})
@@ -404,6 +413,11 @@ func (s *Server) handleBookmarkDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+var faviconTypes = map[string]string{
+	".ico": "image/x-icon", ".png": "image/png", ".svg": "image/svg+xml",
+	".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+}
+
 // GET /me/bookmarks/{id}/favicon — serve the enriched favicon bytes.
 func (s *Server) handleBookmarkFavicon(w http.ResponseWriter, r *http.Request) {
 	uid, ok := s.bookmarkUID(w, r)
@@ -433,6 +447,16 @@ func (s *Server) handleBookmarkFavicon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "private, max-age=86400")
-	// ServeContent picks the Content-Type from the file extension.
+	// The bytes are another site's, stored as fetched (SVG included): the type is one of
+	// ours by the stored extension, never sniffed, and the response can run nothing even
+	// if it is opened as a page rather than shown through <img>.
+	ct, known := faviconTypes[bm.FaviconExt]
+	if !known {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	http.ServeContent(w, r, rel, st.ModTime(), f)
 }

@@ -59,7 +59,14 @@ func importVCards(ctx context.Context, svc *dav.Service, abID, raw string) (impo
 // is skipped; running out of storage stops the import with quota.ErrExceeded, since every
 // card after it would be refused too.
 func importCards(raw string, put func(uid, data string) error) (imported, skipped int, err error) {
-	for _, block := range splitVCards(raw) {
+	for i, block := range splitVCards(raw) {
+		// Every card is a transaction of its own. A file is a few thousand contacts at
+		// most; whatever comes after maxImportCards, or is larger than a card with a
+		// photo can be, is counted as skipped rather than worked through.
+		if i >= maxImportCards || len(block) > maxImportCard {
+			skipped++
+			continue
+		}
 		card, err := vcard.NewDecoder(strings.NewReader(block)).Decode()
 		if err != nil {
 			skipped++
@@ -67,7 +74,9 @@ func importCards(raw string, put func(uid, data string) error) (imported, skippe
 		}
 		uid := card.Value(vcard.FieldUID)
 		data := block
-		if uid == "" {
+		// The UID becomes the object's name in CardDAV URLs. One that cannot stand in a
+		// path ("foo/bar") would import and then be unreachable for every client.
+		if uid == "" || !safeObjectUID(uid) {
 			uid = newContactUID()
 			card.SetValue(vcard.FieldUID, uid)
 			var b strings.Builder
@@ -87,6 +96,24 @@ func importCards(raw string, put func(uid, data string) error) (imported, skippe
 		imported++
 	}
 	return imported, skipped, nil
+}
+
+const (
+	maxImportCards = 50000
+	maxImportCard  = 2 << 20
+)
+
+// safeObjectUID reports whether uid can be a path segment as it is.
+func safeObjectUID(uid string) bool {
+	if len(uid) > 255 || uid == "." || uid == ".." {
+		return false
+	}
+	for _, c := range uid {
+		if c <= ' ' || c == 0x7f || strings.ContainsRune(`/\?#%`, c) {
+			return false
+		}
+	}
+	return true
 }
 
 // exportVCards concatenates raw cards into a single vCard stream.

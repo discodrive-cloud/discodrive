@@ -442,6 +442,9 @@ type Querier interface {
 	// with a single seq, so a page cut inside a group must be completed from here — a
 	// cursor at that seq would otherwise skip the rest of the group.
 	ListBrowserBookmarksAtSeq(ctx context.Context, arg ListBrowserBookmarksAtSeqParams) ([]BrowserBookmark, error)
+	// The batch goes round the users, each one's oldest first (as ListLinksNeedingEnrich):
+	// one account importing twenty thousand bookmarks must not make everyone else's wait
+	// for hours behind it.
 	ListBrowserBookmarksNeedingFavicon(ctx context.Context, limit int32) ([]BrowserBookmark, error)
 	// What a listing with ETags needs, without the objects themselves.
 	ListCalendarObjectHeads(ctx context.Context, calendarID pgtype.UUID) ([]ListCalendarObjectHeadsRow, error)
@@ -678,6 +681,7 @@ type Querier interface {
 	// A folder created while this statement waited is not in its snapshot and not locked:
 	// the caller repeats it until the number of locked folders stops changing.
 	LockLiveSubtreeDirs(ctx context.Context, arg LockLiveSubtreeDirsParams) (int64, error)
+	LockPlaylist(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 	LockPodcastChannel(ctx context.Context, arg LockPodcastChannelParams) (PodcastChannel, error)
 	// Serializes writers of one tree path until the transaction ends: two pushes to the
 	// same file must not both read the old row and then overwrite each other's bytes.
@@ -846,6 +850,9 @@ type Querier interface {
 	SetSharePasswordHash(ctx context.Context, arg SetSharePasswordHashParams) error
 	// A finished thumbnail and its hash in one write, so a card is never ready with the hash of
 	// its previous picture. phash NULL (the thumbnail could not be hashed) leaves it to the backfill.
+	// Only while the card is still the picture that was rendered (same file version and
+	// turn): a render that started before a rotation or an overwrite and finished after it
+	// must not mark the card ready with the old thumbnail and the old hash.
 	SetThumbReady(ctx context.Context, arg SetThumbReadyParams) error
 	SetThumbState(ctx context.Context, arg SetThumbStateParams) error
 	SetTranscodeState(ctx context.Context, arg SetTranscodeStateParams) error

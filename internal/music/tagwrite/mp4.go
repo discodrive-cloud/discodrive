@@ -2,6 +2,8 @@ package tagwrite
 
 import (
 	mp4tag "github.com/Sorrow446/go-mp4tag"
+	"os"
+	"path/filepath"
 )
 
 type mp4Writer struct{}
@@ -154,6 +156,14 @@ func (mp4Writer) Apply(path string, t Tags, cc CoverChange, cover *Cover) error 
 	// which we intentionally ignore — the fd is already gone.
 	writeErr := f.Write(&tags, delStrings)
 	f.Close() //nolint:errcheck
+	// The library builds the result in the system temp directory as "<name>_tmp_<ms>"
+	// and leaves it there when it fails. path is a temp name of ours, so the pattern
+	// matches nothing else.
+	if left, _ := filepath.Glob(filepath.Join(os.TempDir(), filepath.Base(path)+"_tmp_*")); writeErr != nil {
+		for _, l := range left {
+			_ = os.Remove(l)
+		}
+	}
 	return writeErr
 }
 

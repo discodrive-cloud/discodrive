@@ -117,10 +117,17 @@ WITH RECURSIVE up AS (
 )
 SELECT id, parent_id, is_folder FROM up;
 
+-- The batch goes round the users, each one's oldest first (as ListLinksNeedingEnrich):
+-- one account importing twenty thousand bookmarks must not make everyone else's wait
+-- for hours behind it.
 -- name: ListBrowserBookmarksNeedingFavicon :many
-SELECT * FROM browser_bookmarks
-WHERE favicon_tried_at IS NULL AND NOT deleted AND NOT is_folder
-ORDER BY created_at
+SELECT b.* FROM browser_bookmarks b
+JOIN (
+    SELECT id, row_number() OVER (PARTITION BY user_id ORDER BY created_at) AS rn
+    FROM browser_bookmarks
+    WHERE favicon_tried_at IS NULL AND NOT deleted AND NOT is_folder
+) pending ON pending.id = b.id
+ORDER BY pending.rn, b.created_at
 LIMIT $1;
 
 -- SetBookmarkFavicon does NOT bump seq: favicons are server-side decoration,
