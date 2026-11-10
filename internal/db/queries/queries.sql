@@ -818,11 +818,33 @@ DELETE FROM calendars WHERE id = $1 AND user_id = $2;
 
 -- == calendar_objects ==
 -- name: UpsertCalendarObject :one
-INSERT INTO calendar_objects (calendar_id, uid, data, etag, parsed)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO calendar_objects (calendar_id, uid, data, etag, parsed, span_start, span_end, span_known)
+VALUES ($1, $2, $3, $4, $5, sqlc.narg(span_start), sqlc.narg(span_end), sqlc.arg(span_known))
 ON CONFLICT (calendar_id, uid) DO UPDATE
-SET data = EXCLUDED.data, etag = EXCLUDED.etag, parsed = EXCLUDED.parsed, updated_at = now()
+SET data = EXCLUDED.data, etag = EXCLUDED.etag, parsed = EXCLUDED.parsed,
+    span_start = EXCLUDED.span_start, span_end = EXCLUDED.span_end, span_known = EXCLUDED.span_known,
+    updated_at = now()
 RETURNING *;
+
+-- The objects that can have an occurrence in the window (see dav.eventSpan): the span
+-- overlaps it, or is open on that side, or is not known.
+-- name: ListCalendarObjectsInWindow :many
+SELECT * FROM calendar_objects
+WHERE calendar_id = sqlc.arg(calendar_id)
+  AND (NOT span_known
+       OR ((span_start IS NULL OR span_start < sqlc.arg(window_end))
+           AND (span_end IS NULL OR span_end > sqlc.arg(window_start))))
+ORDER BY uid;
+
+-- name: ListCalendarObjectsWithoutSpan :many
+SELECT id, data, etag FROM calendar_objects
+WHERE NOT span_known AND id > sqlc.arg(after_id)
+ORDER BY id
+LIMIT sqlc.arg(max_rows);
+
+-- name: SetCalendarObjectSpan :execrows
+UPDATE calendar_objects SET span_start = sqlc.narg(span_start), span_end = sqlc.narg(span_end), span_known = true
+WHERE id = sqlc.arg(id) AND etag = sqlc.arg(etag) AND NOT span_known;
 
 -- name: GetCalendarObject :one
 SELECT * FROM calendar_objects WHERE calendar_id = $1 AND uid = $2;

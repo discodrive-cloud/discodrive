@@ -157,6 +157,9 @@ type CalendarObject struct {
 	Parsed     []byte             `json:"parsed"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+	SpanStart  pgtype.Timestamptz `json:"span_start"`
+	SpanEnd    pgtype.Timestamptz `json:"span_end"`
+	SpanKnown  bool               `json:"span_known"`
 }
 
 type ChangeLog struct {

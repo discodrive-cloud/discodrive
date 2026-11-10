@@ -434,6 +434,10 @@ type Querier interface {
 	// What a listing with ETags needs, without the objects themselves.
 	ListCalendarObjectHeads(ctx context.Context, calendarID pgtype.UUID) ([]ListCalendarObjectHeadsRow, error)
 	ListCalendarObjects(ctx context.Context, calendarID pgtype.UUID) ([]CalendarObject, error)
+	// The objects that can have an occurrence in the window (see dav.eventSpan): the span
+	// overlaps it, or is open on that side, or is not known.
+	ListCalendarObjectsInWindow(ctx context.Context, arg ListCalendarObjectsInWindowParams) ([]CalendarObject, error)
+	ListCalendarObjectsWithoutSpan(ctx context.Context, arg ListCalendarObjectsWithoutSpanParams) ([]ListCalendarObjectsWithoutSpanRow, error)
 	ListCalendars(ctx context.Context, userID pgtype.UUID) ([]Calendar, error)
 	// Changes after seq with each node's current state, for library indexing.
 	// purged_nodes is left out on purpose: songs/books rows cascade with their node, and a
@@ -767,6 +771,7 @@ type Querier interface {
 	SetBrowserBookmarkTitleIfEmpty(ctx context.Context, arg SetBrowserBookmarkTitleIfEmptyParams) (int64, error)
 	SetCalendarColor(ctx context.Context, arg SetCalendarColorParams) error
 	SetCalendarName(ctx context.Context, arg SetCalendarNameParams) error
+	SetCalendarObjectSpan(ctx context.Context, arg SetCalendarObjectSpanParams) (int64, error)
 	SetCalendarOrder(ctx context.Context, arg SetCalendarOrderParams) error
 	SetDeviceTokenHash(ctx context.Context, arg SetDeviceTokenHashParams) error
 	SetEbookCredentials(ctx context.Context, arg SetEbookCredentialsParams) error

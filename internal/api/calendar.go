@@ -165,7 +165,9 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		calID := db.UUIDString(cal.ID)
-		objs, oerr := s.dav.ListCalendarObjects(r.Context(), calID)
+		// Only the objects that can fall into the window: the rest of the calendar's
+		// history is neither read nor parsed.
+		objs, oerr := s.dav.CalendarObjectsInWindow(r.Context(), calID, start, end)
 		if oerr != nil {
 			continue
 		}

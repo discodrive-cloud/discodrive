@@ -435,6 +435,7 @@ func runServer(cfg config.Config) {
 
 	davSvc := davpkg.NewService(pool)
 	davSvc.SetQuota(quotaChecker)
+	davSvc.BackfillSpansInBackground(context.Background()) // objects stored before migration 40
 	calBackend := caldavpkg.New(davSvc)
 	calHandler := &godavcaldav.Handler{Backend: calBackend, Prefix: "/caldav"}
 	caldavH := caldavpkg.Handler(authSvc, queries, calBackend, calHandler)

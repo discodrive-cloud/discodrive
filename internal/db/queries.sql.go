@@ -1087,7 +1087,7 @@ func (q *Queries) GetCalendarByURI(ctx context.Context, uri string) (Calendar, e
 }
 
 const getCalendarObject = `-- name: GetCalendarObject :one
-SELECT id, calendar_id, uid, data, etag, parsed, created_at, updated_at FROM calendar_objects WHERE calendar_id = $1 AND uid = $2
+SELECT id, calendar_id, uid, data, etag, parsed, created_at, updated_at, span_start, span_end, span_known FROM calendar_objects WHERE calendar_id = $1 AND uid = $2
 `
 
 type GetCalendarObjectParams struct {
@@ -1107,6 +1107,9 @@ func (q *Queries) GetCalendarObject(ctx context.Context, arg GetCalendarObjectPa
 		&i.Parsed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SpanStart,
+		&i.SpanEnd,
+		&i.SpanKnown,
 	)
 	return i, err
 }
@@ -2112,7 +2115,7 @@ func (q *Queries) ListCalendarObjectHeads(ctx context.Context, calendarID pgtype
 }
 
 const listCalendarObjects = `-- name: ListCalendarObjects :many
-SELECT id, calendar_id, uid, data, etag, parsed, created_at, updated_at FROM calendar_objects WHERE calendar_id = $1 ORDER BY uid
+SELECT id, calendar_id, uid, data, etag, parsed, created_at, updated_at, span_start, span_end, span_known FROM calendar_objects WHERE calendar_id = $1 ORDER BY uid
 `
 
 func (q *Queries) ListCalendarObjects(ctx context.Context, calendarID pgtype.UUID) ([]CalendarObject, error) {
@@ -2133,7 +2136,97 @@ func (q *Queries) ListCalendarObjects(ctx context.Context, calendarID pgtype.UUI
 			&i.Parsed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SpanStart,
+			&i.SpanEnd,
+			&i.SpanKnown,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCalendarObjectsInWindow = `-- name: ListCalendarObjectsInWindow :many
+SELECT id, calendar_id, uid, data, etag, parsed, created_at, updated_at, span_start, span_end, span_known FROM calendar_objects
+WHERE calendar_id = $1
+  AND (NOT span_known
+       OR ((span_start IS NULL OR span_start < $2)
+           AND (span_end IS NULL OR span_end > $3)))
+ORDER BY uid
+`
+
+type ListCalendarObjectsInWindowParams struct {
+	CalendarID  pgtype.UUID        `json:"calendar_id"`
+	WindowEnd   pgtype.Timestamptz `json:"window_end"`
+	WindowStart pgtype.Timestamptz `json:"window_start"`
+}
+
+// The objects that can have an occurrence in the window (see dav.eventSpan): the span
+// overlaps it, or is open on that side, or is not known.
+func (q *Queries) ListCalendarObjectsInWindow(ctx context.Context, arg ListCalendarObjectsInWindowParams) ([]CalendarObject, error) {
+	rows, err := q.db.Query(ctx, listCalendarObjectsInWindow, arg.CalendarID, arg.WindowEnd, arg.WindowStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CalendarObject{}
+	for rows.Next() {
+		var i CalendarObject
+		if err := rows.Scan(
+			&i.ID,
+			&i.CalendarID,
+			&i.Uid,
+			&i.Data,
+			&i.Etag,
+			&i.Parsed,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.SpanStart,
+			&i.SpanEnd,
+			&i.SpanKnown,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCalendarObjectsWithoutSpan = `-- name: ListCalendarObjectsWithoutSpan :many
+SELECT id, data, etag FROM calendar_objects
+WHERE NOT span_known AND id > $1
+ORDER BY id
+LIMIT $2
+`
+
+type ListCalendarObjectsWithoutSpanParams struct {
+	AfterID pgtype.UUID `json:"after_id"`
+	MaxRows int32       `json:"max_rows"`
+}
+
+type ListCalendarObjectsWithoutSpanRow struct {
+	ID   pgtype.UUID `json:"id"`
+	Data string      `json:"data"`
+	Etag string      `json:"etag"`
+}
+
+func (q *Queries) ListCalendarObjectsWithoutSpan(ctx context.Context, arg ListCalendarObjectsWithoutSpanParams) ([]ListCalendarObjectsWithoutSpanRow, error) {
+	rows, err := q.db.Query(ctx, listCalendarObjectsWithoutSpan, arg.AfterID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCalendarObjectsWithoutSpanRow{}
+	for rows.Next() {
+		var i ListCalendarObjectsWithoutSpanRow
+		if err := rows.Scan(&i.ID, &i.Data, &i.Etag); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -3680,6 +3773,31 @@ func (q *Queries) SetCalendarName(ctx context.Context, arg SetCalendarNameParams
 	return err
 }
 
+const setCalendarObjectSpan = `-- name: SetCalendarObjectSpan :execrows
+UPDATE calendar_objects SET span_start = $1, span_end = $2, span_known = true
+WHERE id = $3 AND etag = $4 AND NOT span_known
+`
+
+type SetCalendarObjectSpanParams struct {
+	SpanStart pgtype.Timestamptz `json:"span_start"`
+	SpanEnd   pgtype.Timestamptz `json:"span_end"`
+	ID        pgtype.UUID        `json:"id"`
+	Etag      string             `json:"etag"`
+}
+
+func (q *Queries) SetCalendarObjectSpan(ctx context.Context, arg SetCalendarObjectSpanParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setCalendarObjectSpan,
+		arg.SpanStart,
+		arg.SpanEnd,
+		arg.ID,
+		arg.Etag,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setCalendarOrder = `-- name: SetCalendarOrder :exec
 UPDATE calendars SET sort_order = $2 WHERE id = $1 AND user_id = $3
 `
@@ -4405,19 +4523,24 @@ func (q *Queries) UpsertAddressbookObject(ctx context.Context, arg UpsertAddress
 }
 
 const upsertCalendarObject = `-- name: UpsertCalendarObject :one
-INSERT INTO calendar_objects (calendar_id, uid, data, etag, parsed)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO calendar_objects (calendar_id, uid, data, etag, parsed, span_start, span_end, span_known)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (calendar_id, uid) DO UPDATE
-SET data = EXCLUDED.data, etag = EXCLUDED.etag, parsed = EXCLUDED.parsed, updated_at = now()
-RETURNING id, calendar_id, uid, data, etag, parsed, created_at, updated_at
+SET data = EXCLUDED.data, etag = EXCLUDED.etag, parsed = EXCLUDED.parsed,
+    span_start = EXCLUDED.span_start, span_end = EXCLUDED.span_end, span_known = EXCLUDED.span_known,
+    updated_at = now()
+RETURNING id, calendar_id, uid, data, etag, parsed, created_at, updated_at, span_start, span_end, span_known
 `
 
 type UpsertCalendarObjectParams struct {
-	CalendarID pgtype.UUID `json:"calendar_id"`
-	Uid        string      `json:"uid"`
-	Data       string      `json:"data"`
-	Etag       string      `json:"etag"`
-	Parsed     []byte      `json:"parsed"`
+	CalendarID pgtype.UUID        `json:"calendar_id"`
+	Uid        string             `json:"uid"`
+	Data       string             `json:"data"`
+	Etag       string             `json:"etag"`
+	Parsed     []byte             `json:"parsed"`
+	SpanStart  pgtype.Timestamptz `json:"span_start"`
+	SpanEnd    pgtype.Timestamptz `json:"span_end"`
+	SpanKnown  bool               `json:"span_known"`
 }
 
 // == calendar_objects ==
@@ -4428,6 +4551,9 @@ func (q *Queries) UpsertCalendarObject(ctx context.Context, arg UpsertCalendarOb
 		arg.Data,
 		arg.Etag,
 		arg.Parsed,
+		arg.SpanStart,
+		arg.SpanEnd,
+		arg.SpanKnown,
 	)
 	var i CalendarObject
 	err := row.Scan(
@@ -4439,6 +4565,9 @@ func (q *Queries) UpsertCalendarObject(ctx context.Context, arg UpsertCalendarOb
 		&i.Parsed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SpanStart,
+		&i.SpanEnd,
+		&i.SpanKnown,
 	)
 	return i, err
 }

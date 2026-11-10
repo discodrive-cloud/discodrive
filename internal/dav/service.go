@@ -345,8 +345,10 @@ func (s *Service) PutCalendarObjectIf(ctx context.Context, calID, uid, data stri
 			return "", err
 		}
 	}
+	spanStart, spanEnd, spanKnown := eventSpan(data)
 	if _, err = qtx.UpsertCalendarObject(ctx, db.UpsertCalendarObjectParams{
 		CalendarID: cid, Uid: uid, Data: data, Etag: etag, Parsed: parsed,
+		SpanStart: spanValue(spanStart), SpanEnd: spanValue(spanEnd), SpanKnown: spanKnown,
 	}); err != nil {
 		return "", err
 	}
