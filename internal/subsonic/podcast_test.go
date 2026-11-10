@@ -647,3 +647,42 @@ func TestStreamEpisodeNotDownloaded(t *testing.T) {
 		}
 	}
 }
+
+// A proxied episode must stop when the listener goes away: the upstream request
+// has to run under the client's request context, not a detached one.
+func TestStreamEpisodeProxyFollowsTheClientContext(t *testing.T) {
+	restoreFetch := overrideFetchFeed()
+	defer restoreFetch()
+
+	h, _, _ := setupWithPool(t)
+	h.storageRoot = t.TempDir()
+	h.xaccel = false
+
+	srv := startRSSServer(t)
+	resp := doGet(h, testAPIKey, "createPodcastChannel", "url="+srv.URL+"/feed.xml")
+	if resp == nil || resp["status"] != "ok" {
+		t.Fatalf("createPodcastChannel failed: %v", resp)
+	}
+	epID := getEpisodeID(t, h)
+
+	var proxied context.Context
+	orig := proxyEpisode
+	proxyEpisode = func(ctx context.Context, w http.ResponseWriter, r *http.Request, url string) (bool, error) {
+		proxied = ctx
+		return true, nil
+	}
+	defer func() { proxyEpisode = orig }()
+
+	clientCtx, hangUp := context.WithCancel(context.Background())
+	target := "/rest/stream?id=" + epID + "&apiKey=" + testAPIKey + "&f=json&c=test&v=1.16.1"
+	req := httptest.NewRequest(http.MethodGet, target, nil).WithContext(clientCtx)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if proxied == nil {
+		t.Fatal("the episode was not proxied")
+	}
+	hangUp()
+	if proxied.Err() == nil {
+		t.Fatal("the upstream request outlives the client: its context is not cancelled when the client hangs up")
+	}
+}

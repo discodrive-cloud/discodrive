@@ -3042,9 +3042,11 @@ SELECT u.id, u.email, u.role, u.storage_quota, u.created_at,
            WHERE e.user_id = u.id AND e.disk_path IS NOT NULL
        ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = u.id), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = u.id), 0)
          + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = u.id AND si.status = 'processing'), 0)
+         + COALESCE((SELECT SUM(octet_length(sh.content_html)) FROM saved_items sh WHERE sh.user_id = u.id), 0)
          + COALESCE((SELECT SUM(octet_length(sl.thumb)) FROM saved_links sl WHERE sl.user_id = u.id), 0)
          + COALESCE((SELECT SUM(octet_length(co.data)) FROM calendar_objects co JOIN calendars c ON c.id = co.calendar_id WHERE c.user_id = u.id), 0)
          + COALESCE((SELECT SUM(octet_length(ao.data)) FROM addressbook_objects ao JOIN addressbooks a ON a.id = ao.addressbook_id WHERE a.user_id = u.id), 0)
+         + COALESCE((SELECT SUM(bk.cover_size) FROM books bk WHERE bk.user_id = u.id), 0)
          + COALESCE((SELECT SUM(bb.favicon_size) FROM browser_bookmarks bb WHERE bb.user_id = u.id), 0))::bigint AS used
 FROM users u
 ORDER BY u.created_at
@@ -3067,7 +3069,8 @@ type ListUsersWithUsageRow struct {
 // podcasts/<user>/), and Saved downloads still in flight (bytes_done of 'processing'
 // rows; a finished download is a node). Anything narrower would let a user park unlimited data past their
 // quota in the trash, in .versions, or in a podcast subscription. Calendar and contact
-// objects (stored in Postgres) and bookmark favicons count too.
+// objects (stored in Postgres), bookmark favicons, cached book covers and the HTML of
+// Saved articles still waiting to be processed count too.
 func (q *Queries) ListUsersWithUsage(ctx context.Context) ([]ListUsersWithUsageRow, error) {
 	rows, err := q.db.Query(ctx, listUsersWithUsage)
 	if err != nil {
@@ -3373,9 +3376,11 @@ FROM (
                WHERE e.user_id = usr.id AND e.disk_path IS NOT NULL
            ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = usr.id), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0)
              + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = usr.id AND si.status = 'processing'), 0)
+         + COALESCE((SELECT SUM(octet_length(sh.content_html)) FROM saved_items sh WHERE sh.user_id = usr.id), 0)
              + COALESCE((SELECT SUM(octet_length(sl.thumb)) FROM saved_links sl WHERE sl.user_id = usr.id), 0)
          + COALESCE((SELECT SUM(octet_length(co.data)) FROM calendar_objects co JOIN calendars c ON c.id = co.calendar_id WHERE c.user_id = usr.id), 0)
          + COALESCE((SELECT SUM(octet_length(ao.data)) FROM addressbook_objects ao JOIN addressbooks a ON a.id = ao.addressbook_id WHERE a.user_id = usr.id), 0)
+         + COALESCE((SELECT SUM(bk.cover_size) FROM books bk WHERE bk.user_id = usr.id), 0)
          + COALESCE((SELECT SUM(bb.favicon_size) FROM browser_bookmarks bb WHERE bb.user_id = usr.id), 0))::bigint AS used
     FROM users usr
 ) AS fresh
@@ -3747,9 +3752,11 @@ SELECT (COALESCE((
            SELECT SUM(size) FROM podcast_episodes WHERE disk_path IS NOT NULL
        ), 0) + COALESCE((SELECT SUM(cover_size) FROM podcast_channels), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0)
          + COALESCE((SELECT SUM(bytes_done) FROM saved_items WHERE status = 'processing'), 0)
+         + COALESCE((SELECT SUM(octet_length(content_html)) FROM saved_items), 0)
          + COALESCE((SELECT SUM(octet_length(thumb)) FROM saved_links), 0)
          + COALESCE((SELECT SUM(octet_length(data)) FROM calendar_objects), 0)
          + COALESCE((SELECT SUM(octet_length(data)) FROM addressbook_objects), 0)
+         + COALESCE((SELECT SUM(cover_size) FROM books), 0)
          + COALESCE((SELECT SUM(favicon_size) FROM browser_bookmarks), 0))::bigint AS used
 `
 
@@ -4344,9 +4351,11 @@ SELECT (COALESCE((
            WHERE e.user_id = $1 AND e.disk_path IS NOT NULL
        ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = $1), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = $1), 0)
          + COALESCE((SELECT SUM(si.bytes_done) FROM saved_items si WHERE si.user_id = $1 AND si.status = 'processing'), 0)
+         + COALESCE((SELECT SUM(octet_length(sh.content_html)) FROM saved_items sh WHERE sh.user_id = $1), 0)
          + COALESCE((SELECT SUM(octet_length(sl.thumb)) FROM saved_links sl WHERE sl.user_id = $1), 0)
          + COALESCE((SELECT SUM(octet_length(co.data)) FROM calendar_objects co JOIN calendars c ON c.id = co.calendar_id WHERE c.user_id = $1), 0)
          + COALESCE((SELECT SUM(octet_length(ao.data)) FROM addressbook_objects ao JOIN addressbooks a ON a.id = ao.addressbook_id WHERE a.user_id = $1), 0)
+         + COALESCE((SELECT SUM(bk.cover_size) FROM books bk WHERE bk.user_id = $1), 0)
          + COALESCE((SELECT SUM(bb.favicon_size) FROM browser_bookmarks bb WHERE bb.user_id = $1), 0))::bigint AS used
 `
 

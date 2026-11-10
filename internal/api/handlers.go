@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -539,22 +541,59 @@ func (s *Server) handleCreateFolder(w http.ResponseWriter, r *http.Request) {
 // stream unbounded data and exhaust disk/memory. Larger files use the chunked path.
 const maxMultipartUpload = 10 << 30 // 10 GiB
 
-// multipartMemory is how much of a multipart body is held in RAM; larger file parts
-// spill to a temp file. Parsing happens before the concurrent-upload limit applies, so
-// the old 32 MiB (x2 with buffer growth) per request let a few parallel uploads
-// exhaust memory.
-const multipartMemory = 1 << 20
-
 // multipartOverhead is the room left for the form's boundaries and text fields on top of
 // the file bytes when the body is capped at the user's allowance.
 const multipartOverhead = 64 << 10
 
-// POST /files/upload (multipart: file, [name], [parent_id])
+// maxFormField caps one text field of the upload form (name, parent_id, ...).
+const maxFormField = 8 << 10
+
+// errFieldAfterFile refuses an upload form whose file part is not the last one.
+var errFieldAfterFile = errors.New("form fields must come before the file")
+
+// uploadBodyError marks a failure of the request body itself (cut off, malformed), as
+// opposed to a storage error.
+type uploadBodyError struct{ err error }
+
+func (e *uploadBodyError) Error() string { return e.err.Error() }
+func (e *uploadBodyError) Unwrap() error { return e.err }
+
+// uploadFilePart reads the file part of an upload form and, at its end, makes sure it
+// was the last part: the file is being stored as it is read, so nothing that follows
+// could still be taken into account.
+type uploadFilePart struct {
+	part    *multipart.Part
+	form    *multipart.Reader
+	checked bool
+}
+
+func (f *uploadFilePart) Read(p []byte) (int, error) {
+	n, err := f.part.Read(p)
+	if err == nil {
+		return n, nil
+	}
+	if err != io.EOF {
+		return n, &uploadBodyError{err}
+	}
+	if !f.checked {
+		f.checked = true
+		switch _, next := f.form.NextPart(); {
+		case next == nil:
+			return n, errFieldAfterFile
+		case next != io.EOF:
+			return n, &uploadBodyError{next}
+		}
+	}
+	return n, io.EOF
+}
+
+// POST /files/upload (multipart: [name], [parent_id], [base_version], [device],
+// [modified_at], then file — the file part must be the last one)
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	// The form is spooled to the temp directory before the file reaches storage, where
-	// the quota applies. Read no more than the user may still store (uploads go to the
-	// user's own tree only): otherwise an account with no room left could park
-	// maxMultipartUpload per request on the system disk.
+	// The file part is streamed straight into storage staging, where the quota and the
+	// upload slots apply; nothing is spooled to the temp directory. The cap below is a
+	// second line: read no more than the user may still store (uploads go to the user's
+	// own tree only), and never more than maxMultipartUpload.
 	limit := int64(maxMultipartUpload)
 	allowance, err := s.files.Allowance(r.Context(), auth.UserID(r.Context()))
 	if err != nil {
@@ -569,37 +608,71 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInsufficientStorage, quota.ErrExceeded.Error())
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, limit)
-	if err := r.ParseMultipartForm(multipartMemory); err != nil {
+	bodyErr := func(err error) {
 		var tooBig *http.MaxBytesError
-		if byQuota && errors.As(err, &tooBig) {
+		switch {
+		case errors.As(err, &tooBig) && byQuota:
 			writeError(w, http.StatusInsufficientStorage, quota.ErrExceeded.Error())
-			return
+		case errors.As(err, &tooBig):
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		default:
+			writeError(w, http.StatusBadRequest, "expected multipart/form-data")
 		}
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	form, err := r.MultipartReader()
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "expected multipart/form-data")
 		return
 	}
-	// The handler runs on a request clone, and net/http only removes the spool files of
-	// the original request's form: without this every upload leaves its file in TMPDIR.
-	defer r.MultipartForm.RemoveAll()
-	file, hdr, err := r.FormFile("file")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "no file in field: file")
-		return
+	fields := map[string]string{}
+	var file *multipart.Part
+	for file == nil {
+		part, err := form.NextPart()
+		if err == io.EOF {
+			writeError(w, http.StatusBadRequest, "no file in field: file")
+			return
+		}
+		if err != nil {
+			bodyErr(err)
+			return
+		}
+		switch {
+		case part.FormName() == "file" && part.FileName() != "":
+			file = part
+		case part.FileName() != "":
+			// A file in a field this endpoint does not know: skipped, within the body cap.
+			if _, err := io.Copy(io.Discard, part); err != nil {
+				bodyErr(err)
+				return
+			}
+		default:
+			value, err := io.ReadAll(io.LimitReader(part, maxFormField+1))
+			if err != nil {
+				bodyErr(err)
+				return
+			}
+			if len(value) > maxFormField {
+				writeError(w, http.StatusBadRequest, "form field too long: "+part.FormName())
+				return
+			}
+			if _, seen := fields[part.FormName()]; !seen {
+				fields[part.FormName()] = string(value)
+			}
+		}
 	}
-	defer file.Close()
 
-	name := r.FormValue("name")
+	name := fields["name"]
 	if name == "" {
-		name = hdr.Filename
+		name = file.FileName()
 	}
 	var parent *string
-	if p := r.FormValue("parent_id"); p != "" {
+	if p := fields["parent_id"]; p != "" {
 		parent = &p
 	}
 	// sync contract: base_version (the version the client was working from) and device.
 	var baseVersion *int64
-	if bv := r.FormValue("base_version"); bv != "" {
+	if bv := fields["base_version"]; bv != "" {
 		n, err := strconv.ParseInt(bv, 10, 64)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid base_version")
@@ -607,14 +680,22 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		baseVersion = &n
 	}
-	mtime, err := clientModTime(r.FormValue("modified_at"))
+	mtime, err := clientModTime(fields["modified_at"])
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid modified_at, expected RFC3339")
 		return
 	}
 	res, err := s.files.PushWithMeta(r.Context(), auth.UserID(r.Context()), parent, name, baseVersion,
-		r.FormValue("device"), file, storage.PushMeta{ModifiedAt: mtime})
-	if err != nil {
+		fields["device"], &uploadFilePart{part: file, form: form}, storage.PushMeta{ModifiedAt: mtime})
+	var broken *uploadBodyError
+	switch {
+	case errors.Is(err, errFieldAfterFile):
+		writeError(w, http.StatusBadRequest, errFieldAfterFile.Error())
+		return
+	case errors.As(err, &broken):
+		bodyErr(err)
+		return
+	case err != nil:
 		writeStorageErr(w, err)
 		return
 	}

@@ -334,7 +334,7 @@ type SetSavedItemErrorParams struct {
 	ErrorMsg string      `json:"error_msg"`
 }
 
-// content_html goes too: it is outside the quota, and a retry fetches the page itself
+// content_html goes too: a failed item must not keep occupying the quota, and a retry fetches the page itself
 // (or the client sends the HTML again).
 func (q *Queries) SetSavedItemError(ctx context.Context, arg SetSavedItemErrorParams) error {
 	_, err := q.db.Exec(ctx, setSavedItemError, arg.ID, arg.ErrorMsg)

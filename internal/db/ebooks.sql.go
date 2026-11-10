@@ -60,7 +60,7 @@ WITH RECURSIVE shared_subtree AS (
     UNION
     SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
 )
-SELECT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited FROM books b
+SELECT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited, b.cover_size FROM books b
 WHERE b.id = $2
   AND (b.user_id = $1 OR b.node_id IN (SELECT node_id FROM shared_subtree))
 LIMIT 1
@@ -95,6 +95,7 @@ func (q *Queries) AccessibleBook(ctx context.Context, arg AccessibleBookParams) 
 		&i.AddedAt,
 		&i.UpdatedAt,
 		&i.MetadataEdited,
+		&i.CoverSize,
 	)
 	return i, err
 }
@@ -142,7 +143,7 @@ WITH RECURSIVE shared_subtree AS (
     UNION
     SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
 )
-SELECT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited FROM books b
+SELECT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited, b.cover_size FROM books b
 WHERE b.user_id = $1 OR b.node_id IN (SELECT node_id FROM shared_subtree)
 ORDER BY b.sort_title, b.title
 LIMIT $2 OFFSET $3
@@ -184,6 +185,7 @@ func (q *Queries) AccessibleBooksAll(ctx context.Context, arg AccessibleBooksAll
 			&i.AddedAt,
 			&i.UpdatedAt,
 			&i.MetadataEdited,
+			&i.CoverSize,
 		); err != nil {
 			return nil, err
 		}
@@ -203,7 +205,7 @@ WITH RECURSIVE shared_subtree AS (
     UNION
     SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
 )
-SELECT DISTINCT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited FROM books b
+SELECT DISTINCT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited, b.cover_size FROM books b
 JOIN book_authors ba ON ba.book_id = b.id
 WHERE ba.name = $2
   AND (b.user_id = $1 OR b.node_id IN (SELECT node_id FROM shared_subtree))
@@ -253,6 +255,7 @@ func (q *Queries) AccessibleBooksByAuthor(ctx context.Context, arg AccessibleBoo
 			&i.AddedAt,
 			&i.UpdatedAt,
 			&i.MetadataEdited,
+			&i.CoverSize,
 		); err != nil {
 			return nil, err
 		}
@@ -272,7 +275,7 @@ WITH RECURSIVE shared_subtree AS (
     UNION
     SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
 )
-SELECT DISTINCT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited FROM books b
+SELECT DISTINCT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited, b.cover_size FROM books b
 JOIN book_tags bt ON bt.book_id = b.id
 WHERE bt.tag = $2
   AND (b.user_id = $1 OR b.node_id IN (SELECT node_id FROM shared_subtree))
@@ -322,6 +325,7 @@ func (q *Queries) AccessibleBooksByGenre(ctx context.Context, arg AccessibleBook
 			&i.AddedAt,
 			&i.UpdatedAt,
 			&i.MetadataEdited,
+			&i.CoverSize,
 		); err != nil {
 			return nil, err
 		}
@@ -341,7 +345,7 @@ WITH RECURSIVE shared_subtree AS (
     UNION
     SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
 )
-SELECT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited FROM books b
+SELECT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited, b.cover_size FROM books b
 WHERE b.series = $2
   AND (b.user_id = $1 OR b.node_id IN (SELECT node_id FROM shared_subtree))
 ORDER BY b.series_index, b.sort_title
@@ -390,6 +394,7 @@ func (q *Queries) AccessibleBooksBySeries(ctx context.Context, arg AccessibleBoo
 			&i.AddedAt,
 			&i.UpdatedAt,
 			&i.MetadataEdited,
+			&i.CoverSize,
 		); err != nil {
 			return nil, err
 		}
@@ -409,7 +414,7 @@ WITH RECURSIVE shared_subtree AS (
     UNION
     SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
 )
-SELECT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited FROM books b
+SELECT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited, b.cover_size FROM books b
 WHERE b.user_id = $1 OR b.node_id IN (SELECT node_id FROM shared_subtree)
 ORDER BY b.added_at DESC
 LIMIT $2 OFFSET $3
@@ -451,6 +456,7 @@ func (q *Queries) AccessibleBooksNewest(ctx context.Context, arg AccessibleBooks
 			&i.AddedAt,
 			&i.UpdatedAt,
 			&i.MetadataEdited,
+			&i.CoverSize,
 		); err != nil {
 			return nil, err
 		}
@@ -669,7 +675,7 @@ func (q *Queries) EnabledEbookUsers(ctx context.Context) ([]EnabledEbookUsersRow
 }
 
 const getBookByNode = `-- name: GetBookByNode :one
-SELECT id, user_id, node_id, title, sort_title, language, isbn, description, publisher, published_date, series, series_index, format, content_type, size, cover_path, added_at, updated_at, metadata_edited FROM books WHERE node_id = $1
+SELECT id, user_id, node_id, title, sort_title, language, isbn, description, publisher, published_date, series, series_index, format, content_type, size, cover_path, added_at, updated_at, metadata_edited, cover_size FROM books WHERE node_id = $1
 `
 
 func (q *Queries) GetBookByNode(ctx context.Context, nodeID pgtype.UUID) (Book, error) {
@@ -695,6 +701,7 @@ func (q *Queries) GetBookByNode(ctx context.Context, nodeID pgtype.UUID) (Book, 
 		&i.AddedAt,
 		&i.UpdatedAt,
 		&i.MetadataEdited,
+		&i.CoverSize,
 	)
 	return i, err
 }
@@ -868,7 +875,7 @@ WITH RECURSIVE shared_subtree AS (
     UNION
     SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
 )
-SELECT DISTINCT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited FROM books b
+SELECT DISTINCT b.id, b.user_id, b.node_id, b.title, b.sort_title, b.language, b.isbn, b.description, b.publisher, b.published_date, b.series, b.series_index, b.format, b.content_type, b.size, b.cover_path, b.added_at, b.updated_at, b.metadata_edited, b.cover_size FROM books b
 LEFT JOIN book_authors ba ON ba.book_id = b.id
 WHERE (b.user_id = $1 OR b.node_id IN (SELECT node_id FROM shared_subtree))
   AND (
@@ -922,6 +929,7 @@ func (q *Queries) SearchAccessibleBooks(ctx context.Context, arg SearchAccessibl
 			&i.AddedAt,
 			&i.UpdatedAt,
 			&i.MetadataEdited,
+			&i.CoverSize,
 		); err != nil {
 			return nil, err
 		}
@@ -934,16 +942,17 @@ func (q *Queries) SearchAccessibleBooks(ctx context.Context, arg SearchAccessibl
 }
 
 const setBookCoverPath = `-- name: SetBookCoverPath :exec
-UPDATE books SET cover_path = $2 WHERE id = $1
+UPDATE books SET cover_path = $2, cover_size = $3 WHERE id = $1
 `
 
 type SetBookCoverPathParams struct {
 	ID        pgtype.UUID `json:"id"`
 	CoverPath pgtype.Text `json:"cover_path"`
+	CoverSize int64       `json:"cover_size"`
 }
 
 func (q *Queries) SetBookCoverPath(ctx context.Context, arg SetBookCoverPathParams) error {
-	_, err := q.db.Exec(ctx, setBookCoverPath, arg.ID, arg.CoverPath)
+	_, err := q.db.Exec(ctx, setBookCoverPath, arg.ID, arg.CoverPath, arg.CoverSize)
 	return err
 }
 
@@ -1063,7 +1072,7 @@ ON CONFLICT (node_id) DO UPDATE SET
     content_type   = EXCLUDED.content_type,
     size           = EXCLUDED.size,
     updated_at     = now()
-RETURNING id, user_id, node_id, title, sort_title, language, isbn, description, publisher, published_date, series, series_index, format, content_type, size, cover_path, added_at, updated_at, metadata_edited
+RETURNING id, user_id, node_id, title, sort_title, language, isbn, description, publisher, published_date, series, series_index, format, content_type, size, cover_path, added_at, updated_at, metadata_edited, cover_size
 `
 
 type UpsertBookParams struct {
@@ -1121,6 +1130,7 @@ func (q *Queries) UpsertBook(ctx context.Context, arg UpsertBookParams) (Book, e
 		&i.AddedAt,
 		&i.UpdatedAt,
 		&i.MetadataEdited,
+		&i.CoverSize,
 	)
 	return i, err
 }

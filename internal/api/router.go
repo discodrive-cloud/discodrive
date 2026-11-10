@@ -28,36 +28,37 @@ import (
 
 // Server holds the dependencies for the HTTP layer.
 type Server struct {
-	enrollmentOn bool
-	profiles     appleprofile.Tickets
-	enrollments  appleprofile.Enrollments
-	auth         *auth.Service
-	q            *db.Queries
-	files        *storage.FileService
-	uploads      *storage.Uploads
-	storageRoot  string
-	cipher       *secret.Cipher
-	notify       *notify.Notifier
-	dav          *davpkg.Service
-	events       *EventHub
-	xaccel       bool
-	loginLimiter *rateLimiter
-	pollLimiter  *rateLimiter
-	feedLimiter  *rateLimiter
-	tagEditor    *music.TagEditor
-	metaEditor   *ebook.MetadataEditor
-	saved        *saved.Service
-	bookmarks    *bookmarks.Service
-	links        *links.Service // nil: the shared-links inbox is off
-	linkLimiter  *rateLimiter
-	shareLimiter *rateLimiter    // share requests per user (each new share mails the recipient)
-	photos       *photos.Indexer // nil in the lite build (no media tools)
-	thumbs       *photos.Thumbs
-	faces        *photos.Faces  // people; nil without a face service
-	photoEditor  *photos.Editor // nil in the lite build
-	maps         *maps.Manager  // nil in the lite build
-	sections     Sections       // optional sections the operator left on
-	dupLocks     userLocks      // one duplicates resolve/dismiss at a time per user
+	enrollmentOn   bool
+	profiles       appleprofile.Tickets
+	enrollments    appleprofile.Enrollments
+	auth           *auth.Service
+	q              *db.Queries
+	files          *storage.FileService
+	uploads        *storage.Uploads
+	storageRoot    string
+	cipher         *secret.Cipher
+	notify         *notify.Notifier
+	dav            *davpkg.Service
+	events         *EventHub
+	xaccel         bool
+	loginLimiter   *rateLimiter
+	pollLimiter    *rateLimiter
+	feedLimiter    *rateLimiter
+	accountLimiter *rateLimiter
+	tagEditor      *music.TagEditor
+	metaEditor     *ebook.MetadataEditor
+	saved          *saved.Service
+	bookmarks      *bookmarks.Service
+	links          *links.Service // nil: the shared-links inbox is off
+	linkLimiter    *rateLimiter
+	shareLimiter   *rateLimiter    // share requests per user (each new share mails the recipient)
+	photos         *photos.Indexer // nil in the lite build (no media tools)
+	thumbs         *photos.Thumbs
+	faces          *photos.Faces  // people; nil without a face service
+	photoEditor    *photos.Editor // nil in the lite build
+	maps           *maps.Manager  // nil in the lite build
+	sections       Sections       // optional sections the operator left on
+	dupLocks       userLocks      // one duplicates resolve/dismiss at a time per user
 }
 
 // quotaChecker is the same checker the storage layer enforces writes with, so the admin
@@ -72,7 +73,7 @@ func (s *Server) quotaChecker() *quota.Checker {
 
 // NewRouter registers public and authenticated routes.
 func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService, uploads *storage.Uploads, storageRoot string, cipher *secret.Cipher, notifier *notify.Notifier, ui fs.FS, davHandler http.Handler, caldavHandler http.Handler, carddavHandler http.Handler, davSvc *davpkg.Service, xaccel bool, events *EventHub, subsonicHandler http.Handler, opdsHandler http.Handler, kosyncHandler http.Handler, tagEditor *music.TagEditor, metaEditor *ebook.MetadataEditor, savedSvc *saved.Service, bookmarksSvc *bookmarks.Service, photosIdx *photos.Indexer, photoThumbs *photos.Thumbs, photoMaps *maps.Manager, opts ...Option) http.Handler {
-	s := &Server{auth: authSvc, q: q, files: files, uploads: uploads, storageRoot: storageRoot, cipher: cipher, notify: notifier, dav: davSvc, xaccel: xaccel, events: events, loginLimiter: newLoginLimiter(), pollLimiter: newPollLimiter(), feedLimiter: newLoginLimiter(), shareLimiter: newShareLimiter(), tagEditor: tagEditor, metaEditor: metaEditor, saved: savedSvc, bookmarks: bookmarksSvc, photos: photosIdx, thumbs: photoThumbs, maps: photoMaps, sections: AllSections}
+	s := &Server{auth: authSvc, q: q, files: files, uploads: uploads, storageRoot: storageRoot, cipher: cipher, notify: notifier, dav: davSvc, xaccel: xaccel, events: events, loginLimiter: newLoginLimiter(), pollLimiter: newPollLimiter(), feedLimiter: newLoginLimiter(), accountLimiter: newAccountLimiter(), shareLimiter: newShareLimiter(), tagEditor: tagEditor, metaEditor: metaEditor, saved: savedSvc, bookmarks: bookmarksSvc, photos: photosIdx, thumbs: photoThumbs, maps: photoMaps, sections: AllSections}
 	for _, o := range opts {
 		o(s)
 	}
@@ -115,18 +116,18 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("GET /me/storage", prot(http.HandlerFunc(s.handleMeStorage)))
 	// Rate-limited like the other routes that check the current password: a stolen
 	// session must not be able to guess it without bound.
-	mux.Handle("PUT /me/password", prot(http.HandlerFunc(s.rateLimited(s.handleChangePassword))))
+	mux.Handle("PUT /me/password", prot(http.HandlerFunc(s.passwordChecked(s.handleChangePassword))))
 	mux.Handle("GET /me/totp", prot(http.HandlerFunc(s.handleTOTPStatus)))
 	mux.Handle("POST /me/totp/setup", prot(http.HandlerFunc(s.rateLimited(s.handleTOTPSetup))))
 	mux.Handle("POST /me/totp/confirm", prot(http.HandlerFunc(s.rateLimited(s.handleTOTPConfirm))))
-	mux.Handle("DELETE /me/totp", prot(http.HandlerFunc(s.rateLimited(s.handleTOTPDisable))))
+	mux.Handle("DELETE /me/totp", prot(http.HandlerFunc(s.passwordChecked(s.handleTOTPDisable))))
 	mux.Handle("POST /me/totp/backup-codes", prot(http.HandlerFunc(s.rateLimited(s.handleRegenerateBackupCodes))))
 	mux.Handle("GET /me/audit", prot(http.HandlerFunc(s.handleAuditList)))
 	// Shared identity confirmation for passkeys and TOTP enrollment.
-	mux.Handle("POST /me/identity/approval/password", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalPassword))))
+	mux.Handle("POST /me/identity/approval/password", prot(http.HandlerFunc(s.passwordChecked(s.handlePasskeyApprovalPassword))))
 	mux.Handle("POST /me/identity/approval/begin", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalBegin))))
 	mux.Handle("POST /me/identity/approval/finish", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalFinish))))
-	mux.Handle("POST /me/webauthn/approval/password", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalPassword))))
+	mux.Handle("POST /me/webauthn/approval/password", prot(http.HandlerFunc(s.passwordChecked(s.handlePasskeyApprovalPassword))))
 	mux.Handle("POST /me/webauthn/approval/begin", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalBegin))))
 	mux.Handle("POST /me/webauthn/approval/finish", prot(http.HandlerFunc(s.rateLimited(s.handlePasskeyApprovalFinish))))
 	mux.Handle("GET /me/webauthn", prot(http.HandlerFunc(s.handleWebAuthnList)))
@@ -308,7 +309,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	// devices (own)
 	mux.Handle("GET /devices", prot(http.HandlerFunc(s.handleListDevices)))
 	mux.Handle("DELETE /devices/{id}", prot(http.HandlerFunc(s.handleDeleteDevice)))
-	mux.Handle("POST /devices/webdav", prot(http.HandlerFunc(s.handleCreateWebdavPassword)))
+	mux.Handle("POST /devices/webdav", prot(http.HandlerFunc(s.rateLimited(s.handleCreateWebdavPassword))))
 
 	// delta sync
 	mux.Handle("GET /sync/changes", prot(http.HandlerFunc(s.handleSyncChanges)))
@@ -353,7 +354,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("POST /me/calendars/{id}/share", prot(http.HandlerFunc(s.handleShareCalendar)))
 	mux.Handle("GET /me/calendars/{id}/shares", prot(http.HandlerFunc(s.handleListCalendarShares)))
 	mux.Handle("DELETE /me/calendars/{id}/shares/{shareId}", prot(http.HandlerFunc(s.handleDeleteCalendarShare)))
-	mux.Handle("POST /me/calendars/{id}/feed", prot(http.HandlerFunc(s.handleCreateFeed)))
+	mux.Handle("POST /me/calendars/{id}/feed", prot(http.HandlerFunc(s.rateLimited(s.handleCreateFeed))))
 	mux.Handle("GET /me/calendars/{id}/feed", prot(http.HandlerFunc(s.handleListFeeds)))
 	mux.Handle("DELETE /me/calendars/{id}/feed/{shareId}", prot(http.HandlerFunc(s.handleDeleteFeed)))
 

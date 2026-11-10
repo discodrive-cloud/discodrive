@@ -43,7 +43,7 @@ func (h *Handler) resolveAndServeSong(c *reqCtx) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := c.r.Context()
 
 	switch kind {
 	case "tr":

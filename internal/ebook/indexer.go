@@ -126,6 +126,7 @@ func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath strin
 			_ = ix.q.SetBookCoverPath(ctx, db.SetBookCoverPathParams{
 				ID:        book.ID,
 				CoverPath: pgtype.Text{String: relPath, Valid: true},
+				CoverSize: int64(len(meta.CoverData)),
 			})
 		}
 	}

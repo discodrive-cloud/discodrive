@@ -51,7 +51,7 @@ SET status = 'done', content_path = $2, size_bytes = $3, bytes_done = COALESCE($
 WHERE id = $1 AND status = 'processing';
 
 -- name: SetSavedItemError :exec
--- content_html goes too: it is outside the quota, and a retry fetches the page itself
+-- content_html goes too: a failed item must not keep occupying the quota, and a retry fetches the page itself
 -- (or the client sends the HTML again).
 UPDATE saved_items SET status = 'error', error_msg = $2, content_html = NULL, cookie_header = NULL, cookie_expires_at = NULL, updated_at = now()
 WHERE id = $1;

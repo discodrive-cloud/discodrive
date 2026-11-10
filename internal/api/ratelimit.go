@@ -154,3 +154,33 @@ func (s *Server) shareAllowed(w http.ResponseWriter, r *http.Request) bool {
 	}
 	return true
 }
+
+// accountGuesses is how many wrong passwords one account may present per window on the
+// signed-in endpoints that re-check it. The per-IP limiter alone does not bound a holder
+// of a stolen token who changes address between guesses.
+const (
+	accountGuesses     = 10
+	accountGuessWindow = 15 * time.Minute
+)
+
+func newAccountLimiter() *rateLimiter {
+	return &rateLimiter{counts: make(map[string]int), limit: accountGuesses, window: accountGuessWindow, windowStart: time.Now()}
+}
+
+// passwordChecked wraps a signed-in handler that verifies the account password (or
+// another secret of the account): per-IP limit as in rateLimited, plus a per-account
+// budget that only refused attempts (401/403) consume.
+func (s *Server) passwordChecked(h http.HandlerFunc) http.HandlerFunc {
+	return s.rateLimited(func(w http.ResponseWriter, r *http.Request) {
+		refund, ok := s.accountLimiter.reserve(auth.UserID(r.Context()))
+		if !ok {
+			writeError(w, http.StatusTooManyRequests, "too many attempts, please try again later")
+			return
+		}
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		h(rec, r)
+		if rec.status != http.StatusUnauthorized && rec.status != http.StatusForbidden {
+			refund()
+		}
+	})
+}

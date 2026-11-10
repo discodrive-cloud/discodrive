@@ -12,6 +12,10 @@ import (
 const maxJSONBody = 1 << 20
 const maxAuthBody = 64 << 10
 
+// bodyStall is how long a streamed body (file uploads, WebDAV) may send nothing before
+// its read fails. A variable for tests.
+var bodyStall = 2 * time.Minute
+
 // Match registered route patterns, not Content-Type or attacker-controlled path
 // prefixes. File streams and DAV retain their own protocol-specific boundaries.
 func limitAPIBodies(mux *http.ServeMux) http.Handler {
@@ -20,6 +24,11 @@ func limitAPIBodies(mux *http.ServeMux) http.Handler {
 		switch pattern {
 		case "", "/dav/", "/dav", "/caldav/", "/carddav/", "/rest/", "/opds/", "/opds", "/users/", "/syncs/", "/app/",
 			"POST /files/upload", "PUT /sync/file", "PUT /upload/{id}/chunk/{n}", "POST /me/contacts/import":
+			if r.Body != nil && r.Body != http.NoBody {
+				body := &stallBody{ReadCloser: r.Body, ctl: http.NewResponseController(w)}
+				r.Body = body
+				defer body.disarm()
+			}
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -57,4 +66,42 @@ func limitAPIBodies(mux *http.ServeMux) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// stallBody fails a streamed body's read once nothing has arrived for bodyStall. An
+// upload holds an upload slot with its database connection while its body is read; the
+// server has no read timeout for bodies (uploads may take hours), so without this a
+// client that went silent kept the slot until the TCP connection died.
+type stallBody struct {
+	io.ReadCloser
+	ctl   *http.ResponseController
+	armed time.Time
+}
+
+func (b *stallBody) Read(p []byte) (int, error) {
+	// Re-arm at most a few times per window, not on every 32 KiB read.
+	if now := time.Now(); now.Sub(b.armed) > bodyStall/4 {
+		b.armed = now
+		_ = b.ctl.SetReadDeadline(now.Add(bodyStall))
+	}
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		// The body is over: the deadline must not outlive it. After EOF net/http keeps
+		// reading the connection to notice a disconnect, and a deadline firing there
+		// would cancel the request while the handler is still publishing the file.
+		b.disarm()
+	}
+	return n, err
+}
+
+func (b *stallBody) Close() error {
+	b.disarm()
+	return b.ReadCloser.Close()
+}
+
+func (b *stallBody) disarm() {
+	if !b.armed.IsZero() {
+		b.armed = time.Time{}
+		_ = b.ctl.SetReadDeadline(time.Time{})
+	}
 }

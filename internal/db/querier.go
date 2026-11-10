@@ -614,7 +614,8 @@ type Querier interface {
 	// podcasts/<user>/), and Saved downloads still in flight (bytes_done of 'processing'
 	// rows; a finished download is a node). Anything narrower would let a user park unlimited data past their
 	// quota in the trash, in .versions, or in a podcast subscription. Calendar and contact
-	// objects (stored in Postgres) and bookmark favicons count too.
+	// objects (stored in Postgres), bookmark favicons, cached book covers and the HTML of
+	// Saved articles still waiting to be processed count too.
 	ListUsersWithUsage(ctx context.Context) ([]ListUsersWithUsageRow, error)
 	ListWebAuthnCredentials(ctx context.Context, userID pgtype.UUID) ([]WebauthnCredential, error)
 	ListWebdavDevicesByEmail(ctx context.Context, email string) ([]Device, error)
@@ -785,7 +786,7 @@ type Querier interface {
 	SetRating(ctx context.Context, arg SetRatingParams) error
 	// content_html/cookie_header are dropped once processed — transport, not storage.
 	SetSavedItemDone(ctx context.Context, arg SetSavedItemDoneParams) (int64, error)
-	// content_html goes too: it is outside the quota, and a retry fetches the page itself
+	// content_html goes too: a failed item must not keep occupying the quota, and a retry fetches the page itself
 	// (or the client sends the HTML again).
 	SetSavedItemError(ctx context.Context, arg SetSavedItemErrorParams) error
 	SetSavedLinkArchived(ctx context.Context, arg SetSavedLinkArchivedParams) (int64, error)

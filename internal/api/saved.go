@@ -18,6 +18,7 @@ import (
 	"discodrive/internal/auth"
 	"discodrive/internal/db"
 	"discodrive/internal/fetchguard"
+	"discodrive/internal/quota"
 	"discodrive/internal/saved"
 	"discodrive/internal/secret"
 	"discodrive/internal/storage"
@@ -149,6 +150,10 @@ func (s *Server) handleSavedCreate(w http.ResponseWriter, r *http.Request) {
 	item, err := s.saved.Create(r.Context(), uid, req.URL, req.Kind, req.Title, req.ContentHTML, req.Cookie)
 	if errors.Is(err, secret.ErrNoKey) || errors.Is(err, fetchguard.ErrBlocked) {
 		writeError(w, http.StatusBadRequest, "Authenticated downloads require HTTPS and configured secret encryption")
+		return
+	}
+	if errors.Is(err, quota.ErrExceeded) {
+		writeError(w, http.StatusInsufficientStorage, quota.ErrExceeded.Error())
 		return
 	}
 	if errors.Is(err, saved.ErrQueueFull) {

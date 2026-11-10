@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"discodrive/internal/db"
+	"discodrive/internal/quota"
 )
 
 // Every saved link used to start its own goroutine, connection and staging file at once:
@@ -68,7 +69,7 @@ func TestOneUsersDownloadsRunAFewAtATime(t *testing.T) {
 }
 
 // The article HTML sent by the extension (up to 2 MiB) is transport, not storage: it is
-// outside the quota, so it must not outlive processing, even when processing fails.
+// transport, so it must not outlive processing, even when processing fails.
 func TestFailedArticleDropsTheClientHTML(t *testing.T) {
 	svc, _, q, uid, _ := bootstrap(t, 0)
 	ctx := context.Background()
@@ -116,5 +117,49 @@ func TestQueueOfUnfinishedItemsIsBounded(t *testing.T) {
 	_, err := svc.Create(ctx, uid, "https://example.test/one-more", KindDownload, "", "", "")
 	if !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("err = %v, want ErrQueueFull", err)
+	}
+}
+
+// The HTML an article waits with is the user's data like any other: it counts as used
+// space, and an article that does not fit what is left of the quota is refused.
+func TestClientHTMLCountsTowardQuota(t *testing.T) {
+	_, _, q, uid, _ := bootstrap(t, 0)
+	ctx := context.Background()
+	before, err := q.UserStorageUsage(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.UpsertSavedItem(ctx, db.UpsertSavedItemParams{
+		UserID: uid, Url: "https://example.test/a", Kind: KindArticle,
+		ContentHtml: pgtype.Text{String: strings.Repeat("x", 1<<20), Valid: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := q.UserStorageUsage(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after-before != 1<<20 {
+		t.Errorf("1 MiB of waiting HTML added %d bytes to the user's usage", after-before)
+	}
+	total, err := q.TotalStorageUsage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total < 1<<20 {
+		t.Errorf("server-wide usage is %d with 1 MiB of waiting HTML", total)
+	}
+}
+
+func TestArticleLargerThanTheRemainingQuotaIsRefused(t *testing.T) {
+	svc, pool, q, uid, root := bootstrap(t, 0)
+	withQuota(t, svc, pool, q, uid, root, 4096)
+	ctx := context.Background()
+	_, err := svc.Create(ctx, uid, "https://example.test/a", KindArticle, "", strings.Repeat("<p>x</p>", 4096), "")
+	if !errors.Is(err, quota.ErrExceeded) {
+		t.Fatalf("err = %v, want quota.ErrExceeded", err)
+	}
+	if n, _ := q.CountUnfinishedSavedItems(ctx, uid); n != 0 {
+		t.Errorf("the refused article left %d rows behind", n)
 	}
 }

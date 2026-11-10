@@ -9,8 +9,9 @@ import (
 	"discodrive/internal/storage"
 )
 
-// maxCoverBytes is the largest cover cached. Covers sit in .covers/, outside the user's
-// quota: without a ceiling a small archive could unpack a 64 MiB "first page" there.
+// maxCoverBytes is the largest cover cached. Covers sit in .covers/ and count toward the
+// owner's quota (books.cover_size); the ceiling keeps a small archive from unpacking a
+// 64 MiB "first page" there before the quota notices.
 const maxCoverBytes = 8 << 20
 
 // ErrBadCover refuses bytes that are not a raster picture, or too big a one.

@@ -62,7 +62,7 @@ const (
 )
 
 // maxUnfinishedPerUser bounds a user's queue (pending + processing). An article carries
-// up to 2 MiB of HTML outside the quota until it is processed.
+// up to 2 MiB of HTML until it is processed.
 const maxUnfinishedPerUser = 100
 
 // ErrQueueFull refuses a new item while the user has maxUnfinishedPerUser unfinished.
@@ -218,6 +218,11 @@ func (s *Service) Create(ctx context.Context, userID pgtype.UUID, url, kind, tit
 	}
 	if unfinished >= maxUnfinishedPerUser {
 		return db.SavedItem{}, ErrQueueFull
+	}
+	// The HTML waits in the row until the article is processed and counts as used space
+	// meanwhile (UserStorageUsage); one that does not fit is refused here.
+	if err := s.quota.Check(ctx, userID, int64(len(contentHTML))); err != nil {
+		return db.SavedItem{}, err
 	}
 	item, err := s.q.UpsertSavedItem(ctx, db.UpsertSavedItemParams{
 		UserID:       userID,

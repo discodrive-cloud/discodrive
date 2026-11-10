@@ -88,6 +88,7 @@ type Book struct {
 	AddedAt        pgtype.Timestamptz `json:"added_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 	MetadataEdited bool               `json:"metadata_edited"`
+	CoverSize      int64              `json:"cover_size"`
 }
 
 type BookAuthor struct {

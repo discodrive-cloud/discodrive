@@ -51,7 +51,7 @@ DELETE FROM books WHERE node_id = $1;
 SELECT * FROM books WHERE node_id = $1;
 
 -- name: SetBookCoverPath :exec
-UPDATE books SET cover_path = $2 WHERE id = $1;
+UPDATE books SET cover_path = $2, cover_size = $3 WHERE id = $1;
 
 -- name: InsertBookAuthor :exec
 INSERT INTO book_authors (book_id, name, sort_name) VALUES ($1, $2, $3)

@@ -255,3 +255,51 @@ func buildEPUBAt(t *testing.T, dst string) {
 		t.Fatalf("write epub to %q: %v", dst, err)
 	}
 }
+
+// A cached cover occupies disk on the user's behalf, so it counts as their used space:
+// otherwise small archives with large first pages would park data past the quota.
+func TestBookCoverCountsTowardQuota(t *testing.T) {
+	q, ctx := setupDB(t)
+	userID := makeTenant(t, q, ctx)
+	storageRoot := t.TempDir()
+	ix := NewIndexer(q, storageRoot)
+	uid, _ := db.ParseUUID(userID)
+
+	epubPath := filepath.Join(storageRoot, "book.epub")
+	buildEPUBAt(t, epubPath)
+	node, err := q.CreateNode(ctx, db.CreateNodeParams{
+		UserID: uid, Name: "book.epub", DiskPath: pgtype.Text{String: "book.epub", Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	before, err := q.UserStorageUsage(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.IndexNode(ctx, userID, db.UUIDString(node.ID), epubPath); err != nil {
+		t.Fatalf("IndexNode: %v", err)
+	}
+	book, err := q.GetBookByNode(ctx, node.ID)
+	if err != nil || !book.CoverPath.Valid {
+		t.Fatalf("book has no cover (err %v)", err)
+	}
+	st, err := os.Stat(filepath.Join(storageRoot, book.CoverPath.String))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := q.UserStorageUsage(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after-before != st.Size() {
+		t.Errorf("a %d-byte cover added %d bytes to the user's usage", st.Size(), after-before)
+	}
+	total, err := q.TotalStorageUsage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total < st.Size() {
+		t.Errorf("server-wide usage %d is below the cover's %d bytes", total, st.Size())
+	}
+}
