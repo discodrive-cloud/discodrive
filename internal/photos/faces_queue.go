@@ -25,6 +25,16 @@ import (
 // still busy (the first run over a big library: people show up as it goes).
 const passEvery = 2000
 
+// passDue reports whether fresh new faces are enough for a pass while the queue is busy,
+// given that known faces took part in the last one. A pass reads every face of the user
+// and compares the new ones with all of them, so its cost grows with the library: a fixed
+// step would make a first run over 200 000 faces a hundred ever heavier passes. The step
+// grows with the library instead — an eighth of it once that is more than passEvery.
+// (When the queue runs dry a pass is made regardless: nothing waits for long.)
+func passDue(fresh, known int) bool {
+	return fresh >= max(passEvery, known/8)
+}
+
 // Faces finds the faces on the users' cards (through the ML service) and groups them into
 // persons. It runs only when a face service is configured and background workers exist.
 type Faces struct {
@@ -42,6 +52,7 @@ type Faces struct {
 	mu       sync.Mutex
 	inflight map[pgtype.UUID]bool
 	fresh    map[pgtype.UUID]int // faces stored since the user's last pass
+	known    map[pgtype.UUID]int // faces that took part in the user's last pass
 	strikes  map[pgtype.UUID]int // failed answers of a service that is up, per card
 
 	// Begin, when set (before Run), opens the transaction a card's faces are replaced in.
@@ -54,7 +65,7 @@ type Faces struct {
 // NewFaces creates the face queue. workers is how many pictures are in flight at once.
 func NewFaces(q *db.Queries, th *Thumbs, ml *MLClient, p faces.Params, workers int) *Faces {
 	f := &Faces{q: q, th: th, ml: ml, params: p, workers: max(workers, 1), retry: time.Minute, idle: pollInterval * 5,
-		kick: make(chan struct{}, 1), inflight: map[pgtype.UUID]bool{}, fresh: map[pgtype.UUID]int{},
+		kick: make(chan struct{}, 1), inflight: map[pgtype.UUID]bool{}, fresh: map[pgtype.UUID]int{}, known: map[pgtype.UUID]int{},
 		strikes: map[pgtype.UUID]int{}, users: map[pgtype.UUID]*sync.Mutex{}, passes: map[pgtype.UUID]*sync.Mutex{}}
 	f.online.Store(true)
 	return f
@@ -343,7 +354,7 @@ func (f *Faces) store(ctx context.Context, a db.PhotoAsset, found []DetectedFace
 	}
 	f.mu.Lock()
 	f.fresh[a.UserID] += len(found)
-	due = f.fresh[a.UserID] >= passEvery
+	due = passDue(f.fresh[a.UserID], f.known[a.UserID])
 	f.mu.Unlock()
 	return due, nil
 }
@@ -485,9 +496,15 @@ func (f *Faces) pass(ctx context.Context, userID pgtype.UUID) error {
 	f.mu.Lock()
 	delete(f.fresh, userID)
 	f.mu.Unlock()
-	err := Cluster(ctx, f.q, userID, f.ml.Model, f.params, func(write func() error) error {
+	known := 0
+	err := cluster(ctx, f.q, userID, f.ml.Model, f.params, func(write func() error) error {
 		return f.Locked(userID, write)
-	})
+	}, &known)
+	if known > 0 {
+		f.mu.Lock()
+		f.known[userID] = known
+		f.mu.Unlock()
+	}
 	if err != nil && ctx.Err() == nil {
 		log.Printf("discodrive: photos: clustering faces of %s: %v", db.UUIDString(userID), err)
 	}
@@ -512,22 +529,29 @@ func (f *Faces) passLock(u pgtype.UUID) *sync.Mutex {
 // fails the writes and the faces stay new for the next pass.
 // Only faces of cards looked at with model take part: vectors of two models do not compare.
 func Cluster(ctx context.Context, q *db.Queries, userID pgtype.UUID, model string, p faces.Params, locked func(func() error) error) error {
-	rows, err := q.ListUserFaceVectors(ctx, db.ListUserFaceVectorsParams{UserID: userID, Model: model})
-	if err != nil {
-		return err
-	}
-	fs := make([]faces.Face, len(rows))
+	return cluster(ctx, q, userID, model, p, locked, nil)
+}
+
+// cluster is Cluster that also reports, through known, how many faces took part.
+func cluster(ctx context.Context, q *db.Queries, userID pgtype.UUID, model string, p faces.Params, locked func(func() error) error, known *int) error {
+	// Row by row: the vectors are decoded as they arrive and the raw bytes are never
+	// held all at once (for 200 000 faces they are 400 MB on top of the decoded ones).
+	var fs []faces.Face
 	var fresh []pgtype.UUID
-	for i := range rows {
-		r := &rows[i]
-		fs[i] = faces.Face{ID: r.ID.Bytes, Person: r.PersonID.Bytes, HasPerson: r.PersonID.Valid,
-			New: !r.Clustered, Vec: decodeVec(r.Embedding)}
-		r.Embedding = nil // the raw bytes go as soon as they are read: half the memory
+	err := q.EachUserFaceVector(ctx, db.ListUserFaceVectorsParams{UserID: userID, Model: model}, func(r db.ListUserFaceVectorsRow) error {
+		fs = append(fs, faces.Face{ID: r.ID.Bytes, Person: r.PersonID.Bytes, HasPerson: r.PersonID.Valid,
+			New: !r.Clustered, Vec: decodeVec(r.Embedding)})
 		if !r.Clustered {
 			fresh = append(fresh, r.ID)
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
-	rows = nil
+	if known != nil {
+		*known = len(fs)
+	}
 	if len(fresh) == 0 {
 		return nil
 	}
