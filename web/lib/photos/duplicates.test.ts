@@ -55,6 +55,31 @@ describe('mergeQueue', () => {
   })
 })
 
+describe('mergeQueue with the group on screen pinned (the background poll)', () => {
+  const g = (...ids: string[]) => ({ assets: ids.map((id) => ({ id })) })
+  test('the group on screen stays although the scan has since changed it', () => {
+    const shown = g('a', 'b')
+    const queue = [shown, g('c', 'd')]
+    const fresh = [g('a', 'b', 'z'), g('c', 'd'), g('x', 'y')] // a/b grew a third copy
+    const merged = mergeQueue(queue, fresh, true)
+    expect(merged[0]).toBe(shown)
+    // its changed version waits for the next fetch instead of queueing up beside it
+    expect(merged.map(groupKey)).toEqual([g('a', 'b'), g('c', 'd'), g('x', 'y')].map(groupKey))
+  })
+  test('the group on screen stays although it is gone from the list', () => {
+    const shown = g('a', 'b')
+    expect(mergeQueue([shown, g('c', 'd')], [g('c', 'd')], true)).toEqual([shown, g('c', 'd')])
+  })
+  test('an unchanged group on screen still takes its fresh version', () => {
+    const fresh = [g('a', 'b'), g('c', 'd')]
+    expect(mergeQueue([g('b', 'a')], fresh, true)[0]).toBe(fresh[0])
+  })
+  test('without the pin (after the user acted) the list is taken as it is', () => {
+    expect(mergeQueue([g('a', 'b'), g('c', 'd')], [g('a', 'b', 'z'), g('c', 'd')]).map(groupKey))
+      .toEqual([g('c', 'd'), g('a', 'b', 'z')].map(groupKey))
+  })
+})
+
 describe('nextLoad', () => {
   test('polls only while the server is scanning', () => {
     expect(nextLoad({ ok: true, scanning: true, loaded: true, retried: false })).toBe(DUP_POLL_MS)

@@ -4,7 +4,8 @@
 // «Оставить», a tap moves it. «Удалить остальные» moves the others to the trash,
 // «Оставить все» tells the server they are not duplicates, «Пропустить» puts the group at
 // the end of the queue for this visit. While the server is still hashing the library
-// (progress.scanning) the list is re-fetched every 10 s and new groups join the end of the queue.
+// (progress.scanning) the list is re-fetched every 10 s and new groups join the end of the queue;
+// the group on screen is not touched by that.
 import type { DupAsset, DupGroups } from '~/composables/usePhotos'
 import { previewURL, thumbURL, thumbKey, takenLabel, formatDuration } from '~/composables/usePhotos'
 import { deleteWarnings, deletedBytes, groupKey, mergeQueue, nextLoad, skipGroup } from '~/lib/photos/duplicates'
@@ -41,14 +42,16 @@ let alive = true
 // load() bump seq, only the latest fetch applies.
 let seq = 0
 let retried = false // a failed first load is tried once more
-async function load() {
+// polled: the fetch is the background poll, not the user's doing — the group on screen
+// then stays as it is (mergeQueue's pinHead).
+async function load(polled = false) {
   if (timer) { clearTimeout(timer); timer = null }
   const n = ++seq
   let ok = false
   try {
     const r = await api.duplicates()
     if (!alive || n !== seq) return
-    queue.value = mergeQueue(queue.value, r.groups ?? [])
+    queue.value = mergeQueue(queue.value, r.groups ?? [], polled)
     reclaim.value = r.reclaimBytes
     progress.value = { hashed: r.progress?.hashed ?? 0, total: r.progress?.total ?? 0, scanning: !!r.progress?.scanning }
     loaded.value = true
@@ -60,9 +63,9 @@ async function load() {
   }
   const wait = nextLoad({ ok, scanning: scanning.value, loaded: loaded.value, retried })
   if (!ok && !loaded.value && wait != null) retried = true
-  if (alive && wait != null) timer = setTimeout(load, wait)
+  if (alive && wait != null) timer = setTimeout(() => load(true), wait)
 }
-onMounted(load)
+onMounted(() => load())
 
 // ---- pictures: the preview of each copy, the thumbnail until it comes (or if it fails) ----
 const previews = makeThumbLoader(() => ({}), { concurrency: 3, capacity: 24 })

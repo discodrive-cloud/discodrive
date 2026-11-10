@@ -39,9 +39,21 @@ export function groupKey(g: { assets: { id: string }[] }): string {
 // mergeQueue folds a re-fetch (the scan finds more groups as it goes) into the queue the
 // user is working through: the groups still there keep their place (a skipped one stays at
 // the end) in their fresh version, gone ones drop out, new ones come last.
-export function mergeQueue<G extends { assets: { id: string }[] }>(queue: G[], fresh: G[]): G[] {
+//
+// pinHead is for a fetch the user did not ask for (the poll while the server scans): the
+// group on screen then stays exactly as shown even if the list no longer has it in that
+// shape — otherwise another group slides under the cursor on its way to «Удалить
+// остальные». A changed version of it is left out too and comes with the next fetch.
+export function mergeQueue<G extends { assets: { id: string }[] }>(queue: G[], fresh: G[], pinHead = false): G[] {
   const byKey = new Map(fresh.map((g) => [groupKey(g), g]))
   const out: G[] = []
+  const head = queue[0]
+  if (pinHead && head && !byKey.has(groupKey(head))) {
+    out.push(head)
+    const shown = new Set(head.assets.map((c) => c.id))
+    for (const [k, g] of byKey) if (g.assets.some((c) => shown.has(c.id))) byKey.delete(k)
+    queue = queue.slice(1)
+  }
   for (const g of queue) {
     const k = groupKey(g)
     const f = byKey.get(k)

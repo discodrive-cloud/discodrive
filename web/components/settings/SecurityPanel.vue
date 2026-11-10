@@ -111,6 +111,7 @@ onMounted(loadTotp)
 
 async function startTotpSetup() {
   totpError.value = ''
+  regenCodes.value = []
   totpBusy.value = true
   try {
     totpApproval.value = ''
@@ -145,6 +146,7 @@ async function confirmTotp() {
 }
 
 function finishTotpSetup() {
+  regenCodes.value = []
   totpEnabled.value = true
   totpStep.value = 'idle'
   totpBackupCodes.value = []
@@ -162,6 +164,7 @@ async function disableTotp() {
       body: { password: totpDisablePassword.value, code: totpDisableCode.value },
     })
     totpEnabled.value = false
+    regenCodes.value = [] // they died with the second factor
     totpDisabling.value = false
     totpDisablePassword.value = ''
     totpDisableCode.value = ''
@@ -264,6 +267,11 @@ async function addPasskey() {
   passkeyError.value = ''
   passkeyStatus.value = ''
   passkeyBusy.value = true
+  // The name is asked first: once the browser has created the credential it lives in the
+  // authenticator, and backing out of a later question would leave a passkey there that
+  // the server never heard of — offered at sign-in, and failing.
+  const name = await prompt(t('passkey.name_prompt_label'), t('passkey.name_prompt_default'))
+  if (name === null) { passkeyBusy.value = false; return }
   const approval = await authorizeIdentityAction('register')
   if (!approval) { passkeyBusy.value = false; return }
   let res: { options: { publicKey: Record<string, unknown> }; session_token: string }
@@ -294,13 +302,6 @@ async function addPasskey() {
       // Surface the real browser error (e.g. RP ID / origin mismatch) instead of hiding it.
       passkeyError.value = e?.message || e?.name || t('passkey.error_finish')
     }
-    return
-  }
-
-  const name = await prompt(t('passkey.name_prompt_label'), t('passkey.name_prompt_default'))
-  if (!name) {
-    passkeyStatus.value = ''
-    passkeyBusy.value = false
     return
   }
 
@@ -458,6 +459,9 @@ async function deletePasskey(pk: Passkey) {
               <div class="mb-2 flex justify-end">
                 <button class="btn-ghost px-2 py-1" :title="t('settings.webdav_copy')" @click="copyText(regenCodes.join('\n'), 'regen-backups')">
                   <Icon :name="copied === 'regen-backups' ? 'lucide:check' : 'lucide:copy'" size="16" />
+                </button>
+                <button class="btn-ghost px-2 py-1" :title="t('common.close')" @click="regenCodes = []">
+                  <Icon name="lucide:x" size="16" />
                 </button>
               </div>
               <ul class="grid grid-cols-2 gap-x-4 gap-y-1">
