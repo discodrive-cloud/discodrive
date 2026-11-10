@@ -218,6 +218,10 @@ type Querier interface {
 	DeleteBrowserSession(ctx context.Context, arg DeleteBrowserSessionParams) error
 	DeleteCalendar(ctx context.Context, arg DeleteCalendarParams) (int64, error)
 	DeleteCalendarObject(ctx context.Context, arg DeleteCalendarObjectParams) (int64, error)
+	// Sessions issued under a token version the account has since left (password change,
+	// "sign out everywhere"): BrowserSessionActive refuses them for good, so they are only
+	// rows. Nothing else removed them but a logout from that very session.
+	DeleteDeadBrowserSessions(ctx context.Context) (int64, error)
 	DeleteDevice(ctx context.Context, arg DeleteDeviceParams) error
 	// Persons left without faces, unless the user named or hid them.
 	DeleteEmptyPhotoPersons(ctx context.Context, userID pgtype.UUID) error

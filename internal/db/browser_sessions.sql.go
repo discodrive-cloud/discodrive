@@ -57,3 +57,19 @@ func (q *Queries) DeleteBrowserSession(ctx context.Context, arg DeleteBrowserSes
 	_, err := q.db.Exec(ctx, deleteBrowserSession, arg.ID, arg.UserID)
 	return err
 }
+
+const deleteDeadBrowserSessions = `-- name: DeleteDeadBrowserSessions :execrows
+DELETE FROM browser_sessions b USING users u
+WHERE u.id = b.user_id AND b.token_version <> u.token_version
+`
+
+// Sessions issued under a token version the account has since left (password change,
+// "sign out everywhere"): BrowserSessionActive refuses them for good, so they are only
+// rows. Nothing else removed them but a logout from that very session.
+func (q *Queries) DeleteDeadBrowserSessions(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDeadBrowserSessions)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}

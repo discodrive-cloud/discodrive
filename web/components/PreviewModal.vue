@@ -14,10 +14,14 @@ const emit = defineEmits<{ close: [] }>()
 
 const { t } = useI18n()
 
-const index = ref(Math.min(Math.max(props.startIndex, 0), props.items.length - 1))
-const current = computed(() => props.items[index.value])
+// The list as it was when the preview opened. The page rebuilds its list on every reload
+// (an upload finishing behind the modal): following it by position would put another
+// file's name over the content being shown, and "Download" would save it under that name.
+const items = props.items.slice()
+const index = ref(Math.min(Math.max(props.startIndex, 0), items.length - 1))
+const current = computed(() => items[index.value])
 const hasPrev = computed(() => index.value > 0)
-const hasNext = computed(() => index.value < props.items.length - 1)
+const hasNext = computed(() => index.value < items.length - 1)
 
 const st = reactive({
   busy: false,
@@ -47,7 +51,7 @@ function revoke() {
 }
 
 async function show(i: number) {
-  const item = props.items[i]
+  const item = items[i]
   const seq = ++loadSeq
   revoke()
   Object.assign(st, {
@@ -123,7 +127,7 @@ async function show(i: number) {
 
 function go(delta: number) {
   const next = index.value + delta
-  if (next < 0 || next >= props.items.length) return
+  if (next < 0 || next >= items.length) return
   index.value = next
 }
 watch(index, (i) => show(i))

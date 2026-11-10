@@ -291,6 +291,10 @@ export function usePlayer() {
     // user who is actually logged in now.
     if (!track.stream_url) {
       const probe = await probeNode(track.node_id)
+      // "Next" pressed again while the probe ran: the queue has moved, and the call
+      // for the track it moved to does its own work. Writing this result at the new
+      // index would replace that track with this one.
+      if (current.value?.node_id !== track.node_id) return
       if (!probe.ok) {
         showNotice(t('player.skipped_missing', { name: track.name }))
         advance(false)
@@ -336,6 +340,7 @@ export function usePlayer() {
     if (!media || !track || !media.error) return
     const savedPos = st.position.value
     const probe = await probeNode(track.node_id)
+    if (current.value?.node_id !== track.node_id) return // moved on meanwhile, as above
     const action = errorAction(probe, retriedCurrent)
     if (action.kind === 'resume') {
       retriedCurrent = true
