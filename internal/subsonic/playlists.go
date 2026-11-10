@@ -59,11 +59,14 @@ func getPlaylists(h *Handler, c *reqCtx) {
 	}
 
 	result := make([]map[string]any, 0, len(playlists))
+	stats, _ := h.q.PlaylistStatsByUser(ctx, userUUID)
+	statsOf := make(map[pgtype.UUID]db.PlaylistStatsByUserRow, len(stats))
+	for _, st := range stats {
+		statsOf[st.PlaylistID] = st
+	}
 	for _, p := range playlists {
-		songs, _ := h.q.GetPlaylistSongs(ctx, p.ID)
-		count := int64(len(songs))
-		dur := playlistDuration(songs)
-		result = append(result, playlistObj(p, count, dur, c.userID))
+		st := statsOf[p.ID] // absent = an empty playlist
+		result = append(result, playlistObj(p, st.Songs, st.Duration, c.userID))
 	}
 
 	c.ok(map[string]any{

@@ -50,9 +50,31 @@ type ebookFacetsResponse struct {
 	Genres  []string `json:"genres"`
 }
 
-// bookToDTO converts a db.Book to ebookBookDTO, fetching authors and tags.
-func (s *Server) bookToDTO(r *http.Request, book db.Book) ebookBookDTO {
-	ctx := r.Context()
+// booksToDTOs converts a page of books, fetching the authors and tags of all of them in
+// two queries (best-effort: a failed read leaves them empty).
+func (s *Server) booksToDTOs(r *http.Request, books []db.Book) []ebookBookDTO {
+	ids := make([]pgtype.UUID, len(books))
+	at := make(map[pgtype.UUID]int, len(books))
+	dtos := make([]ebookBookDTO, len(books))
+	for i, b := range books {
+		ids[i], at[b.ID] = b.ID, i
+		dtos[i] = bookToDTO(b)
+	}
+	if authors, err := s.q.AuthorsOfBooks(r.Context(), ids); err == nil {
+		for _, a := range authors {
+			dtos[at[a.BookID]].Authors = append(dtos[at[a.BookID]].Authors, a.Name)
+		}
+	}
+	if tags, err := s.q.TagsOfBooks(r.Context(), ids); err == nil {
+		for _, t := range tags {
+			dtos[at[t.BookID]].Tags = append(dtos[at[t.BookID]].Tags, t.Tag)
+		}
+	}
+	return dtos
+}
+
+// bookToDTO converts a db.Book to ebookBookDTO, without its authors and tags.
+func bookToDTO(book db.Book) ebookBookDTO {
 	dto := ebookBookDTO{
 		ID:       db.UUIDString(book.ID),
 		NodeID:   db.UUIDString(book.NodeID),
@@ -70,24 +92,6 @@ func (s *Server) bookToDTO(r *http.Request, book db.Book) ebookBookDTO {
 		dto.SeriesIndex = book.SeriesIndex.Float32
 	}
 
-	// Fetch authors — best-effort; empty slice on error.
-	authors, err := s.q.BookAuthors(ctx, book.ID)
-	if err == nil {
-		dto.Authors = make([]string, 0, len(authors))
-		for _, a := range authors {
-			dto.Authors = append(dto.Authors, a.Name)
-		}
-	} else {
-		dto.Authors = []string{}
-	}
-
-	// Fetch tags — best-effort.
-	tags, err := s.q.BookTags(ctx, book.ID)
-	if err == nil {
-		dto.Tags = tags
-	} else {
-		dto.Tags = []string{}
-	}
 	if dto.Authors == nil {
 		dto.Authors = []string{}
 	}
@@ -194,10 +198,7 @@ func (s *Server) handleListEbooks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	dtos := make([]ebookBookDTO, 0, len(books))
-	for _, b := range books {
-		dtos = append(dtos, s.bookToDTO(r, b))
-	}
+	dtos := s.booksToDTOs(r, books)
 
 	writeJSON(w, http.StatusOK, ebookListResponse{Books: dtos, Total: total, HasMore: hasMore})
 }

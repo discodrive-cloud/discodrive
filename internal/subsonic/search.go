@@ -89,11 +89,12 @@ func runSearch(h *Handler, c *reqCtx, wrapKey string) {
 	marks := h.loadMarks(ctx, c.userID)
 
 	artistObjs := make([]map[string]any, 0, len(artists))
+	var albumsOf map[pgtype.UUID]int64
+	if len(artists) > 0 {
+		albumsOf = h.albumCounts(ctx, userUUID)
+	}
 	for _, a := range artists {
-		cnt, _ := h.q.CountAccessibleAlbumsByArtist(ctx, db.CountAccessibleAlbumsByArtistParams{
-			UserID:   userUUID,
-			ArtistID: a.ID,
-		})
+		cnt := albumsOf[a.ID]
 		aUUID := db.UUIDString(a.ID)
 		obj := map[string]any{
 			"id":         encID("ar", aUUID),

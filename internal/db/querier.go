@@ -89,6 +89,8 @@ type Querier interface {
 	ApprovePairing(ctx context.Context, arg ApprovePairingParams) (pgtype.UUID, error)
 	// Only faces still without a person: a merge or another pass meanwhile wins.
 	AssignFaces(ctx context.Context, arg AssignFacesParams) error
+	// Authors and tags of a page of books at once (the lists used to ask per book).
+	AuthorsOfBooks(ctx context.Context, bookIds []pgtype.UUID) ([]AuthorsOfBooksRow, error)
 	// Which interactive second factors the user has. Used by Login to branch.
 	AvailableMFAFactors(ctx context.Context, userID pgtype.UUID) (AvailableMFAFactorsRow, error)
 	BookAuthors(ctx context.Context, bookID pgtype.UUID) ([]BookAuthorsRow, error)
@@ -146,6 +148,9 @@ type Querier interface {
 	CopyPhotoAlbumItems(ctx context.Context, arg CopyPhotoAlbumItemsParams) ([]pgtype.UUID, error)
 	// Returns the count of accessible albums for a given artist.
 	CountAccessibleAlbumsByArtist(ctx context.Context, arg CountAccessibleAlbumsByArtistParams) (int64, error)
+	// CountAccessibleAlbumsByArtist for every artist at once: one pass instead of a query
+	// (each with its recursive CTE) per artist in getArtists and search3.
+	CountAccessibleAlbumsPerArtist(ctx context.Context, userID pgtype.UUID) ([]CountAccessibleAlbumsPerArtistRow, error)
 	// Returns the total count of books accessible to a user.
 	CountAccessibleBooks(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountAddressbooks(ctx context.Context, userID pgtype.UUID) (int64, error)
@@ -392,6 +397,9 @@ type Querier interface {
 	InsertWebAuthnCredential(ctx context.Context, arg InsertWebAuthnCredentialParams) (WebauthnCredential, error)
 	IsPhotoPartner(ctx context.Context, arg IsPhotoPartnerParams) (bool, error)
 	ListAddressbookObjects(ctx context.Context, addressbookID pgtype.UUID) ([]AddressbookObject, error)
+	// The contact list needs the name, e-mails and phones (parsed) only. data holds the whole
+	// vCard with its base64 photo — hundreds of megabytes across a large address book.
+	ListAddressbookSummaries(ctx context.Context, addressbookID pgtype.UUID) ([]ListAddressbookSummariesRow, error)
 	ListAddressbooks(ctx context.Context, userID pgtype.UUID) ([]Addressbook, error)
 	// Administrators, in creation order — the recipients of server-wide alerts (storage
 	// filling up), which are addressed to whoever can actually act on them.
@@ -664,6 +672,9 @@ type Querier interface {
 	NextBookmarkSeq(ctx context.Context, id pgtype.UUID) (int64, error)
 	NextChangeSeq(ctx context.Context, id pgtype.UUID) (int64, error)
 	NotificationPrefsForEvent(ctx context.Context, arg NotificationPrefsForEventParams) ([]NotificationPrefsForEventRow, error)
+	// Song count and total duration of each of the user's playlists, with the access rule of
+	// GetPlaylistSongs — so getPlaylists does not fetch every track of every playlist.
+	PlaylistStatsByUser(ctx context.Context, userID pgtype.UUID) ([]PlaylistStatsByUserRow, error)
 	PruneBooksOutsideFolder(ctx context.Context, arg PruneBooksOutsideFolderParams) ([]pgtype.Text, error)
 	// Assets whose node is under none of the user's sources (trashed nodes included: a
 	// trashed photo of a source stays in the gallery trash).
@@ -828,6 +839,7 @@ type Querier interface {
 	// Realigns trashed_at with the files' trash state (a full pass; the change log does it
 	// per file).
 	SyncPhotoTrash(ctx context.Context, userID pgtype.UUID) error
+	TagsOfBooks(ctx context.Context, bookIds []pgtype.UUID) ([]BookTag, error)
 	// TombstoneBookmarkTree marks the whole subtree deleted with one seq value
 	// (valid: the cursor needs per-row monotonicity, not uniqueness). Runs inside
 	// a tx after NextBookmarkSeq.

@@ -1,8 +1,10 @@
 package music
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"discodrive/internal/music/tagwrite"
 	"discodrive/internal/safecontent"
@@ -65,4 +67,25 @@ func EmbeddedStoredCover(root, path string) ([]byte, string, bool) {
 	}
 	defer f.Close()
 	return EmbeddedCover(source)
+}
+
+// CoverUnchanged stamps the response for cover art cut out of an audio file with an ETag
+// derived from the file's content hash, and reports whether the client already holds
+// that cover (304 has then been written). It is called before the file is opened: a grid
+// of albums otherwise re-parses every audio file's tags on every visit. The response
+// stays private and is revalidated each time — access to the file may be revoked.
+func CoverUnchanged(w http.ResponseWriter, r *http.Request, contentHash string) bool {
+	if contentHash == "" {
+		return false
+	}
+	etag := `"` + contentHash + `-cover"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "private, no-cache")
+	for _, have := range strings.Split(r.Header.Get("If-None-Match"), ",") {
+		if strings.TrimPrefix(strings.TrimSpace(have), "W/") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return true
+		}
+	}
+	return false
 }

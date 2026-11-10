@@ -56,7 +56,7 @@ func (s *Server) handleListContacts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	objs, err := s.dav.ListAddressbookObjects(r.Context(), abID)
+	objs, err := s.dav.ListAddressbookSummaries(r.Context(), abID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return

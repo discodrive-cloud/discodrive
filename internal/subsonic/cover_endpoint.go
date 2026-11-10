@@ -193,6 +193,9 @@ func getCoverArt(h *Handler, c *reqCtx) {
 	}
 
 	// The node is an audio file with embedded cover art.
+	if music.CoverUnchanged(c.w, c.r, node.ContentHash.String) {
+		return
+	}
 	absPath := filepath.Join(h.storageRoot, node.DiskPath.String)
 	data, mimeType, ok2 := music.EmbeddedStoredCover(h.storageRoot, absPath)
 	if !ok2 {

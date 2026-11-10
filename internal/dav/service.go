@@ -587,6 +587,16 @@ func (s *Service) GetAddressbookObject(ctx context.Context, abID, uid string) (s
 	return o.Data, o.Etag, nil
 }
 
+// ListAddressbookSummaries returns uid and the parsed summary of every card, without the
+// vCard itself.
+func (s *Service) ListAddressbookSummaries(ctx context.Context, abID string) ([]db.ListAddressbookSummariesRow, error) {
+	aid, err := db.ParseUUID(abID)
+	if err != nil {
+		return nil, err
+	}
+	return s.q.ListAddressbookSummaries(ctx, aid)
+}
+
 func (s *Service) ListAddressbookObjects(ctx context.Context, abID string) ([]db.AddressbookObject, error) {
 	aid, err := db.ParseUUID(abID)
 	if err != nil {

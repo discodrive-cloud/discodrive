@@ -872,6 +872,11 @@ SELECT * FROM addressbook_objects WHERE addressbook_id = $1 AND uid = $2;
 -- name: ListAddressbookObjects :many
 SELECT * FROM addressbook_objects WHERE addressbook_id = $1 ORDER BY uid;
 
+-- The contact list needs the name, e-mails and phones (parsed) only. data holds the whole
+-- vCard with its base64 photo — hundreds of megabytes across a large address book.
+-- name: ListAddressbookSummaries :many
+SELECT uid, parsed FROM addressbook_objects WHERE addressbook_id = $1 ORDER BY uid;
+
 -- name: DeleteAddressbookObject :execrows
 DELETE FROM addressbook_objects WHERE addressbook_id = $1 AND uid = $2;
 

@@ -46,6 +46,8 @@ func buildArtistIndex(ctx context.Context, h *Handler, userID pgtype.UUID, marks
 		return nil, err
 	}
 
+	albums := h.albumCounts(ctx, userID)
+
 	// group → []artistObj
 	groups := map[string][]map[string]any{}
 	for _, a := range artists {
@@ -55,10 +57,7 @@ func buildArtistIndex(ctx context.Context, h *Handler, userID pgtype.UUID, marks
 		}
 		letter := indexLetter(sortKey)
 
-		albumCount, _ := h.q.CountAccessibleAlbumsByArtist(ctx, db.CountAccessibleAlbumsByArtistParams{
-			UserID:   userID,
-			ArtistID: a.ID,
-		})
+		albumCount := albums[a.ID]
 
 		aUUID := db.UUIDString(a.ID)
 		obj := map[string]any{
@@ -442,4 +441,15 @@ func buildAlbumList(albums []db.Album, artistName string, marks userMarks) []map
 		result = append(result, obj)
 	}
 	return result
+}
+
+// albumCounts returns the number of accessible albums per artist in one query. A failed
+// read gives an empty map: the counts show as 0, as a failed per-artist count did.
+func (h *Handler) albumCounts(ctx context.Context, userID pgtype.UUID) map[pgtype.UUID]int64 {
+	rows, _ := h.q.CountAccessibleAlbumsPerArtist(ctx, userID)
+	out := make(map[pgtype.UUID]int64, len(rows))
+	for _, r := range rows {
+		out[r.ArtistID] = r.Albums
+	}
+	return out
 }

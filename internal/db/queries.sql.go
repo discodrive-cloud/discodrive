@@ -1836,6 +1836,37 @@ func (q *Queries) ListAddressbookObjects(ctx context.Context, addressbookID pgty
 	return items, nil
 }
 
+const listAddressbookSummaries = `-- name: ListAddressbookSummaries :many
+SELECT uid, parsed FROM addressbook_objects WHERE addressbook_id = $1 ORDER BY uid
+`
+
+type ListAddressbookSummariesRow struct {
+	Uid    string `json:"uid"`
+	Parsed []byte `json:"parsed"`
+}
+
+// The contact list needs the name, e-mails and phones (parsed) only. data holds the whole
+// vCard with its base64 photo — hundreds of megabytes across a large address book.
+func (q *Queries) ListAddressbookSummaries(ctx context.Context, addressbookID pgtype.UUID) ([]ListAddressbookSummariesRow, error) {
+	rows, err := q.db.Query(ctx, listAddressbookSummaries, addressbookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAddressbookSummariesRow{}
+	for rows.Next() {
+		var i ListAddressbookSummariesRow
+		if err := rows.Scan(&i.Uid, &i.Parsed); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAddressbooks = `-- name: ListAddressbooks :many
 SELECT id, user_id, uri, name, ctag, created_at FROM addressbooks WHERE user_id = $1 ORDER BY created_at
 `

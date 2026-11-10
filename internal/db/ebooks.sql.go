@@ -503,6 +503,37 @@ func (q *Queries) AccessibleSeries(ctx context.Context, userID pgtype.UUID) ([]p
 	return items, nil
 }
 
+const authorsOfBooks = `-- name: AuthorsOfBooks :many
+SELECT book_id, name FROM book_authors
+WHERE book_id = ANY($1::uuid[]) ORDER BY book_id, sort_name, name
+`
+
+type AuthorsOfBooksRow struct {
+	BookID pgtype.UUID `json:"book_id"`
+	Name   string      `json:"name"`
+}
+
+// Authors and tags of a page of books at once (the lists used to ask per book).
+func (q *Queries) AuthorsOfBooks(ctx context.Context, bookIds []pgtype.UUID) ([]AuthorsOfBooksRow, error) {
+	rows, err := q.db.Query(ctx, authorsOfBooks, bookIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuthorsOfBooksRow{}
+	for rows.Next() {
+		var i AuthorsOfBooksRow
+		if err := rows.Scan(&i.BookID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const bookAuthors = `-- name: BookAuthors :many
 SELECT name, sort_name FROM book_authors WHERE book_id = $1 ORDER BY sort_name, name
 `
@@ -1007,6 +1038,31 @@ type SetEbookIndexedSeqParams struct {
 func (q *Queries) SetEbookIndexedSeq(ctx context.Context, arg SetEbookIndexedSeqParams) error {
 	_, err := q.db.Exec(ctx, setEbookIndexedSeq, arg.UserID, arg.IndexedSeq)
 	return err
+}
+
+const tagsOfBooks = `-- name: TagsOfBooks :many
+SELECT book_id, tag FROM book_tags
+WHERE book_id = ANY($1::uuid[]) ORDER BY book_id, tag
+`
+
+func (q *Queries) TagsOfBooks(ctx context.Context, bookIds []pgtype.UUID) ([]BookTag, error) {
+	rows, err := q.db.Query(ctx, tagsOfBooks, bookIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BookTag{}
+	for rows.Next() {
+		var i BookTag
+		if err := rows.Scan(&i.BookID, &i.Tag); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateBookMetadata = `-- name: UpdateBookMetadata :exec

@@ -295,3 +295,35 @@ func TestScopingOwnPlusShared(t *testing.T) {
 		t.Errorf("B-Private-Artist should NOT be visible to A, but appears in: %v", names)
 	}
 }
+
+// getArtists reports each artist's own number of albums (counted for all artists in one
+// query, not one query per artist).
+func TestGetArtistsAlbumCounts(t *testing.T) {
+	h, ctx, userAID, _ := setupTwo(t)
+	for i, s := range [][3]string{
+		{"Arctic Monkeys", "AM", "Do I Wanna Know?"},
+		{"Arctic Monkeys", "AM", "R U Mine?"},
+		{"Arctic Monkeys", "Humbug", "Crying Lightning"},
+		{"Blur", "Parklife", "Girls & Boys"},
+	} {
+		n := makeNode(t, ctx, h.q, userAID, pgtype.UUID{}, fmt.Sprintf("s%d.mp3", i), false)
+		seed(t, ctx, h.q, userAID, n, s[0], s[1], s[2])
+	}
+	resp := doGet(h, testAPIKey, "getArtists", "")
+	if resp == nil || resp["status"] != "ok" {
+		t.Fatalf("getArtists failed: %v", resp)
+	}
+	got := map[string]float64{}
+	wrapper, _ := resp["artists"].(map[string]any)
+	index, _ := wrapper["index"].([]any)
+	for _, group := range index {
+		g, _ := group.(map[string]any)
+		for _, a := range g["artist"].([]any) {
+			ao, _ := a.(map[string]any)
+			got[ao["name"].(string)], _ = ao["albumCount"].(float64)
+		}
+	}
+	if got["Arctic Monkeys"] != 2 || got["Blur"] != 1 {
+		t.Errorf("albumCount = %v, want Arctic Monkeys 2 and Blur 1", got)
+	}
+}

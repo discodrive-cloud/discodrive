@@ -283,16 +283,13 @@ func dupEdges(p DupParams, c []DupCandidate) [][]int {
 		for _, i := range filed {
 			isFiled[i] = true
 		}
-		pairs := map[[2]int]bool{}
+		// Each pair is tried once without remembering the pairs tried: real hashes are
+		// skewed (a flat band zeroes a chunk), one bucket can hold thousands of cards, and
+		// a set of the pairs seen then runs to millions of entries.
 		try := func(i, j int) {
 			if i == j || (isFiled[j] && j < i) { // a filed-filed pair once, from its lower index
 				return
 			}
-			k := [2]int{min(i, j), max(i, j)}
-			if pairs[k] {
-				return
-			}
-			pairs[k] = true
 			if IsDupWith(p, c[i], c[j]) {
 				add(i, j)
 			}
@@ -319,7 +316,14 @@ func dupEdges(p DupParams, c []DupCandidate) [][]int {
 		}
 		for _, i := range filed {
 			for k := 0; k < chunks; k++ {
+			bucket:
 				for _, j := range index[slot{k, hashChunk(c[i].Hash, k, chunks)}] {
+					// A pair sharing several chunks is taken from the first of them.
+					for e := 0; e < k; e++ {
+						if hashChunk(c[i].Hash, e, chunks) == hashChunk(c[j].Hash, e, chunks) {
+							continue bucket
+						}
+					}
 					try(i, j)
 				}
 			}

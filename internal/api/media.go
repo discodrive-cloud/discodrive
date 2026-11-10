@@ -170,12 +170,20 @@ func (s *Server) handleMediaCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	abs := filepath.Join(s.storageRoot, node.DiskPath.String)
+	// Before the audio file is opened: a client that holds this file's embedded cover
+	// gets 304. Only embedded covers carry this validator (see below).
+	if music.CoverUnchanged(w, r, node.ContentHash.String) {
+		return
+	}
 	if data, ct, ok := music.EmbeddedStoredCover(s.storageRoot, abs); ok {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Type", ct)
 		_, _ = w.Write(data)
 		return
 	}
+	// No embedded picture: the validator above does not describe what follows.
+	w.Header().Del("ETag")
+	w.Header().Del("Cache-Control")
 	// A sibling cover lives in the file's folder: a file shared on its own does
 	// not share that folder's other files.
 	if !s.canReadParent(r, node) {

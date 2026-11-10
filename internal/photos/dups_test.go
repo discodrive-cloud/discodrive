@@ -3,6 +3,7 @@ package photos
 import (
 	"fmt"
 	"math/rand"
+	"runtime"
 	"testing"
 	"time"
 
@@ -413,5 +414,35 @@ func TestGroup_SameShotWithAndWithoutTZOffset(t *testing.T) {
 	other.TakenAt, other.TakenLocal = dng.TakenAt, local.Add(-6*time.Hour)
 	if IsDup(dng, other) {
 		t.Fatal("IsDup: shots six hours apart on the camera's clock are duplicates")
+	}
+}
+
+// Real hashes are skewed: a flat band (sky, a screenshot's margin) zeroes one chunk of the
+// hash, so thousands of cards without EXIF dates land in one bucket of the index. Every
+// pair tried used to be remembered in a map — millions of entries, hundreds of megabytes
+// for one request.
+func TestGroup_SkewedHashesStayWithinMemory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("-short")
+	}
+	r := rand.New(rand.NewSource(7))
+	c := make([]DupCandidate, 3000)
+	for i := range c {
+		var id pgtype.UUID
+		r.Read(id.Bytes[:])
+		id.Valid = true
+		c[i] = DupCandidate{
+			ID: id, Key: fmt.Sprint(i), Kind: "photo", TakenAt: dupBase.Add(time.Duration(i) * time.Hour),
+			FileDated: true, W: 1170, H: 2532, Hash: r.Uint64() &^ (1<<22 - 1), // the low chunk is all zeros
+			Name: "IMG.png", Bytes: 1000, IndexedAt: dupBase,
+		}
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	GroupDuplicates(c, nil)
+	runtime.ReadMemStats(&after)
+	if mb := (after.TotalAlloc - before.TotalAlloc) >> 20; mb > 32 {
+		t.Fatalf("grouping 3000 undated cards with a shared hash chunk allocated %d MiB", mb)
 	}
 }

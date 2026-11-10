@@ -1,7 +1,6 @@
 package music
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -240,6 +239,15 @@ func sanitizeBulkTags(t tagwrite.Tags) tagwrite.Tags {
 func (e *TagEditor) WriteFolder(ctx context.Context, userID, folderNodeID string, t tagwrite.Tags, cc tagwrite.CoverChange, cover *tagwrite.Cover) (BulkResult, error) {
 	t = sanitizeBulkTags(t)
 
+	// One folder at a time: every file is copied twice on its way, and parallel bulk
+	// edits of large folders would multiply that.
+	select {
+	case bulkTagEdits <- struct{}{}:
+		defer func() { <-bulkTagEdits }()
+	case <-ctx.Done():
+		return BulkResult{}, ctx.Err()
+	}
+
 	nodes, err := e.folderAudioNodes(ctx, userID, folderNodeID)
 	if err != nil {
 		return BulkResult{}, err
@@ -255,6 +263,8 @@ func (e *TagEditor) WriteFolder(ctx context.Context, userID, folderNodeID string
 	}
 	return res, nil
 }
+
+var bulkTagEdits = make(chan struct{}, 1)
 
 // Write applies tag and cover changes to a file, then commits via FileService
 // and re-indexes the song in the music library.
@@ -297,10 +307,13 @@ func (e *TagEditor) Write(ctx context.Context, userID, nodeID string, t tagwrite
 		return err
 	}
 
-	newBytes, err := os.ReadFile(tmpPath)
+	// Streamed from the temp file: a FLAC of several hundred megabytes must not be held
+	// in memory whole on its way back into storage.
+	edited, err := os.Open(tmpPath)
 	if err != nil {
 		return err
 	}
+	defer edited.Close()
 
 	// Determine save mode from per-user settings.
 	beforeTagCommit()
@@ -323,7 +336,7 @@ func (e *TagEditor) Write(ctx context.Context, userID, nodeID string, t tagwrite
 		// conflict copy.
 		relPath := strings.TrimPrefix(node.DiskPath.String, userID+"/")
 		base := node.Version
-		res, err := e.files.PushByPath(ctx, userID, relPath, &base, bytes.NewReader(newBytes))
+		res, err := e.files.PushByPath(ctx, userID, relPath, &base, edited)
 		if err != nil {
 			return err
 		}
@@ -334,7 +347,7 @@ func (e *TagEditor) Write(ctx context.Context, userID, nodeID string, t tagwrite
 		// In-place mode keeps no history, so a concurrent change must not be replaced:
 		// the swap is conditional on the version the tags were edited from, checked
 		// under the same per-path lock a sync push takes.
-		_, err := e.files.ReplaceContentInPlaceAt(ctx, userID, nodeID, node.Version, bytes.NewReader(newBytes))
+		_, err := e.files.ReplaceContentInPlaceAt(ctx, userID, nodeID, node.Version, edited)
 		if errors.Is(err, storage.ErrStaleVersion) {
 			return ErrTagConflict
 		}

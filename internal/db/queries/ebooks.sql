@@ -73,6 +73,15 @@ SELECT name, sort_name FROM book_authors WHERE book_id = $1 ORDER BY sort_name, 
 -- name: BookTags :many
 SELECT tag FROM book_tags WHERE book_id = $1 ORDER BY tag;
 
+-- Authors and tags of a page of books at once (the lists used to ask per book).
+-- name: AuthorsOfBooks :many
+SELECT book_id, name FROM book_authors
+WHERE book_id = ANY(sqlc.arg(book_ids)::uuid[]) ORDER BY book_id, sort_name, name;
+
+-- name: TagsOfBooks :many
+SELECT book_id, tag FROM book_tags
+WHERE book_id = ANY(sqlc.arg(book_ids)::uuid[]) ORDER BY book_id, tag;
+
 -- name: AccessibleBook :one
 -- Returns a single book by id if it is accessible to the user (own or shared).
 WITH RECURSIVE shared_subtree AS (

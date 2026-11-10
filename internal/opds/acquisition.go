@@ -32,34 +32,23 @@ var pageSize = 50
 // total/offset describe the position of this page within the full result set so
 // a rel="next" link can be emitted when more rows remain. self is the feed's own
 // path (without the ?start= query); offset is appended to build the next link.
-//
-// NOTE on N+1: the caller fetches authors and tags per book (one query each),
-// so a page of N books issues 2N extra queries. Acceptable at pageSize=50 for
-// this opt-in catalog; a JOIN-based batch fetch can replace it if it ever matters.
 func (h *Handler) listBooks(w http.ResponseWriter, r *http.Request, books []db.Book, title, self string, total int64, offset int) {
 	ctx := r.Context()
 
-	// Resolve per-book authors. Tags are fetched too but only used for
-	// completeness of the acquisition rendering (Atom carries no tag here).
-	authorsByBook := make([][]string, len(books))
+	// Authors of the whole page in one query.
+	ids := make([]pgtype.UUID, len(books))
+	at := make(map[pgtype.UUID]int, len(books))
 	for i, b := range books {
-		rows, err := h.q.BookAuthors(ctx, b.ID)
-		if err != nil {
-			http.Error(w, "opds: query failed", http.StatusInternalServerError)
-			return
-		}
-		names := make([]string, 0, len(rows))
-		for _, a := range rows {
-			names = append(names, a.Name)
-		}
-		authorsByBook[i] = names
-
-		// BookTags is part of the consumed interface; fetched to surface query
-		// errors early even though acquisition entries don't render tags.
-		if _, err := h.q.BookTags(ctx, b.ID); err != nil {
-			http.Error(w, "opds: query failed", http.StatusInternalServerError)
-			return
-		}
+		ids[i], at[b.ID] = b.ID, i
+	}
+	authorsByBook := make([][]string, len(books))
+	rows, err := h.q.AuthorsOfBooks(ctx, ids)
+	if err != nil {
+		http.Error(w, "opds: query failed", http.StatusInternalServerError)
+		return
+	}
+	for _, a := range rows {
+		authorsByBook[at[a.BookID]] = append(authorsByBook[at[a.BookID]], a.Name)
 	}
 
 	hasNext := total > int64(offset+len(books))

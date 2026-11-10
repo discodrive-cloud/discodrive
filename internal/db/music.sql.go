@@ -1283,6 +1283,47 @@ func (q *Queries) CountAccessibleAlbumsByArtist(ctx context.Context, arg CountAc
 	return count, err
 }
 
+const countAccessibleAlbumsPerArtist = `-- name: CountAccessibleAlbumsPerArtist :many
+WITH RECURSIVE shared_subtree AS (
+    SELECT resource_id AS node_id FROM resource_shares
+    WHERE resource_type = 'file_node' AND shared_with_user = $1
+      AND (expires_at IS NULL OR expires_at > now())
+    UNION
+    SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
+)
+SELECT al.artist_id, COUNT(DISTINCT al.id) AS albums FROM albums al
+JOIN songs s ON s.album_id = al.id
+WHERE s.user_id = $1 OR s.node_id IN (SELECT node_id FROM shared_subtree)
+GROUP BY al.artist_id
+`
+
+type CountAccessibleAlbumsPerArtistRow struct {
+	ArtistID pgtype.UUID `json:"artist_id"`
+	Albums   int64       `json:"albums"`
+}
+
+// CountAccessibleAlbumsByArtist for every artist at once: one pass instead of a query
+// (each with its recursive CTE) per artist in getArtists and search3.
+func (q *Queries) CountAccessibleAlbumsPerArtist(ctx context.Context, userID pgtype.UUID) ([]CountAccessibleAlbumsPerArtistRow, error) {
+	rows, err := q.db.Query(ctx, countAccessibleAlbumsPerArtist, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountAccessibleAlbumsPerArtistRow{}
+	for rows.Next() {
+		var i CountAccessibleAlbumsPerArtistRow
+		if err := rows.Scan(&i.ArtistID, &i.Albums); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countPlaylistSongs = `-- name: CountPlaylistSongs :one
 SELECT COUNT(*) FROM playlist_songs WHERE playlist_id = $1
 `
@@ -2599,6 +2640,51 @@ func (q *Queries) MaxPlaylistPosition(ctx context.Context, playlistID pgtype.UUI
 	var coalesce interface{}
 	err := row.Scan(&coalesce)
 	return coalesce, err
+}
+
+const playlistStatsByUser = `-- name: PlaylistStatsByUser :many
+WITH RECURSIVE shared_subtree AS (
+    SELECT resource_id AS node_id FROM resource_shares
+    WHERE resource_type = 'file_node' AND shared_with_user = $1
+      AND (expires_at IS NULL OR expires_at > now())
+    UNION
+    SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
+)
+SELECT ps.playlist_id, COUNT(*) AS songs, COALESCE(SUM(s.duration), 0)::bigint AS duration
+FROM playlist_songs ps
+JOIN playlists p ON p.id = ps.playlist_id
+JOIN songs s ON s.id = ps.song_id
+WHERE p.user_id = $1
+  AND (s.user_id = p.user_id OR s.node_id IN (SELECT node_id FROM shared_subtree))
+GROUP BY ps.playlist_id
+`
+
+type PlaylistStatsByUserRow struct {
+	PlaylistID pgtype.UUID `json:"playlist_id"`
+	Songs      int64       `json:"songs"`
+	Duration   int64       `json:"duration"`
+}
+
+// Song count and total duration of each of the user's playlists, with the access rule of
+// GetPlaylistSongs — so getPlaylists does not fetch every track of every playlist.
+func (q *Queries) PlaylistStatsByUser(ctx context.Context, userID pgtype.UUID) ([]PlaylistStatsByUserRow, error) {
+	rows, err := q.db.Query(ctx, playlistStatsByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PlaylistStatsByUserRow{}
+	for rows.Next() {
+		var i PlaylistStatsByUserRow
+		if err := rows.Scan(&i.PlaylistID, &i.Songs, &i.Duration); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const pruneSongsOutsideFolder = `-- name: PruneSongsOutsideFolder :exec
