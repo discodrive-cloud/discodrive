@@ -10,28 +10,35 @@ const atRoot = computed(() => stack.value.length === 1)
 const shares = ref<Share[]>([])
 const nodes = ref<Node[]>([])
 
+// Only the latest load may fill the list (see files.vue).
+let loadSeq = 0
 async function load() {
+  const seq = ++loadSeq
   error.value = ''
   try {
     if (atRoot.value) {
-      shares.value = await request<Share[]>('/shared')
+      const rows = await request<Share[]>('/shared')
+      if (seq === loadSeq) shares.value = rows
     } else {
       const pid = stack.value[stack.value.length - 1].id
-      nodes.value = await request<Node[]>(`/files?parent_id=${pid}`)
+      const rows = await request<Node[]>(`/files?parent_id=${pid}`)
+      if (seq === loadSeq) nodes.value = rows
     }
   } catch (e: any) {
-    error.value = e?.data?.error || t('shared.error_load')
+    if (seq === loadSeq) error.value = e?.data?.error || t('shared.error_load')
   }
 }
 onMounted(load)
 
 function openShare(s: Share) {
   if (!s.is_dir) return
+  if (stack.value[stack.value.length - 1]?.id === s.resource_id) return
   stack.value.push({ id: s.resource_id, name: s.name })
   load()
 }
 function openNode(n: Node) {
   if (!n.is_dir) return
+  if (stack.value[stack.value.length - 1]?.id === n.id) return
   stack.value.push({ id: n.id, name: n.name })
   load()
 }

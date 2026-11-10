@@ -545,10 +545,37 @@ const maxMultipartUpload = 10 << 30 // 10 GiB
 // exhaust memory.
 const multipartMemory = 1 << 20
 
+// multipartOverhead is the room left for the form's boundaries and text fields on top of
+// the file bytes when the body is capped at the user's allowance.
+const multipartOverhead = 64 << 10
+
 // POST /files/upload (multipart: file, [name], [parent_id])
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxMultipartUpload)
+	// The form is spooled to the temp directory before the file reaches storage, where
+	// the quota applies. Read no more than the user may still store (uploads go to the
+	// user's own tree only): otherwise an account with no room left could park
+	// maxMultipartUpload per request on the system disk.
+	limit := int64(maxMultipartUpload)
+	allowance, err := s.files.Allowance(r.Context(), auth.UserID(r.Context()))
+	if err != nil {
+		writeStorageErr(w, err)
+		return
+	}
+	byQuota := allowance < limit-multipartOverhead
+	if byQuota {
+		limit = allowance + multipartOverhead
+	}
+	if byQuota && r.ContentLength > limit {
+		writeError(w, http.StatusInsufficientStorage, quota.ErrExceeded.Error())
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	if err := r.ParseMultipartForm(multipartMemory); err != nil {
+		var tooBig *http.MaxBytesError
+		if byQuota && errors.As(err, &tooBig) {
+			writeError(w, http.StatusInsufficientStorage, quota.ErrExceeded.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "expected multipart/form-data")
 		return
 	}
@@ -937,6 +964,10 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "chunk exceeds the declared file size")
 	case errors.Is(err, quota.ErrExceeded):
 		writeError(w, http.StatusInsufficientStorage, err.Error())
+	case errors.Is(err, db.ErrUploadConnectionsBusy):
+		// Not a server fault: the chunk was not taken, the client retries it.
+		w.Header().Set("Retry-After", "2")
+		writeError(w, http.StatusTooManyRequests, err.Error())
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "internal error")
 	default:

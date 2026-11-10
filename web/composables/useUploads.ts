@@ -27,6 +27,15 @@ export const useUploadsTick = () => useState<number>('uploadsTick', () => 0)
 
 let localSeq = 0
 
+// resetUploads drops the whole queue when the session ends or the account changes. The
+// queue holds the previous user's File objects and file names; left in place, the next
+// user of the tab saw them and "resume" uploaded them into that user's own files.
+export function resetUploads() {
+  for (const c of controls.values()) c.canceled = true // stops the chunk loops in flight
+  controls.clear()
+  useUploadTasks().value = []
+}
+
 export function useUploads() {
   const tasks = useUploadTasks()
   const tick = useUploadsTick()
@@ -113,6 +122,7 @@ export function useUploads() {
         t.sent = Math.min(n * CHUNK, t.total)
       } while (t.sent < t.total)
 
+      if (ctl.canceled) return
       await request(`/upload/${t.uploadId}/complete`, { method: 'POST' })
       t.status = 'done'
       controls.delete(t.id)

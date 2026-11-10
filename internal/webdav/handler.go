@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -73,7 +74,7 @@ func Handler(svc *storage.FileService, prefix string) http.Handler {
 					return
 				}
 			}
-			ctx, pq := withPutQuota(WithDeclaredLength(r.Context(), r.ContentLength))
+			ctx, pq := withPutQuota(WithDeclaredLength(r.Context(), declaredPutLength(r)))
 			r = r.WithContext(ctx)
 			w = &quotaStatusWriter{ResponseWriter: w, pq: pq}
 		}
@@ -95,6 +96,19 @@ func Handler(svc *storage.FileService, prefix string) http.Handler {
 		}
 		h.ServeHTTP(w, r.WithContext(withNodeMemo(r.Context())))
 	})
+}
+
+// declaredPutLength is the body length the client promised, or -1. A chunked PUT has no
+// Content-Length; macOS Finder sends the size in X-Expected-Entity-Length instead, which
+// lets a body that arrived short be told from a whole one.
+func declaredPutLength(r *http.Request) int64 {
+	if r.ContentLength >= 0 {
+		return r.ContentLength
+	}
+	if n, err := strconv.ParseInt(r.Header.Get("X-Expected-Entity-Length"), 10, 64); err == nil && n >= 0 {
+		return n
+	}
+	return -1
 }
 
 // normalizeDestinationHost rewrites the MOVE/COPY Destination header to a host-relative

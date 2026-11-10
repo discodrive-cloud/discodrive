@@ -151,6 +151,11 @@ func (s *Server) handleSavedCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Authenticated downloads require HTTPS and configured secret encryption")
 		return
 	}
+	if errors.Is(err, saved.ErrQueueFull) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "too many links are still being processed; try again later")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -202,7 +207,7 @@ func (s *Server) handleSavedList(w http.ResponseWriter, r *http.Request) {
 	}
 	dtos := make([]savedItemDTO, 0, len(items))
 	for _, it := range items {
-		dtos = append(dtos, toSavedItemDTO(it))
+		dtos = append(dtos, toSavedItemDTO(db.SavedItem(it)))
 	}
 	writeJSON(w, http.StatusOK, dtos)
 }

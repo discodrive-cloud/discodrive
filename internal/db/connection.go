@@ -26,7 +26,9 @@ func (q *Queries) AcquireConnection(ctx context.Context) (*UploadConnection, err
 	if !ok {
 		return nil, errors.New("database connection pool required")
 	}
-	capacity := max(1, int(pool.Config().MaxConns)-2)
+	// Two spare for ordinary requests, on top of the listeners' connections: those never
+	// come back to the pool, and counting them as available let uploads take the last one.
+	capacity := max(1, int(pool.Config().MaxConns)-ListenerConns-2)
 	value, _ := uploadConnectionSlots.LoadOrStore(pool, make(chan struct{}, capacity))
 	slots := value.(chan struct{})
 	select {

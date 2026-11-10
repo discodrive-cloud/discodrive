@@ -113,7 +113,9 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("GET /me", prot(http.HandlerFunc(s.handleMe)))
 	mux.Handle("POST /me/apple-profile", prot(http.HandlerFunc(s.handleAppleProfile)))
 	mux.Handle("GET /me/storage", prot(http.HandlerFunc(s.handleMeStorage)))
-	mux.Handle("PUT /me/password", prot(http.HandlerFunc(s.handleChangePassword)))
+	// Rate-limited like the other routes that check the current password: a stolen
+	// session must not be able to guess it without bound.
+	mux.Handle("PUT /me/password", prot(http.HandlerFunc(s.rateLimited(s.handleChangePassword))))
 	mux.Handle("GET /me/totp", prot(http.HandlerFunc(s.handleTOTPStatus)))
 	mux.Handle("POST /me/totp/setup", prot(http.HandlerFunc(s.rateLimited(s.handleTOTPSetup))))
 	mux.Handle("POST /me/totp/confirm", prot(http.HandlerFunc(s.rateLimited(s.handleTOTPConfirm))))

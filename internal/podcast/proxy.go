@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"discodrive/internal/safecontent"
 )
@@ -16,12 +15,8 @@ import (
 // ResponseHeaderTimeout still bounds the header phase, and CheckRedirect keeps
 // the SSRF revalidation on every redirect target.
 var streamClient = &http.Client{
-	CheckRedirect: func(req *http.Request, via []*http.Request) error { return ValidateURL(req.URL.String()) },
-	Transport: &http.Transport{
-		Proxy:                 nil, // an env proxy would bypass safeDialer's IP check
-		DialContext:           safeDialer.DialContext,
-		ResponseHeaderTimeout: 30 * time.Second,
-	},
+	CheckRedirect: checkRedirect,
+	Transport:     guardedTransport,
 }
 
 // ProxyStream fetches srcURL (SSRF-guarded) and copies the response to w,

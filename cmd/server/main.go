@@ -272,6 +272,9 @@ func runServer(cfg config.Config) {
 	if err := podcast.ReconcileCovers(ctx, queries, cfg.StorageRoot); err != nil {
 		log.Fatalf("recover podcast cover accounting: %v", err)
 	}
+	if err := podcast.RecoverDownloads(ctx, queries); err != nil {
+		log.Fatalf("recover interrupted podcast downloads: %v", err)
+	}
 	fileSvc := storage.NewFileService(pool, store)
 	uploads := storage.NewUploads(store, fileSvc)
 

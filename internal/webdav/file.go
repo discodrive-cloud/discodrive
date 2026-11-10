@@ -159,6 +159,7 @@ type writeFile struct {
 	expect   int64 // declared Content-Length; -1 when the client did not state one
 	written  int64 // bytes actually buffered so far
 	limit    int64 // the user's allowance when the PUT began; quota.Unlimited if none
+	failed   error // the first Write error: the body is not whole, Close must not publish it
 }
 
 func (w *writeFile) Write(p []byte) (int, error) {
@@ -167,11 +168,15 @@ func (w *writeFile) Write(p []byte) (int, error) {
 		if pq := putQuotaOf(w.ctx); pq != nil {
 			pq.exceeded = true
 		}
-		return 0, fmt.Errorf("upload of %q: %w", w.name, quota.ErrExceeded)
+		w.failed = fmt.Errorf("upload of %q: %w", w.name, quota.ErrExceeded)
+		return 0, w.failed
 	}
 	n, err := w.tmp.Write(p)
 	spoolGive(w.userID, int64(len(p)-n))
 	w.written += int64(n)
+	if err != nil && w.failed == nil {
+		w.failed = fmt.Errorf("upload of %q stopped after %d bytes: %w", w.name, w.written, err)
+	}
 	return n, err
 }
 func (w *writeFile) Read([]byte) (int, error)            { return 0, os.ErrInvalid }
@@ -190,6 +195,12 @@ func (w *writeFile) Close() error {
 	// integrity check can tell it apart from a genuine upload. Verify before publishing.
 	if err := w.ctx.Err(); err != nil {
 		return fmt.Errorf("upload of %q aborted after %d bytes: %w", w.name, w.written, err)
+	}
+	// A chunked body declares no length, so the check below cannot catch it: a body cut
+	// off at the allowance or by a full disk would be published as it stood (down to an
+	// empty file over a good one).
+	if w.failed != nil {
+		return w.failed
 	}
 	if w.expect >= 0 && w.written != w.expect {
 		return fmt.Errorf("upload of %q incomplete: received %d of %d declared bytes",

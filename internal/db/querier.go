@@ -162,6 +162,7 @@ type Querier interface {
 	CountReadingProgress(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountSavedLinks(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountUnclusteredFaces(ctx context.Context, arg CountUnclusteredFacesParams) (int64, error)
+	CountUnfinishedSavedItems(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountUserFacesOfModel(ctx context.Context, arg CountUserFacesOfModelParams) (int64, error)
 	CountUserLogins(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// == addressbooks ==
@@ -255,6 +256,9 @@ type Querier interface {
 	// Cards whose thumbnail failed are never looked at (the file cannot be rendered): they
 	// count neither as done nor as to do.
 	FaceProgress(ctx context.Context, userID pgtype.UUID) (FaceProgressRow, error)
+	// At start no download is running, so every 'downloading' mark is left over from the
+	// previous process. 'error' lets the episode be claimed again.
+	FailInterruptedEpisodeDownloads(ctx context.Context) (int64, error)
 	// A snapshot file whose transaction reported failure is removed unless a row uses it
 	// (the commit went through after all).
 	FileVersionPathInUse(ctx context.Context, diskPath pgtype.Text) (bool, error)
@@ -475,6 +479,8 @@ type Querier interface {
 	// trashed one may do.
 	ListOwnPhotoAssets(ctx context.Context, arg ListOwnPhotoAssetsParams) ([]PhotoAsset, error)
 	ListPendingRescanRequests(ctx context.Context) ([]RescanRequest, error)
+	// Round-robin over users: everyone's oldest item first, so one user's backlog does not
+	// fill the batch.
 	ListPendingSavedItems(ctx context.Context, limit int32) ([]SavedItem, error)
 	ListPhotoAlbumAssetsInMonth(ctx context.Context, arg ListPhotoAlbumAssetsInMonthParams) ([]PhotoAsset, error)
 	// The whole album newest first, a page after (taken_at, id), for its public page.
@@ -550,8 +556,10 @@ type Querier interface {
 	// being written right now, whose new snapshot is not committed yet.
 	ListRedundantVersionSnapshots(ctx context.Context, modifiedBefore pgtype.Timestamptz) ([]ListRedundantVersionSnapshotsRow, error)
 	ListRootNodes(ctx context.Context, userID pgtype.UUID) ([]Node, error)
-	// Downloads are an internal queue and never appear in listings.
-	ListSavedItems(ctx context.Context, arg ListSavedItemsParams) ([]SavedItem, error)
+	// Downloads are an internal queue and never appear in listings. The column list is the
+	// table's, in order, with the two transport columns blanked: content_html is up to 2 MiB
+	// per row and a listing of a few hundred rows used to load all of it.
+	ListSavedItems(ctx context.Context, arg ListSavedItemsParams) ([]ListSavedItemsRow, error)
 	ListSavedLinks(ctx context.Context, arg ListSavedLinksParams) ([]ListSavedLinksRow, error)
 	ListSecretKeys(ctx context.Context) ([]string, error)
 	ListSharesForResource(ctx context.Context, arg ListSharesForResourceParams) ([]ResourceShare, error)
@@ -777,6 +785,8 @@ type Querier interface {
 	SetRating(ctx context.Context, arg SetRatingParams) error
 	// content_html/cookie_header are dropped once processed — transport, not storage.
 	SetSavedItemDone(ctx context.Context, arg SetSavedItemDoneParams) (int64, error)
+	// content_html goes too: it is outside the quota, and a retry fetches the page itself
+	// (or the client sends the HTML again).
 	SetSavedItemError(ctx context.Context, arg SetSavedItemErrorParams) error
 	SetSavedLinkArchived(ctx context.Context, arg SetSavedLinkArchivedParams) (int64, error)
 	// The title from the share sheet wins over the page's own.

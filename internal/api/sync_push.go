@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"path"
 	"strconv"
 
 	"discodrive/internal/auth"
@@ -98,7 +99,10 @@ func (s *Server) handleSyncMkdir(w http.ResponseWriter, r *http.Request) {
 // DELETE /sync/file?path=<rel>
 func (s *Server) handleSyncDelete(w http.ResponseWriter, r *http.Request) {
 	rel := r.URL.Query().Get("path")
-	if rel == "" {
+	// "/" or "." names the root of what the client syncs. Under a scope that is the sync
+	// folder itself, and deleting it would trash the user's whole synced tree; clients
+	// never mean that (they refuse such an entry themselves), so the server refuses too.
+	if c := path.Clean("/" + rel); rel == "" || c == "/" {
 		writeError(w, http.StatusBadRequest, "path is required")
 		return
 	}

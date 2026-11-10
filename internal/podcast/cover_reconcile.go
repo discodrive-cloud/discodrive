@@ -3,6 +3,7 @@ package podcast
 import (
 	"context"
 	"errors"
+	"log"
 	"os"
 
 	"discodrive/internal/db"
@@ -88,4 +89,15 @@ func DeleteChannel(ctx context.Context, q *db.Queries, root string, id, user pgt
 		return 0, err
 	}
 	return n, tx.Commit(ctx)
+}
+
+// RecoverDownloads runs before workers and HTTP start. An episode downloads in a
+// goroutine and only its 'downloading' mark is stored; a restart kills the goroutine and
+// keeps the mark, and a marked episode is never claimed again.
+func RecoverDownloads(ctx context.Context, q *db.Queries) error {
+	n, err := q.FailInterruptedEpisodeDownloads(ctx)
+	if err == nil && n > 0 {
+		log.Printf("discodrive: %d podcast episode download(s) interrupted by the restart, can be retried", n)
+	}
+	return err
 }

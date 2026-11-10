@@ -8,9 +8,14 @@ import (
 )
 
 // DefaultMaxConns is the pool size used unless DATABASE_URL sets pool_max_conns. Every
-// in-flight upload holds a connection (AcquireConnection keeps two spare), so pgx's
+// in-flight upload holds a connection (AcquireConnection keeps two spare beside ListenerConns), so pgx's
 // CPU-count default left a 4-core machine with just two concurrent uploads.
 const DefaultMaxConns = 16
+
+// ListenerConns is how many pool connections the server holds for LISTEN for its whole
+// life: the SSE hub (api.EventHub), the library tracker and the rescan runner. They are
+// never returned, so everything that budgets the pool counts them as gone.
+const ListenerConns = 3
 
 // DefaultMaxConnIdleTime closes pooled connections idle for longer, unless DATABASE_URL
 // sets pool_max_conn_idle_time. Each one is a PostgreSQL backend with its own memory,

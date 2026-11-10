@@ -147,7 +147,9 @@ async function loadFlatBooks(append = false) {
 }
 
 async function loadMore() {
-  flatStart.value += flatBooks.value.length
+  // start is an offset: the next page begins after everything already shown. Adding the
+  // length to the previous offset skipped a page from the second click on.
+  flatStart.value = flatBooks.value.length
   await loadFlatBooks(true)
 }
 
@@ -278,7 +280,8 @@ function selectFlatBook(book: BookListItem) {
 
     <!-- Right pane -->
     <section class="min-w-0 flex-1 overflow-auto p-4">
-      <BookMetaForm v-if="selected" :node="selected" />
+      <!-- key: a fresh form per book, so a slow answer for the previous book cannot fill (and then save into) this one -->
+      <BookMetaForm v-if="selected" :key="selected.id" :node="selected" />
       <div v-else class="flex h-full items-center justify-center">
         <p class="text-sm text-muted">{{ t('bookmeta.pick_hint') }}</p>
       </div>

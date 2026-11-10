@@ -36,6 +36,17 @@ func (q *Queries) ClearExpiredSavedCookies(ctx context.Context) error {
 	return err
 }
 
+const countUnfinishedSavedItems = `-- name: CountUnfinishedSavedItems :one
+SELECT count(*) FROM saved_items WHERE user_id = $1 AND status IN ('pending', 'processing')
+`
+
+func (q *Queries) CountUnfinishedSavedItems(ctx context.Context, userID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countUnfinishedSavedItems, userID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteFinishedDownloads = `-- name: DeleteFinishedDownloads :execrows
 DELETE FROM saved_items WHERE kind = 'download'
   AND ((status = 'done' AND updated_at < $1) OR (status = 'error' AND updated_at < $2))
@@ -111,9 +122,17 @@ func (q *Queries) GetSavedItemForUser(ctx context.Context, arg GetSavedItemForUs
 }
 
 const listPendingSavedItems = `-- name: ListPendingSavedItems :many
-SELECT id, user_id, url, kind, title, status, error_msg, content_path, size_bytes, bytes_done, meta, created_at, updated_at, content_html, cookie_header, cookie_expires_at FROM saved_items WHERE status = 'pending' ORDER BY created_at LIMIT $1
+SELECT s.id, s.user_id, s.url, s.kind, s.title, s.status, s.error_msg, s.content_path, s.size_bytes, s.bytes_done, s.meta, s.created_at, s.updated_at, s.content_html, s.cookie_header, s.cookie_expires_at FROM saved_items s
+JOIN (
+    SELECT id, row_number() OVER (PARTITION BY user_id ORDER BY created_at) AS rn
+    FROM saved_items WHERE status = 'pending'
+) r ON r.id = s.id
+ORDER BY r.rn, s.created_at
+LIMIT $1
 `
 
+// Round-robin over users: everyone's oldest item first, so one user's backlog does not
+// fill the batch.
 func (q *Queries) ListPendingSavedItems(ctx context.Context, limit int32) ([]SavedItem, error) {
 	rows, err := q.db.Query(ctx, listPendingSavedItems, limit)
 	if err != nil {
@@ -152,7 +171,10 @@ func (q *Queries) ListPendingSavedItems(ctx context.Context, limit int32) ([]Sav
 }
 
 const listSavedItems = `-- name: ListSavedItems :many
-SELECT id, user_id, url, kind, title, status, error_msg, content_path, size_bytes, bytes_done, meta, created_at, updated_at, content_html, cookie_header, cookie_expires_at FROM saved_items
+SELECT id, user_id, url, kind, title, status, error_msg, content_path, size_bytes, bytes_done,
+       meta, created_at, updated_at,
+       NULL::text AS content_html, NULL::text AS cookie_header, cookie_expires_at
+FROM saved_items
 WHERE user_id = $1
   AND kind <> 'download'
   AND ($4::text = '' OR kind = $4::text)
@@ -171,8 +193,29 @@ type ListSavedItemsParams struct {
 	Q      string      `json:"q"`
 }
 
-// Downloads are an internal queue and never appear in listings.
-func (q *Queries) ListSavedItems(ctx context.Context, arg ListSavedItemsParams) ([]SavedItem, error) {
+type ListSavedItemsRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	UserID          pgtype.UUID        `json:"user_id"`
+	Url             string             `json:"url"`
+	Kind            string             `json:"kind"`
+	Title           string             `json:"title"`
+	Status          string             `json:"status"`
+	ErrorMsg        string             `json:"error_msg"`
+	ContentPath     pgtype.Text        `json:"content_path"`
+	SizeBytes       pgtype.Int8        `json:"size_bytes"`
+	BytesDone       int64              `json:"bytes_done"`
+	Meta            []byte             `json:"meta"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ContentHtml     pgtype.Text        `json:"content_html"`
+	CookieHeader    pgtype.Text        `json:"cookie_header"`
+	CookieExpiresAt pgtype.Timestamptz `json:"cookie_expires_at"`
+}
+
+// Downloads are an internal queue and never appear in listings. The column list is the
+// table's, in order, with the two transport columns blanked: content_html is up to 2 MiB
+// per row and a listing of a few hundred rows used to load all of it.
+func (q *Queries) ListSavedItems(ctx context.Context, arg ListSavedItemsParams) ([]ListSavedItemsRow, error) {
 	rows, err := q.db.Query(ctx, listSavedItems,
 		arg.UserID,
 		arg.Limit,
@@ -185,9 +228,9 @@ func (q *Queries) ListSavedItems(ctx context.Context, arg ListSavedItemsParams) 
 		return nil, err
 	}
 	defer rows.Close()
-	items := []SavedItem{}
+	items := []ListSavedItemsRow{}
 	for rows.Next() {
-		var i SavedItem
+		var i ListSavedItemsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserID,
@@ -282,7 +325,7 @@ func (q *Queries) SetSavedItemDone(ctx context.Context, arg SetSavedItemDonePara
 }
 
 const setSavedItemError = `-- name: SetSavedItemError :exec
-UPDATE saved_items SET status = 'error', error_msg = $2, cookie_header = NULL, cookie_expires_at = NULL, updated_at = now()
+UPDATE saved_items SET status = 'error', error_msg = $2, content_html = NULL, cookie_header = NULL, cookie_expires_at = NULL, updated_at = now()
 WHERE id = $1
 `
 
@@ -291,6 +334,8 @@ type SetSavedItemErrorParams struct {
 	ErrorMsg string      `json:"error_msg"`
 }
 
+// content_html goes too: it is outside the quota, and a retry fetches the page itself
+// (or the client sends the HTML again).
 func (q *Queries) SetSavedItemError(ctx context.Context, arg SetSavedItemErrorParams) error {
 	_, err := q.db.Exec(ctx, setSavedItemError, arg.ID, arg.ErrorMsg)
 	return err

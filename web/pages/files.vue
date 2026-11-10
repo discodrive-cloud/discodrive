@@ -116,22 +116,30 @@ const sorted = computed(() =>
   [...nodes.value].sort((a, b) => Number(b.is_dir) - Number(a.is_dir) || naturalCompare(a.name, b.name)),
 )
 
+// Only the latest load may fill the list: navigating again before a slow answer arrives
+// used to leave the previous folder's rows under the new breadcrumbs, and rename/delete
+// then acted on rows of a folder the user was no longer in.
+let loadSeq = 0
 async function load() {
+  const seq = ++loadSeq
   error.value = ''
   busy.value = true
   try {
     const q = parentId.value ? `?parent_id=${parentId.value}` : ''
-    nodes.value = await request<Node[]>(`/files${q}`)
+    const rows = await request<Node[]>(`/files${q}`)
+    if (seq === loadSeq) nodes.value = rows
   } catch (e: any) {
-    error.value = e?.data?.error || t('files.error_load')
+    if (seq === loadSeq) error.value = e?.data?.error || t('files.error_load')
   } finally {
-    busy.value = false
+    if (seq === loadSeq) busy.value = false
   }
 }
 onMounted(load)
 
 function open(n: Node) {
   if (!n.is_dir) return
+  // A double click must not enter the same folder twice.
+  if (stack.value[stack.value.length - 1]?.id === n.id) return
   stack.value.push({ id: n.id, name: n.name })
   load()
 }

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -48,8 +49,24 @@ const (
 	metadataDeadline = 2 * time.Minute
 )
 
-// pendingBatch bounds how many pending items one worker tick kicks off.
-const pendingBatch = 10
+// pendingBatch bounds how many pending items one pass over the queue looks at.
+const pendingBatch = 32
+
+// Items are processed a few at a time. Each one holds a goroutine, an outbound connection
+// and (a download) a staging file for up to downloadDeadline; unbounded, a script posting
+// links could hold thousands of them. What does not get a slot stays pending and starts
+// when a slot frees.
+const (
+	maxParallel = 8 // across all users
+	maxPerUser  = 3
+)
+
+// maxUnfinishedPerUser bounds a user's queue (pending + processing). An article carries
+// up to 2 MiB of HTML outside the quota until it is processed.
+const maxUnfinishedPerUser = 100
+
+// ErrQueueFull refuses a new item while the user has maxUnfinishedPerUser unfinished.
+var ErrQueueFull = errors.New("saved: too many unfinished items")
 
 // Finished download rows are an internal queue artifact: the file itself lives
 // in the user's Files → Downloads. Rows linger only long enough for the
@@ -74,6 +91,10 @@ type Service struct {
 
 	Client   *http.Client
 	Validate func(string) error
+
+	mu      sync.Mutex
+	running int                 // items being processed
+	perUser map[pgtype.UUID]int // of them, per owner
 }
 
 // NewService returns a Service writing through st (rooted at the storage root).
@@ -191,6 +212,13 @@ func (s *Service) Create(ctx context.Context, userID pgtype.UUID, url, kind, tit
 	if err != nil {
 		return db.SavedItem{}, err
 	}
+	unfinished, err := s.q.CountUnfinishedSavedItems(ctx, userID)
+	if err != nil {
+		return db.SavedItem{}, err
+	}
+	if unfinished >= maxUnfinishedPerUser {
+		return db.SavedItem{}, ErrQueueFull
+	}
 	item, err := s.q.UpsertSavedItem(ctx, db.UpsertSavedItemParams{
 		UserID:       userID,
 		Url:          url,
@@ -230,15 +258,68 @@ func (s *Service) Create(ctx context.Context, userID pgtype.UUID, url, kind, tit
 // goroutine. The claim closes the TOCTOU between the POST handler and the
 // worker tick: only one of them can flip pending→processing.
 func (s *Service) Kickoff(ctx context.Context, item db.SavedItem) {
+	if !s.takeSlot(item.UserID) {
+		return // stays pending; started when a slot frees (see freeSlot)
+	}
 	n, err := s.q.ClaimSavedItem(ctx, item.ID)
-	if err != nil {
-		log.Printf("discodrive: saved claim %s: %v", db.UUIDString(item.ID), err)
+	if err != nil || n == 0 {
+		if err != nil {
+			log.Printf("discodrive: saved claim %s: %v", db.UUIDString(item.ID), err)
+		}
+		// n == 0: someone else claimed it (or the status changed)
+		s.mu.Lock()
+		s.release(item.UserID)
+		s.mu.Unlock()
 		return
 	}
-	if n == 0 {
-		return // someone else claimed it (or status changed): no-op
+	go func() {
+		defer s.freeSlot(item.UserID)
+		s.process(item)
+	}()
+}
+
+func (s *Service) takeSlot(user pgtype.UUID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running >= maxParallel || s.perUser[user] >= maxPerUser {
+		return false
 	}
-	go s.process(item)
+	if s.perUser == nil {
+		s.perUser = map[pgtype.UUID]int{}
+	}
+	s.running++
+	s.perUser[user]++
+	return true
+}
+
+// release gives a slot back. Callers hold mu.
+func (s *Service) release(user pgtype.UUID) {
+	s.running--
+	if s.perUser[user]--; s.perUser[user] <= 0 {
+		delete(s.perUser, user)
+	}
+}
+
+// freeSlot gives the slot back and starts whatever was waiting for one.
+func (s *Service) freeSlot(user pgtype.UUID) {
+	s.mu.Lock()
+	s.release(user)
+	s.mu.Unlock()
+	if err := s.kickPending(context.Background()); err != nil {
+		log.Printf("discodrive: saved: starting waiting items: %v", err)
+	}
+}
+
+// kickPending starts pending items while slots last.
+func (s *Service) kickPending(ctx context.Context) error {
+	items, err := s.q.ListPendingSavedItems(ctx, pendingBatch)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		s.Kickoff(ctx, item)
+	}
+	return nil
 }
 
 // RecoverStale re-queues items stuck in "processing" after a server restart.
@@ -271,14 +352,7 @@ func (s *Service) ProcessPending(ctx context.Context) error {
 	if err := s.q.ClearExpiredSavedCookies(ctx); err != nil {
 		return err
 	}
-	items, err := s.q.ListPendingSavedItems(ctx, pendingBatch)
-	if err != nil {
-		return err
-	}
-	for _, item := range items {
-		s.Kickoff(ctx, item)
-	}
-	return nil
+	return s.kickPending(ctx)
 }
 
 // process runs the kind-specific processor and records the outcome. It runs in

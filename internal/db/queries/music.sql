@@ -873,6 +873,11 @@ UPDATE podcast_episodes SET status = $2 WHERE id = $1 AND user_id = $3;
 UPDATE podcast_episodes SET status = 'downloading'
 WHERE id = $1 AND user_id = $2 AND status NOT IN ('downloading','completed');
 
+-- name: FailInterruptedEpisodeDownloads :execrows
+-- At start no download is running, so every 'downloading' mark is left over from the
+-- previous process. 'error' lets the episode be claimed again.
+UPDATE podcast_episodes SET status = 'error' WHERE status = 'downloading';
+
 -- name: SetEpisodeDownloaded :exec
 UPDATE podcast_episodes
 SET status = 'completed', disk_path = $2, size = $3, content_type = $4, suffix = $5

@@ -94,7 +94,22 @@ func VerifyPassword(password, encoded string) (bool, error) {
 // that, so up to ~100 MiB of garbage may be sitting uncollected: allocating on top of
 // it OOM-killed the server on 128 MB machines. Checks are rare (logins, and a DAV
 // client once per cache TTL), so a collection each costs little.
+//
+// Runs are also taken a few at a time: every caller (sign-in, password change, the
+// calendar feed and public album passwords, DAV) passes through here, and unbounded,
+// twenty parallel requests meant twenty work areas. The rest wait their turn; the
+// per-address rate limits keep that queue short.
 func argonKey(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
+	argonRunning <- struct{}{}
+	defer func() { <-argonRunning }()
 	runtime.GC()
-	return argon2.IDKey(password, salt, time, memory, threads, keyLen)
+	return argonHash(password, salt, time, memory, threads, keyLen)
 }
+
+// argonSlots is how many Argon2 runs may hold a work area at once.
+const argonSlots = 2
+
+var argonRunning = make(chan struct{}, argonSlots)
+
+// argonHash is argon2.IDKey; a variable so a test can watch how many run at once.
+var argonHash = argon2.IDKey

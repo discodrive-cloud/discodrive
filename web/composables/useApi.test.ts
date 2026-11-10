@@ -21,6 +21,7 @@ beforeEach(async () => {
   vi.stubGlobal('resetPlayerSession', vi.fn())
   vi.stubGlobal('lockVault', vi.fn())
   vi.stubGlobal('lockHiddenPhotos', vi.fn())
+  vi.stubGlobal('resetUploads', vi.fn())
   vi.stubGlobal('navigateTo', vi.fn())
   api = await import('./useApi')
   api.setSession(session('first'))
@@ -99,6 +100,18 @@ it('switches to another account signed in elsewhere', () => {
 })
 it('treats a corrupt stored session as signed out', () => {
   expect(api.followStoredSession('{not json')).toBe('cleared')
+})
+// The queue holds the previous user's files: the next user of the tab must not see them,
+// let alone resume them into their own account.
+it('logout and an account switch drop the upload queue', () => {
+  const reset = (globalThis as any).resetUploads as ReturnType<typeof vi.fn>
+  reset.mockClear()
+  api.setSession(session('first', 2)) // renewal of the same account keeps uploads going
+  expect(reset).not.toHaveBeenCalled()
+  api.setSession({ ...session('other'), email: 'b@example.test' })
+  expect(reset).toHaveBeenCalledTimes(1)
+  api.clearSession()
+  expect(reset).toHaveBeenCalledTimes(2)
 })
 it('logout and an account switch lock the vault', () => {
   const lock = (globalThis as any).lockVault as ReturnType<typeof vi.fn>

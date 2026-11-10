@@ -10,6 +10,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/html/charset"
 )
 
 // maxFB2Bytes caps how much of an FB2 document is read. The whole book, images
@@ -118,6 +120,9 @@ func parseFB2Bytes(data []byte) (Meta, error) {
 // the read cap) still yields its metadata.
 func parseFB2Reader(r io.Reader) (Meta, error) {
 	dec := xml.NewDecoder(r)
+	// FB2 files are often windows-1251 or koi8-r; without this the decoder rejects
+	// any declared encoding other than UTF-8 and the book never reaches the library.
+	dec.CharsetReader = charset.NewReaderLabel
 	var (
 		m       Meta
 		coverID string

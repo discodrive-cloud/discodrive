@@ -14,8 +14,13 @@ ON CONFLICT (user_id, url, kind) DO UPDATE SET
 RETURNING *;
 
 -- name: ListSavedItems :many
--- Downloads are an internal queue and never appear in listings.
-SELECT * FROM saved_items
+-- Downloads are an internal queue and never appear in listings. The column list is the
+-- table's, in order, with the two transport columns blanked: content_html is up to 2 MiB
+-- per row and a listing of a few hundred rows used to load all of it.
+SELECT id, user_id, url, kind, title, status, error_msg, content_path, size_bytes, bytes_done,
+       meta, created_at, updated_at,
+       NULL::text AS content_html, NULL::text AS cookie_header, cookie_expires_at
+FROM saved_items
 WHERE user_id = $1
   AND kind <> 'download'
   AND (sqlc.arg(kind)::text = '' OR kind = sqlc.arg(kind)::text)
@@ -46,7 +51,9 @@ SET status = 'done', content_path = $2, size_bytes = $3, bytes_done = COALESCE($
 WHERE id = $1 AND status = 'processing';
 
 -- name: SetSavedItemError :exec
-UPDATE saved_items SET status = 'error', error_msg = $2, cookie_header = NULL, cookie_expires_at = NULL, updated_at = now()
+-- content_html goes too: it is outside the quota, and a retry fetches the page itself
+-- (or the client sends the HTML again).
+UPDATE saved_items SET status = 'error', error_msg = $2, content_html = NULL, cookie_header = NULL, cookie_expires_at = NULL, updated_at = now()
 WHERE id = $1;
 
 -- name: RetrySavedItem :execrows
@@ -58,7 +65,18 @@ DELETE FROM saved_items WHERE id = $1 AND user_id = $2
 RETURNING kind, content_path, meta;
 
 -- name: ListPendingSavedItems :many
-SELECT * FROM saved_items WHERE status = 'pending' ORDER BY created_at LIMIT $1;
+-- Round-robin over users: everyone's oldest item first, so one user's backlog does not
+-- fill the batch.
+SELECT s.* FROM saved_items s
+JOIN (
+    SELECT id, row_number() OVER (PARTITION BY user_id ORDER BY created_at) AS rn
+    FROM saved_items WHERE status = 'pending'
+) r ON r.id = s.id
+ORDER BY r.rn, s.created_at
+LIMIT $1;
+
+-- name: CountUnfinishedSavedItems :one
+SELECT count(*) FROM saved_items WHERE user_id = $1 AND status IN ('pending', 'processing');
 
 -- name: ResetStaleSavedItems :execrows
 UPDATE saved_items SET

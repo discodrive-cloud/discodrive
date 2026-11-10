@@ -1956,6 +1956,9 @@ func (s *FileService) EnsureDirByPath(ctx context.Context, userID, relPath strin
 // DeleteByPath soft-deletes a node by user-relative path (idempotent).
 func (s *FileService) DeleteByPath(ctx context.Context, userID, relPath string) error {
 	rel := strings.Trim(filepath.ToSlash(relPath), "/")
+	if rel == "" {
+		return ErrNotFound // the user's root is not a node and is never deleted by path
+	}
 	uid, err := db.ParseUUID(userID)
 	if err != nil {
 		return ErrNotFound

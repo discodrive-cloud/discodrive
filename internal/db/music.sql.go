@@ -1572,6 +1572,20 @@ func (q *Queries) EnabledMusicUsers(ctx context.Context) ([]EnabledMusicUsersRow
 	return items, nil
 }
 
+const failInterruptedEpisodeDownloads = `-- name: FailInterruptedEpisodeDownloads :execrows
+UPDATE podcast_episodes SET status = 'error' WHERE status = 'downloading'
+`
+
+// At start no download is running, so every 'downloading' mark is left over from the
+// previous process. 'error' lets the episode be claimed again.
+func (q *Queries) FailInterruptedEpisodeDownloads(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, failInterruptedEpisodeDownloads)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getAlbumWithArtist = `-- name: GetAlbumWithArtist :one
 SELECT al.id, al.user_id, al.artist_id, al.name, al.year, al.genre,
        al.cover_art, al.song_count, al.created_at, al.musicbrainz_id,

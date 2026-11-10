@@ -100,7 +100,8 @@ function selectNode(node: TreeNode) {
 
     <!-- Right pane -->
     <section class="min-w-0 flex-1 overflow-auto p-4">
-      <MusicTagForm v-if="selected" :node="selected" />
+      <!-- key: a fresh form per track, so a slow answer for the previous track cannot fill this one -->
+      <MusicTagForm v-if="selected" :key="selected.id" :node="selected" />
       <div v-else class="flex h-full items-center justify-center">
         <p class="text-sm text-muted">{{ t('music.pick_hint') }}</p>
       </div>

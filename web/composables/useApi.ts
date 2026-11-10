@@ -47,6 +47,7 @@ export function setSession(s: Session, persist = true) {
     resetPlayerSession()
     lockVault()
     lockHiddenPhotos()
+    resetUploads()
   }
   sess.value = s
   if (persist && import.meta.client) localStorage.setItem('kf_session', JSON.stringify(s))
@@ -56,6 +57,7 @@ export function clearSession(persist = true) {
   resetPlayerSession() // stop playback everywhere and drop the persisted queue
   lockVault() // vault keys and decrypted names must not survive a logout
   lockHiddenPhotos() // nor the unlock of the gallery's Hidden part
+  resetUploads() // nor the upload queue: its files belong to the account that queued them
   setSession({ token: '', role: '', email: '' }, persist)
 }
 
