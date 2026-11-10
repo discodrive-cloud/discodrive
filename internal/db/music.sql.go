@@ -1166,6 +1166,64 @@ func (q *Queries) AccessibleSongsByArtist(ctx context.Context, arg AccessibleSon
 	return items, nil
 }
 
+const accessibleSongsByIDs = `-- name: AccessibleSongsByIDs :many
+WITH RECURSIVE shared_subtree AS (
+    SELECT resource_id AS node_id FROM resource_shares
+    WHERE resource_type = 'file_node' AND shared_with_user = $2::uuid
+      AND (expires_at IS NULL OR expires_at > now())
+    UNION
+    SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
+)
+SELECT s.id, s.user_id, s.album_id, s.artist_id, s.node_id, s.title, s.track, s.disc, s.duration, s.bitrate, s.suffix, s.content_type, s.size, s.genre, s.musicbrainz_id, s.created_at, s.updated_at FROM songs s
+WHERE s.id = ANY($1::uuid[])
+  AND (s.user_id = $2::uuid OR s.node_id IN (SELECT node_id FROM shared_subtree))
+`
+
+type AccessibleSongsByIDsParams struct {
+	Ids    []pgtype.UUID `json:"ids"`
+	UserID pgtype.UUID   `json:"user_id"`
+}
+
+// AccessibleSong for several ids at once (a list of bookmarks): the songs among ids
+// that the user may read.
+func (q *Queries) AccessibleSongsByIDs(ctx context.Context, arg AccessibleSongsByIDsParams) ([]Song, error) {
+	rows, err := q.db.Query(ctx, accessibleSongsByIDs, arg.Ids, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Song{}
+	for rows.Next() {
+		var i Song
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.AlbumID,
+			&i.ArtistID,
+			&i.NodeID,
+			&i.Title,
+			&i.Track,
+			&i.Disc,
+			&i.Duration,
+			&i.Bitrate,
+			&i.Suffix,
+			&i.ContentType,
+			&i.Size,
+			&i.Genre,
+			&i.MusicbrainzID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const addPlayQueueEntry = `-- name: AddPlayQueueEntry :exec
 INSERT INTO play_queue_entries (user_id, idx, song_id) VALUES ($1, $2, $3)
 `
@@ -1750,6 +1808,50 @@ func (q *Queries) GetEpisodeForUser(ctx context.Context, arg GetEpisodeForUserPa
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const getEpisodesForUser = `-- name: GetEpisodesForUser :many
+SELECT id, channel_id, user_id, title, description, pub_date, audio_url, duration, suffix, content_type, size, status, disk_path, created_at FROM podcast_episodes WHERE user_id = $1 AND id = ANY($2::uuid[])
+`
+
+type GetEpisodesForUserParams struct {
+	UserID pgtype.UUID   `json:"user_id"`
+	Ids    []pgtype.UUID `json:"ids"`
+}
+
+func (q *Queries) GetEpisodesForUser(ctx context.Context, arg GetEpisodesForUserParams) ([]PodcastEpisode, error) {
+	rows, err := q.db.Query(ctx, getEpisodesForUser, arg.UserID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PodcastEpisode{}
+	for rows.Next() {
+		var i PodcastEpisode
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChannelID,
+			&i.UserID,
+			&i.Title,
+			&i.Description,
+			&i.PubDate,
+			&i.AudioUrl,
+			&i.Duration,
+			&i.Suffix,
+			&i.ContentType,
+			&i.Size,
+			&i.Status,
+			&i.DiskPath,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getMusicSettings = `-- name: GetMusicSettings :one

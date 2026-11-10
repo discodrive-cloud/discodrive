@@ -182,6 +182,20 @@ WHERE s.id = $2
   AND (s.user_id = $1 OR s.node_id IN (SELECT node_id FROM shared_subtree))
 LIMIT 1;
 
+-- name: AccessibleSongsByIDs :many
+-- AccessibleSong for several ids at once (a list of bookmarks): the songs among ids
+-- that the user may read.
+WITH RECURSIVE shared_subtree AS (
+    SELECT resource_id AS node_id FROM resource_shares
+    WHERE resource_type = 'file_node' AND shared_with_user = sqlc.arg(user_id)::uuid
+      AND (expires_at IS NULL OR expires_at > now())
+    UNION
+    SELECT n.id FROM nodes n JOIN shared_subtree st ON n.parent_id = st.node_id
+)
+SELECT s.* FROM songs s
+WHERE s.id = ANY(sqlc.arg(ids)::uuid[])
+  AND (s.user_id = sqlc.arg(user_id)::uuid OR s.node_id IN (SELECT node_id FROM shared_subtree));
+
 -- name: CountAccessibleAlbumsByArtist :one
 -- Returns the count of accessible albums for a given artist.
 WITH RECURSIVE shared_subtree AS (
@@ -905,6 +919,9 @@ LIMIT $2;
 
 -- name: GetEpisodeForUser :one
 SELECT * FROM podcast_episodes WHERE id = $1 AND user_id = $2;
+
+-- name: GetEpisodesForUser :many
+SELECT * FROM podcast_episodes WHERE user_id = sqlc.arg(user_id) AND id = ANY(sqlc.arg(ids)::uuid[]);
 
 -- name: SetEpisodeStatus :exec
 UPDATE podcast_episodes SET status = $2 WHERE id = $1 AND user_id = $3;

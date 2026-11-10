@@ -6,6 +6,7 @@ package worker
 
 import (
 	"context"
+	"discodrive/internal/coverthumb"
 	"fmt"
 	"log"
 	"runtime/debug"
@@ -117,6 +118,15 @@ func (w *Worker) Run(ctx context.Context) {
 	})
 	go w.tick(ctx, w.cfg.TrashInterval, "trash-gc", func(ctx context.Context) error {
 		return w.fs.TrashGC(ctx, w.cfg.TrashRetention)
+	})
+	// Cover thumbnails nobody has asked for in two months (deleted albums, replaced
+	// covers) are taken off the disk.
+	go w.tick(ctx, 24*time.Hour, "cover-thumbs-sweep", func(context.Context) error {
+		n, err := coverthumb.Sweep(w.root, 60*24*time.Hour)
+		if n > 0 {
+			log.Printf("discodrive: removed %d unused cover thumbnails", n)
+		}
+		return err
 	})
 	if w.cfg.FileUsageFoldInterval > 0 {
 		go w.tick(ctx, w.cfg.FileUsageFoldInterval, "file-usage-fold", w.foldFileUsage)

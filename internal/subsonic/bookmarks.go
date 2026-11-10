@@ -2,6 +2,7 @@ package subsonic
 
 import (
 	"context"
+	"github.com/jackc/pgx/v5/pgtype"
 	"strconv"
 	"time"
 
@@ -156,6 +157,42 @@ func getBookmarks(h *Handler, c *reqCtx) {
 
 	marks := h.loadMarks(ctx, c.userID)
 
+	// The items the bookmarks point at, read together: a song and its album used to cost
+	// two queries a bookmark, an episode one.
+	var songIDs, episodeIDs []pgtype.UUID
+	for _, bm := range rows {
+		switch bm.ItemType {
+		case "song":
+			songIDs = append(songIDs, bm.ItemID)
+		case "episode":
+			episodeIDs = append(episodeIDs, bm.ItemID)
+		}
+	}
+	songs := map[pgtype.UUID]db.Song{}
+	var albums map[pgtype.UUID]db.AlbumsWithArtistRow
+	if len(songIDs) > 0 {
+		list, err := h.q.AccessibleSongsByIDs(ctx, db.AccessibleSongsByIDsParams{UserID: userUUID, Ids: songIDs})
+		if err != nil {
+			c.fail(ErrGeneric, "database error")
+			return
+		}
+		for _, s := range list {
+			songs[s.ID] = s
+		}
+		albums = h.albumsOf(ctx, list)
+	}
+	episodes := map[pgtype.UUID]db.PodcastEpisode{}
+	if len(episodeIDs) > 0 {
+		list, err := h.q.GetEpisodesForUser(ctx, db.GetEpisodesForUserParams{UserID: userUUID, Ids: episodeIDs})
+		if err != nil {
+			c.fail(ErrGeneric, "database error")
+			return
+		}
+		for _, e := range list {
+			episodes[e.ID] = e
+		}
+	}
+
 	bookmarks := make([]any, 0, len(rows))
 	for _, bm := range rows {
 		uuidStr := db.UUIDString(bm.ItemID)
@@ -163,26 +200,20 @@ func getBookmarks(h *Handler, c *reqCtx) {
 		var entry map[string]any
 		switch bm.ItemType {
 		case "song":
-			song, err := h.q.AccessibleSong(ctx, db.AccessibleSongParams{
-				UserID: userUUID,
-				ID:     bm.ItemID,
-			})
-			if err != nil {
+			song, found := songs[bm.ItemID]
+			if !found {
 				// Item gone or no longer accessible: skip this bookmark.
 				continue
 			}
-			album, err := h.q.GetAlbumWithArtist(ctx, song.AlbumID)
-			if err != nil {
+			album, found := albums[song.AlbumID]
+			if !found {
 				continue
 			}
 			entry = buildSongChild(song, album.Name, album.ArtistName, album.Year,
 				marks.starredAt("song", uuidStr), marks.ratingOf("song", uuidStr))
 		case "episode":
-			ep, err := h.q.GetEpisodeForUser(ctx, db.GetEpisodeForUserParams{
-				ID:     bm.ItemID,
-				UserID: userUUID,
-			})
-			if err != nil {
+			ep, found := episodes[bm.ItemID]
+			if !found {
 				continue
 			}
 			entry = episodeChild(ep)

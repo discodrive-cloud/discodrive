@@ -7,10 +7,13 @@ import (
 	"bytes"
 	"image"
 	"io"
+	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"discodrive/internal/links"
 	"discodrive/internal/storage"
@@ -68,7 +71,7 @@ func Get(root, key string, side int, original func() ([]byte, bool)) (thumb []by
 	}
 	disk := storage.NewLocalDisk(root)
 	rel := path.Join(".covers", "thumbs", key[:2], key+"-"+strconv.Itoa(side)+".jpg")
-	if thumb, ok := cached(disk, rel); ok {
+	if thumb, ok := cached(disk, root, rel); ok {
 		return thumb, true
 	}
 	if waiting.Add(1) > maxWaiting {
@@ -79,7 +82,7 @@ func Get(root, key string, side int, original func() ([]byte, bool)) (thumb []by
 	waiting.Add(-1)
 	defer making.Unlock()
 	// Whoever held the slot before may have made this very thumbnail.
-	if thumb, ok := cached(disk, rel); ok {
+	if thumb, ok := cached(disk, root, rel); ok {
 		return thumb, true
 	}
 	data, has := original()
@@ -98,14 +101,60 @@ func Get(root, key string, side int, original func() ([]byte, bool)) (thumb []by
 	return thumb, true
 }
 
-func cached(disk *storage.LocalDisk, rel string) ([]byte, bool) {
+// touchAfter is how stale a thumbnail's date may get before a use refreshes it. The date
+// is what Sweep goes by; refreshing it at most once a day keeps reads from writing.
+const touchAfter = 24 * time.Hour
+
+func cached(disk *storage.LocalDisk, root, rel string) ([]byte, bool) {
 	f, err := disk.Open(rel)
 	if err != nil {
 		return nil, false
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, maxCached))
-	return data, err == nil && len(data) > 0
+	if err != nil || len(data) == 0 {
+		return nil, false
+	}
+	if fi, err := f.Stat(); err == nil && time.Since(fi.ModTime()) > touchAfter {
+		now := time.Now()
+		_ = os.Chtimes(filepath.Join(root, filepath.FromSlash(rel)), now, now)
+	}
+	return data, true
+}
+
+// Sweep removes the thumbnails that were neither made nor used within maxAge and reports
+// how many. A thumbnail is named by the content of its picture, so the ones of deleted
+// albums and replaced covers are simply never asked for again; one removed while still
+// wanted is made again on the next request.
+func Sweep(root string, maxAge time.Duration) (removed int, err error) {
+	dir := filepath.Join(root, ".covers", "thumbs")
+	shards, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, shard := range shards {
+		if !shard.IsDir() {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(dir, shard.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			fi, err := f.Info()
+			if err != nil || !fi.Mode().IsRegular() || fi.ModTime().After(cutoff) {
+				continue
+			}
+			if os.Remove(filepath.Join(dir, shard.Name(), f.Name())) == nil {
+				removed++
+			}
+		}
+	}
+	return removed, nil
 }
 
 func validKey(key string) bool {

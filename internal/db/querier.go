@@ -71,6 +71,9 @@ type Querier interface {
 	AccessibleSongsByAlbum(ctx context.Context, arg AccessibleSongsByAlbumParams) ([]Song, error)
 	// Returns accessible songs for a given artist ordered by title, with album/artist names.
 	AccessibleSongsByArtist(ctx context.Context, arg AccessibleSongsByArtistParams) ([]AccessibleSongsByArtistRow, error)
+	// AccessibleSong for several ids at once (a list of bookmarks): the songs among ids
+	// that the user may read.
+	AccessibleSongsByIDs(ctx context.Context, arg AccessibleSongsByIDsParams) ([]Song, error)
 	AddDupDismissed(ctx context.Context, arg AddDupDismissedParams) error
 	AddPhotoAlbumItems(ctx context.Context, arg AddPhotoAlbumItemsParams) (int64, error)
 	AddPhotoAlbumMember(ctx context.Context, arg AddPhotoAlbumMemberParams) error
@@ -306,6 +309,7 @@ type Querier interface {
 	GetEbookSettings(ctx context.Context, userID pgtype.UUID) (EbookSetting, error)
 	GetEbookSettingsByApiKey(ctx context.Context, apiKey pgtype.Text) (EbookSetting, error)
 	GetEpisodeForUser(ctx context.Context, arg GetEpisodeForUserParams) (PodcastEpisode, error)
+	GetEpisodesForUser(ctx context.Context, arg GetEpisodesForUserParams) ([]PodcastEpisode, error)
 	GetFileVersion(ctx context.Context, arg GetFileVersionParams) (FileVersion, error)
 	GetLiveNodeByPath(ctx context.Context, arg GetLiveNodeByPathParams) (Node, error)
 	GetMusicSettings(ctx context.Context, userID pgtype.UUID) (MusicSetting, error)

@@ -7,6 +7,8 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -177,4 +179,45 @@ func TestGetDoesNotQueueWithoutBound(t *testing.T) {
 	}
 	close(release)
 	wg.Wait()
+}
+
+// Thumbnails of covers nobody asks for any more (the album was deleted, its cover
+// replaced) are taken off the disk; the ones in use stay, however long ago they were made.
+func TestSweepRemovesThumbnailsNobodyAsksFor(t *testing.T) {
+	root := t.TempDir()
+	data := picture(t, 600, 600)
+	used, unused := key, strings.Repeat("cd", 32)
+	for _, k := range []string{used, unused} {
+		if _, ok := Get(root, k, 320, func() ([]byte, bool) { return data, true }); !ok {
+			t.Fatal("no thumbnail")
+		}
+	}
+	file := func(k string) string {
+		return filepath.Join(root, ".covers", "thumbs", k[:2], k+"-320.jpg")
+	}
+	// Both were made three months ago.
+	old := time.Now().Add(-90 * 24 * time.Hour)
+	for _, k := range []string{used, unused} {
+		if err := os.Chtimes(file(k), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One of them is still being shown.
+	if _, ok := Get(root, used, 320, func() ([]byte, bool) { t.Error("the original was read"); return nil, false }); !ok {
+		t.Fatal("no thumbnail from the cache")
+	}
+	removed, err := Sweep(root, 60*24*time.Hour)
+	if err != nil || removed != 1 {
+		t.Fatalf("swept %d thumbnails (err %v), want the one unused", removed, err)
+	}
+	if _, err := os.Stat(file(used)); err != nil {
+		t.Errorf("a thumbnail in use was removed: %v", err)
+	}
+	if _, err := os.Stat(file(unused)); !os.IsNotExist(err) {
+		t.Errorf("the unused thumbnail is still there (stat: %v)", err)
+	}
+	// No cache at all is not an error.
+	if n, err := Sweep(t.TempDir(), time.Hour); err != nil || n != 0 {
+		t.Errorf("sweeping a server without thumbnails: %d, %v", n, err)
+	}
 }
