@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -22,6 +23,34 @@ type Reservation struct {
 	ctx  context.Context
 	key  int64
 	Row  db.UploadReservation
+	// slot is set while the reservation counts against its user's share of the slots.
+	slot bool
+}
+
+// heldBy counts the upload slots each user holds. The slots are few and shared; one user
+// may hold at most half of them, so that uploads left open by one account (several tabs
+// on a slow link, or deliberately) cannot shut everyone else out.
+var heldBy = struct {
+	mu sync.Mutex
+	n  map[pgtype.UUID]int
+}{n: make(map[pgtype.UUID]int)}
+
+func takeUserSlot(user pgtype.UUID, limit int) bool {
+	heldBy.mu.Lock()
+	defer heldBy.mu.Unlock()
+	if heldBy.n[user] >= limit {
+		return false
+	}
+	heldBy.n[user]++
+	return true
+}
+
+func giveUserSlot(user pgtype.UUID) {
+	heldBy.mu.Lock()
+	defer heldBy.mu.Unlock()
+	if heldBy.n[user]--; heldBy.n[user] <= 0 {
+		delete(heldBy.n, user)
+	}
 }
 
 func (c *Checker) CreateReservation(ctx context.Context, id string, user pgtype.UUID) error {
@@ -59,9 +88,18 @@ func (c *Checker) LockReservation(ctx context.Context, id string) (*Reservation,
 		r.Close()
 		return nil, ErrReservation
 	}
+	if !takeUserSlot(r.Row.UserID, max(1, c.q.UploadSlots()/2)) {
+		r.Close()
+		return nil, db.ErrUploadConnectionsBusy
+	}
+	r.slot = true
 	return r, nil
 }
 func (r *Reservation) Close() {
+	if r.slot {
+		r.slot = false
+		giveUserSlot(r.Row.UserID)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var unlocked bool

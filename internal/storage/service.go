@@ -334,6 +334,9 @@ func (s *FileService) renameOnce(ctx context.Context, userID, nodeID, newName st
 	}
 	// Disk last, undone if the commit fails: a failed (retried) statement never leaves
 	// the bytes at a path the database does not have.
+	if err := s.setAsideStrayFor(oldRel, newRel); err != nil {
+		return db.Node{}, err
+	}
 	if err := s.st.Move(oldRel, newRel); err != nil {
 		return db.Node{}, err
 	}
@@ -436,6 +439,9 @@ func (s *FileService) moveOnce(ctx context.Context, userID, nodeID string, paren
 		return db.Node{}, err
 	}
 	// Disk last, undone if the commit fails.
+	if err := s.setAsideStrayFor(oldRel, newRel); err != nil {
+		return db.Node{}, err
+	}
 	if err := s.st.Move(oldRel, newRel); err != nil {
 		return db.Node{}, err
 	}
@@ -560,6 +566,11 @@ func (s *FileService) relocateOnce(ctx context.Context, userID, nodeID string, p
 		if victimMoved {
 			_ = s.st.Move(trash, newRel)
 		}
+	}
+	// What is still at newRel now is not the replaced node's: unknown to the database.
+	if err := s.setAsideStrayFor(oldRel, newRel); err != nil {
+		undoVictim()
+		return db.Node{}, err
 	}
 	if err := s.st.Move(oldRel, newRel); err != nil {
 		undoVictim()
@@ -1042,6 +1053,16 @@ func (s *FileService) commitReplacing(ctx context.Context, tx pgx.Tx, src, dst, 
 		return err
 	}
 	return nil
+}
+
+// setAsideStrayFor is setAsideStray(newRel) for bytes about to move there from oldRel. A
+// change of letter case only is left alone: on a case-insensitive disk the "other" file
+// at newRel is the very one being renamed.
+func (s *FileService) setAsideStrayFor(oldRel, newRel string) error {
+	if strings.EqualFold(oldRel, newRel) {
+		return nil
+	}
+	return s.setAsideStray(newRel)
 }
 
 // setAsideStray renames a file found at rel, where the database has none, to a free
@@ -1783,6 +1804,11 @@ func (s *FileService) undeleteOnce(ctx context.Context, userID, nodeID string) (
 	// are gone (rescan found the file missing before it was trashed) restore nothing.
 	moved := false
 	if src != newRel {
+		if there, xerr := s.st.Exists(src); xerr == nil && there { // nothing to restore replaces nothing
+			if err := s.setAsideStrayFor(src, newRel); err != nil {
+				return db.Node{}, err
+			}
+		}
 		var derr error
 		if copyOld {
 			derr = s.st.Copy(src, newRel)

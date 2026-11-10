@@ -43,6 +43,12 @@ func MakeThumb(r io.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return MakeThumbSide(data, thumbSide)
+}
+
+// MakeThumbSide is MakeThumb for bytes already in hand and a chosen longest side; the
+// same limits and the same re-encoding apply. Cover thumbnails are made with it.
+func MakeThumbSide(data []byte, thumbSide int) ([]byte, error) {
 	if len(data) > maxImageBytes {
 		return nil, ErrImageTooLarge
 	}

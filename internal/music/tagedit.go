@@ -283,8 +283,14 @@ func (e *TagEditor) Write(ctx context.Context, userID, nodeID string, t tagwrite
 		return ErrReadOnlyFormat
 	}
 
-	// Copy the live file to a temp path so a failed Apply never corrupts it.
-	tmp, err := os.CreateTemp("", "tagedit-*."+ext)
+	// Copy the live file to a temp path so a failed Apply never corrupts it. The copy
+	// lives in the storage's own staging directory: an album of large FLACs must not
+	// need room on the system disk, which can be far smaller than the data disk.
+	tmpDir := filepath.Join(e.storageRoot, ".tmp")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(tmpDir, "tagedit-*."+ext)
 	if err != nil {
 		return err
 	}

@@ -108,8 +108,9 @@ func getPlaylist(h *Handler, c *reqCtx) {
 
 	marks := h.loadMarks(ctx, c.userID)
 	entries := make([]map[string]any, 0, len(songs))
+	albums := h.albumsOf(ctx, songs)
 	for _, s := range songs {
-		alb, _ := h.q.GetAlbumWithArtist(ctx, s.AlbumID)
+		alb := albums[s.AlbumID]
 		sUUID := db.UUIDString(s.ID)
 		entries = append(entries, buildSongChild(s, alb.Name, alb.ArtistName, alb.Year,
 			marks.starredAt("song", sUUID), marks.ratingOf("song", sUUID)))
@@ -352,8 +353,9 @@ func servePlaylist(ctx context.Context, h *Handler, c *reqCtx, p db.Playlist) {
 	songs, _ := h.q.GetPlaylistSongs(ctx, p.ID)
 	marks := h.loadMarks(ctx, c.userID)
 	entries := make([]map[string]any, 0, len(songs))
+	albums := h.albumsOf(ctx, songs)
 	for _, s := range songs {
-		alb, _ := h.q.GetAlbumWithArtist(ctx, s.AlbumID)
+		alb := albums[s.AlbumID]
 		sUUID := db.UUIDString(s.ID)
 		entries = append(entries, buildSongChild(s, alb.Name, alb.ArtistName, alb.Year,
 			marks.starredAt("song", sUUID), marks.ratingOf("song", sUUID)))

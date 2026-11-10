@@ -134,6 +134,9 @@ func TestTagEditor_WriteReindexesSong(t *testing.T) {
 
 	// 5. Write the new title via TagEditor.
 	ed := NewTagEditor(q, fs, root)
+	// The working copy is made on the data disk, not in the system temp directory: with
+	// that one unusable the edit still goes through.
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
 	err = ed.Write(ctx, userID, nodeID,
 		tagwrite.Tags{Title: sp("Edited")},
 		tagwrite.CoverKeep,

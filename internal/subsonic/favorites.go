@@ -192,8 +192,9 @@ func buildStarredPayload(ctx context.Context, h *Handler, userUUID pgtype.UUID, 
 
 	starredSongs, _ := h.q.ListStarredSongs(ctx, userUUID)
 	songChildren := make([]map[string]any, 0, len(starredSongs))
+	albums := h.albumsOf(ctx, starredSongs)
 	for _, s := range starredSongs {
-		alb, _ := h.q.GetAlbumWithArtist(ctx, s.AlbumID)
+		alb := albums[s.AlbumID]
 		sUUID := db.UUIDString(s.ID)
 		songChildren = append(songChildren, buildSongChild(s, alb.Name, alb.ArtistName, alb.Year,
 			marks.starredAt("song", sUUID), marks.ratingOf("song", sUUID)))

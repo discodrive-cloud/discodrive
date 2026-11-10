@@ -211,6 +211,13 @@ JOIN songs s ON s.album_id = al.id
 WHERE s.user_id = $1 OR s.node_id IN (SELECT node_id FROM shared_subtree)
 GROUP BY al.artist_id;
 
+-- name: AlbumsWithArtist :many
+-- GetAlbumWithArtist for the albums of a whole song list (a playlist, the starred songs).
+SELECT al.id, al.name, al.year, ar.name AS artist_name
+FROM albums al
+JOIN artists ar ON ar.id = al.artist_id
+WHERE al.id = ANY(sqlc.arg(ids)::uuid[]);
+
 -- name: GetAlbumWithArtist :one
 -- Returns album plus artist name in one query for songChild assembly.
 SELECT al.id, al.user_id, al.artist_id, al.name, al.year, al.genre,

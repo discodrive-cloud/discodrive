@@ -446,3 +446,73 @@ func TestGroup_SkewedHashesStayWithinMemory(t *testing.T) {
 		t.Fatalf("grouping 3000 undated cards with a shared hash chunk allocated %d MiB", mb)
 	}
 }
+
+// The index of undated cards must find exactly the pairs a comparison of every card with
+// every other finds — also when most hashes share a chunk and near-duplicates differ in
+// any one or two bits.
+func TestDupEdges_CrowdedBucketsMatchBruteForce(t *testing.T) {
+	r := rand.New(rand.NewSource(11))
+	var c []DupCandidate
+	add := func(h uint64, filed bool) {
+		var id pgtype.UUID
+		r.Read(id.Bytes[:])
+		id.Valid = true
+		c = append(c, DupCandidate{
+			ID: id, Key: fmt.Sprint(len(c)), Kind: "photo", TakenAt: dupBase.Add(time.Duration(len(c)) * 100 * time.Hour),
+			FileDated: filed, ExifDated: !filed, W: 1170, H: 2532, Hash: h, Name: "IMG.png", Bytes: 1000, IndexedAt: dupBase,
+		})
+	}
+	for i := 0; i < 600; i++ {
+		h := r.Uint64()
+		switch i % 3 { // each third shares one of the three chunks
+		case 0:
+			h &^= 1<<21 - 1
+		case 1:
+			h &^= (1<<21 - 1) << 21
+		case 2:
+			h &^= (1<<22 - 1) << 42
+		}
+		add(h, i%4 != 0)
+		for n := 0; n < i%4; n++ { // copies up to three bits away, anywhere in the hash
+			near := h
+			for b := 0; b <= n; b++ {
+				near ^= 1 << uint(r.Intn(64))
+			}
+			add(near, n%2 == 0)
+		}
+	}
+
+	p := DefaultDupParams
+	want := map[[2]int]bool{}
+	for i := range c {
+		for j := i + 1; j < len(c); j++ {
+			if IsDupWith(p, c[i], c[j]) {
+				want[[2]int{i, j}] = true
+			}
+		}
+	}
+	got := map[[2]int]int{}
+	for i, js := range dupEdges(p, c) {
+		for _, j := range js {
+			if i < j {
+				got[[2]int{i, j}]++
+			}
+		}
+	}
+	if len(want) < 100 {
+		t.Fatalf("the fixture has only %d duplicate pairs", len(want))
+	}
+	for k := range want {
+		if got[k] == 0 {
+			t.Errorf("pair %v (hashes %016x, %016x) was not found", k, c[k[0]].Hash, c[k[1]].Hash)
+		}
+	}
+	for k, n := range got {
+		if !want[k] {
+			t.Errorf("pair %v is not a duplicate", k)
+		}
+		if n != 1 {
+			t.Errorf("pair %v was added %d times", k, n)
+		}
+	}
+}

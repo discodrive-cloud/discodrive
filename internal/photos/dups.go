@@ -314,17 +314,69 @@ func dupEdges(p DupParams, c []DupCandidate) [][]int {
 				index[s] = append(index[s], i)
 			}
 		}
+		// A bucket of real hashes can hold thousands of cards (see above); scanning it for
+		// every card dated from its file is quadratic. A pair within MaxDistUntimed bits
+		// that agrees on chunk k has all its differing bits in the rest of the hash, so the
+		// rest, split into MaxDistUntimed+1 parts, agrees on one of them too: a crowded
+		// bucket is searched through that second index, built when first needed.
+		type part struct {
+			n int
+			v uint64
+		}
+		crowded := map[slot]map[part][]int{}
+		parts := func(s slot, bucket []int) map[part][]int {
+			sub, ok := crowded[s]
+			if !ok {
+				sub = make(map[part][]int, len(bucket))
+				for _, j := range bucket {
+					rest, width := hashWithout(c[j].Hash, s.chunk, chunks)
+					for n := 0; n < chunks; n++ {
+						key := part{n, bitsChunk(rest, width, n, chunks)}
+						sub[key] = append(sub[key], j)
+					}
+				}
+				crowded[s] = sub
+			}
+			return sub
+		}
 		for _, i := range filed {
 			for k := 0; k < chunks; k++ {
-			bucket:
-				for _, j := range index[slot{k, hashChunk(c[i].Hash, k, chunks)}] {
-					// A pair sharing several chunks is taken from the first of them.
+				s := slot{k, hashChunk(c[i].Hash, k, chunks)}
+				// A pair sharing several chunks is taken from the first of them.
+				earlier := func(j int) bool {
 					for e := 0; e < k; e++ {
 						if hashChunk(c[i].Hash, e, chunks) == hashChunk(c[j].Hash, e, chunks) {
-							continue bucket
+							return true
 						}
 					}
-					try(i, j)
+					return false
+				}
+				bucket := index[s]
+				if len(bucket) <= crowdedBucket {
+					for _, j := range bucket {
+						if !earlier(j) {
+							try(i, j)
+						}
+					}
+					continue
+				}
+				sub := parts(s, bucket)
+				rest, width := hashWithout(c[i].Hash, k, chunks)
+				for n := 0; n < chunks; n++ {
+				candidates:
+					for _, j := range sub[part{n, bitsChunk(rest, width, n, chunks)}] {
+						if earlier(j) {
+							continue
+						}
+						// ...and, within the bucket, from the first part they share.
+						other, _ := hashWithout(c[j].Hash, k, chunks)
+						for m := 0; m < n; m++ {
+							if bitsChunk(rest, width, m, chunks) == bitsChunk(other, width, m, chunks) {
+								continue candidates
+							}
+						}
+						try(i, j)
+					}
 				}
 			}
 		}
@@ -332,12 +384,35 @@ func dupEdges(p DupParams, c []DupCandidate) [][]int {
 	return adj
 }
 
+// crowdedBucket is the bucket size from which the second index is used.
+const crowdedBucket = 64
+
 // hashChunk is chunk k of n roughly equal runs of bits of h.
 func hashChunk(h uint64, k, n int) uint64 {
-	lo, hi := k*64/n, (k+1)*64/n
+	return bitsChunk(h, 64, k, n)
+}
+
+// bitsChunk is chunk k of n roughly equal runs of the low width bits of h.
+func bitsChunk(h uint64, width, k, n int) uint64 {
+	lo, hi := k*width/n, (k+1)*width/n
 	w := uint(hi - lo)
 	if w >= 64 {
 		return h
 	}
 	return (h >> uint(lo)) & (uint64(1)<<w - 1)
+}
+
+// hashWithout is h with chunk k of n cut out and the bits above it moved down, and the
+// number of bits left.
+func hashWithout(h uint64, k, n int) (rest uint64, width int) {
+	lo, hi := k*64/n, (k+1)*64/n
+	if hi-lo >= 64 {
+		return 0, 0
+	}
+	low := h & (uint64(1)<<uint(lo) - 1)
+	var high uint64
+	if hi < 64 {
+		high = (h >> uint(hi)) << uint(lo)
+	}
+	return low | high, 64 - (hi - lo)
 }

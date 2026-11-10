@@ -453,3 +453,23 @@ func (h *Handler) albumCounts(ctx context.Context, userID pgtype.UUID) map[pgtyp
 	}
 	return out
 }
+
+// albumsOf returns the albums (with artist names) of a list of songs in one query. A
+// failed read gives an empty map: the songs then show without album and artist, as a
+// failed per-song lookup did.
+func (h *Handler) albumsOf(ctx context.Context, songs []db.Song) map[pgtype.UUID]db.AlbumsWithArtistRow {
+	seen := make(map[pgtype.UUID]bool, len(songs))
+	ids := make([]pgtype.UUID, 0, len(songs))
+	for _, s := range songs {
+		if !seen[s.AlbumID] {
+			seen[s.AlbumID] = true
+			ids = append(ids, s.AlbumID)
+		}
+	}
+	rows, _ := h.q.AlbumsWithArtist(ctx, ids)
+	out := make(map[pgtype.UUID]db.AlbumsWithArtistRow, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r
+	}
+	return out
+}

@@ -3,13 +3,17 @@ package subsonic
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"discodrive/internal/coverthumb"
 	"discodrive/internal/db"
 	"discodrive/internal/music"
+	"discodrive/internal/storage"
 )
 
 func init() {
@@ -64,6 +68,9 @@ func mimeByExt(path string) string {
 		return "image/jpeg"
 	}
 }
+
+// maxCoverSource bounds a cover file read for thumbnailing; a larger one is served whole.
+const maxCoverSource = 8 << 20
 
 // getCoverArt implements the Subsonic getCoverArt endpoint.
 //
@@ -184,6 +191,37 @@ func getCoverArt(h *Handler, c *reqCtx) {
 			http.Error(c.w, "no cover", http.StatusNotFound)
 			return
 		}
+	}
+
+	// A size was asked for (album grids do): a cached thumbnail of one of the kept sizes,
+	// made once per picture. Anything that cannot be thumbnailed falls through to the
+	// full picture below, as before.
+	if size, _ := strconv.Atoi(c.param("size")); coverthumb.Side(size) != 0 && node.ContentHash.Valid {
+		side := coverthumb.Side(size)
+		if music.CoverUnchanged(c.w, c.r, node.ContentHash.String+"-"+strconv.Itoa(side)) {
+			return
+		}
+		thumb, ok := coverthumb.Get(h.storageRoot, node.ContentHash.String, side, func() ([]byte, bool) {
+			if !isImageNode(node) {
+				data, _, ok := music.EmbeddedStoredCover(h.storageRoot, filepath.Join(h.storageRoot, node.DiskPath.String))
+				return data, ok
+			}
+			f, err := storage.NewLocalDisk(h.storageRoot).Open(node.DiskPath.String)
+			if err != nil {
+				return nil, false
+			}
+			defer f.Close()
+			data, err := io.ReadAll(io.LimitReader(f, maxCoverSource))
+			return data, err == nil
+		})
+		if ok {
+			c.w.Header().Set("X-Content-Type-Options", "nosniff")
+			c.w.Header().Set("Content-Type", "image/jpeg")
+			http.ServeContent(c.w, c.r, "cover.jpg", time.Time{}, bytes.NewReader(thumb))
+			return
+		}
+		c.w.Header().Del("ETag") // it named the thumbnail
+		c.w.Header().Del("Cache-Control")
 	}
 
 	if isImageNode(node) {

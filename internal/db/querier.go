@@ -83,6 +83,8 @@ type Querier interface {
 	// Index: addressbook_objects_vcard_uid (migration 000023).
 	AddressbookObjectWithUID(ctx context.Context, arg AddressbookObjectWithUIDParams) (string, error)
 	AddressbookShareForUser(ctx context.Context, arg AddressbookShareForUserParams) (pgtype.UUID, error)
+	// GetAlbumWithArtist for the albums of a whole song list (a playlist, the starred songs).
+	AlbumsWithArtist(ctx context.Context, ids []pgtype.UUID) ([]AlbumsWithArtistRow, error)
 	AppendChange(ctx context.Context, arg AppendChangeParams) (ChangeLog, error)
 	// A change that moved the node (move/rename): prev_path is its disk_path before.
 	AppendPathChange(ctx context.Context, arg AppendPathChangeParams) error

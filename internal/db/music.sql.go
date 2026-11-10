@@ -1196,6 +1196,46 @@ func (q *Queries) AddPlaylistSong(ctx context.Context, arg AddPlaylistSongParams
 	return err
 }
 
+const albumsWithArtist = `-- name: AlbumsWithArtist :many
+SELECT al.id, al.name, al.year, ar.name AS artist_name
+FROM albums al
+JOIN artists ar ON ar.id = al.artist_id
+WHERE al.id = ANY($1::uuid[])
+`
+
+type AlbumsWithArtistRow struct {
+	ID         pgtype.UUID `json:"id"`
+	Name       string      `json:"name"`
+	Year       pgtype.Int4 `json:"year"`
+	ArtistName string      `json:"artist_name"`
+}
+
+// GetAlbumWithArtist for the albums of a whole song list (a playlist, the starred songs).
+func (q *Queries) AlbumsWithArtist(ctx context.Context, ids []pgtype.UUID) ([]AlbumsWithArtistRow, error) {
+	rows, err := q.db.Query(ctx, albumsWithArtist, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AlbumsWithArtistRow{}
+	for rows.Next() {
+		var i AlbumsWithArtistRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Year,
+			&i.ArtistName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const claimEpisodeForDownload = `-- name: ClaimEpisodeForDownload :execrows
 UPDATE podcast_episodes SET status = 'downloading'
 WHERE id = $1 AND user_id = $2 AND status NOT IN ('downloading','completed')

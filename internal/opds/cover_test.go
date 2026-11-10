@@ -2,6 +2,10 @@ package opds
 
 import (
 	"bytes"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -180,23 +184,46 @@ func TestCoverOwnBookWithCover(t *testing.T) {
 	}
 }
 
-// TestCoverThumbnailSameAsFullCover verifies that the thumbnail endpoint returns
-// the same image bytes as the full cover (v1: no resize).
-func TestCoverThumbnailSameAsFullCover(t *testing.T) {
+// The thumbnail endpoint returns the cover scaled down for a catalog row, not the full
+// picture under another name.
+func TestCoverThumbnailIsScaledDown(t *testing.T) {
 	h := setupOPDSWithCoverStorage(t)
 	bookWithCoverID, _, _ := seedCoverBooks(t, h)
 
-	recFull := opdsGetBasic(h, "/opds/cover/"+bookWithCoverID, testEmail, testPassword)
-	recThumb := opdsGetBasic(h, "/opds/cover/"+bookWithCoverID+"/thumbnail", testEmail, testPassword)
+	// A cover of a realistic size in place of the 1x1 fixture.
+	img := image.NewRGBA(image.Rect(0, 0, 1000, 1500))
+	for y := 0; y < 1500; y++ {
+		for x := 0; x < 1000; x++ {
+			img.Set(x, y, color.RGBA{uint8(x), uint8(y), uint8(x ^ y), 255})
+		}
+	}
+	var full bytes.Buffer
+	if err := png.Encode(&full, img); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.storageRoot, ".covers/ebooks/test-cover.png"), full.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
-	if recFull.Code != http.StatusOK {
-		t.Fatalf("full cover: expected 200, got %d", recFull.Code)
+	recFull := opdsGetBasic(h, "/opds/cover/"+bookWithCoverID, testEmail, testPassword)
+	if recFull.Code != http.StatusOK || !bytes.Equal(recFull.Body.Bytes(), full.Bytes()) {
+		t.Fatalf("full cover: %d, %d bytes (want the %d-byte file)", recFull.Code, recFull.Body.Len(), full.Len())
 	}
-	if recThumb.Code != http.StatusOK {
-		t.Fatalf("thumbnail: expected 200, got %d", recThumb.Code)
-	}
-	if !bytes.Equal(recFull.Body.Bytes(), recThumb.Body.Bytes()) {
-		t.Error("thumbnail body differs from full cover body (v1: must be identical)")
+	for i := 0; i < 2; i++ { // made, then served from the cache
+		rec := opdsGetBasic(h, "/opds/cover/"+bookWithCoverID+"/thumbnail", testEmail, testPassword)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("thumbnail: expected 200, got %d", rec.Code)
+		}
+		cfg, err := jpeg.DecodeConfig(bytes.NewReader(rec.Body.Bytes()))
+		if err != nil {
+			t.Fatalf("thumbnail is not a JPEG: %v", err)
+		}
+		if cfg.Height != 320 || cfg.Width > 320 {
+			t.Errorf("thumbnail is %dx%d, want 320 on the long side", cfg.Width, cfg.Height)
+		}
+		if rec.Body.Len() >= full.Len() {
+			t.Errorf("thumbnail (%d bytes) is not smaller than the cover (%d bytes)", rec.Body.Len(), full.Len())
+		}
 	}
 }
 
