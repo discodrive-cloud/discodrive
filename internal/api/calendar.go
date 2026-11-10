@@ -626,7 +626,17 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 		writeResolveCalError(w, status)
 		return
 	}
-	data, _, err := s.dav.GetCalendarObject(r.Context(), calID, uid)
+	// ?calendar_id= names the calendar the event is in when the form chose another one:
+	// the event is read there, written to the form's calendar and removed from the first.
+	// Without it the form's calendar is where the event lives, as before.
+	srcID := calID
+	if q := r.URL.Query().Get("calendar_id"); q != "" {
+		if srcID, status = s.resolveCal(r, q); status != 0 {
+			writeResolveCalError(w, status)
+			return
+		}
+	}
+	data, _, err := s.dav.GetCalendarObject(r.Context(), srcID, uid)
 	if err == dav.ErrNotFound {
 		writeError(w, http.StatusNotFound, "event not found")
 		return
@@ -652,6 +662,13 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 	if err := s.putCal(r, calID, uid, cal); err != nil {
 		writePutCalError(w, err)
 		return
+	}
+	if srcID != calID {
+		// moved: the copy is in place, now drop the original (as tasks move between lists)
+		if err := s.dav.DeleteCalendarObject(r.Context(), srcID, uid); err != nil && !errors.Is(err, dav.ErrNotFound) {
+			writeError(w, http.StatusInternalServerError, "failed to move")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"uid": uid})
 }

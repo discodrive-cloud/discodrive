@@ -235,7 +235,9 @@ func (s *Service) BeginWebAuthnLogin(ctx context.Context) (options []byte, sessi
 	if s.wa == nil {
 		return nil, "", ErrWebAuthnNotConfigured
 	}
-	assertion, sessionData, err := s.wa.BeginDiscoverableLogin()
+	// This sign-in replaces the password and the second factor, so the authenticator must
+	// verify its holder (PIN or biometrics): possession of a key alone is not enough.
+	assertion, sessionData, err := s.wa.BeginDiscoverableLogin(webauthn.WithUserVerification(protocol.VerificationRequired))
 	if err != nil {
 		return nil, "", err
 	}

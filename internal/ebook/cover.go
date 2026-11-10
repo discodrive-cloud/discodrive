@@ -2,13 +2,22 @@ package ebook
 
 import (
 	"bytes"
+	"errors"
 	"path/filepath"
 
+	"discodrive/internal/safecontent"
 	"discodrive/internal/storage"
 )
 
-// mimeToExt maps common image MIME types to file extensions.
-var mimeToExt = map[string]string{
+// maxCoverBytes is the largest cover cached. Covers sit in .covers/, outside the user's
+// quota: without a ceiling a small archive could unpack a 64 MiB "first page" there.
+const maxCoverBytes = 8 << 20
+
+// ErrBadCover refuses bytes that are not a raster picture, or too big a one.
+var ErrBadCover = errors.New("ebook: cover is not a usable picture")
+
+// coverExt maps the sniffed type to the cached file's extension.
+var coverExt = map[string]string{
 	"image/jpeg": "jpg",
 	"image/png":  "png",
 	"image/gif":  "gif",
@@ -16,19 +25,25 @@ var mimeToExt = map[string]string{
 }
 
 // WriteCover caches cover image bytes to disk under
-// <storageRoot>/.covers/ebooks/<bookID>.<ext>. The ext is derived from mimeType
-// (defaults to "jpg" for unknown types). Returns the relative path from
-// storageRoot (e.g. ".covers/ebooks/<id>.jpg") for storing in books.cover_path.
-// The directory is created if missing. Existing files are overwritten.
-func WriteCover(storageRoot, bookID string, data []byte, mimeType string) (string, error) {
-	ext, ok := mimeToExt[mimeType]
-	if !ok {
-		ext = "jpg"
+// <storageRoot>/.covers/ebooks/<bookID>.<ext> and returns the path relative to
+// storageRoot for books.cover_path. The type comes from the bytes themselves — what the
+// book declares is not trusted — and anything that is not a JPEG, PNG, GIF or WebP of at
+// most maxCoverBytes is refused with ErrBadCover: the book is then listed without a
+// cover. A cover cached earlier under another extension is removed.
+func WriteCover(storageRoot, bookID string, data []byte) (string, error) {
+	ct, ok := safecontent.Raster(data)
+	if !ok || len(data) > maxCoverBytes {
+		return "", ErrBadCover
 	}
-
-	rel := filepath.Join(".covers", "ebooks", bookID+"."+ext)
-	if _, _, err := storage.NewLocalDisk(storageRoot).WriteFile(rel, bytes.NewReader(data)); err != nil {
+	disk := storage.NewLocalDisk(storageRoot)
+	rel := filepath.Join(".covers", "ebooks", bookID+"."+coverExt[ct])
+	if _, _, err := disk.WriteFile(rel, bytes.NewReader(data)); err != nil {
 		return "", err
+	}
+	for _, ext := range coverExt {
+		if other := filepath.Join(".covers", "ebooks", bookID+"."+ext); other != rel {
+			_ = disk.Remove(other)
+		}
 	}
 	return rel, nil
 }

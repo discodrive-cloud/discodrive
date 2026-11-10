@@ -6,31 +6,35 @@ import (
 	"testing"
 )
 
+// Sample headers of each supported type (enough for the type to be recognised).
+var (
+	jpegBytes = append([]byte{0xFF, 0xD8, 0xFF, 0xE0, 0, 16, 'J', 'F', 'I', 'F', 0}, make([]byte, 32)...)
+	pngBytes  = append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, make([]byte, 32)...)
+	gifBytes  = append([]byte("GIF89a"), make([]byte, 32)...)
+	webpBytes = append([]byte("RIFF\x10\x00\x00\x00WEBPVP8 "), make([]byte, 32)...)
+)
+
 func TestWriteCoverExtMapping(t *testing.T) {
 	cases := []struct {
-		mime    string
+		data    []byte
 		wantExt string
 	}{
-		{"image/jpeg", "jpg"},
-		{"image/png", "png"},
-		{"image/gif", "gif"},
-		{"image/webp", "webp"},
-		{"image/bmp", "jpg"}, // unknown → defaults to jpg
-		{"", "jpg"},          // empty → defaults to jpg
+		{jpegBytes, "jpg"},
+		{pngBytes, "png"},
+		{gifBytes, "gif"},
+		{webpBytes, "webp"},
 	}
 
 	root := t.TempDir()
-	data := []byte("fake image bytes")
-
 	for _, c := range cases {
-		rel, err := WriteCover(root, "book-id-1", data, c.mime)
+		rel, err := WriteCover(root, "book-id-1", c.data)
 		if err != nil {
-			t.Fatalf("WriteCover(%q): %v", c.mime, err)
+			t.Fatalf("WriteCover(%s): %v", c.wantExt, err)
 		}
 
 		want := filepath.Join(".covers", "ebooks", "book-id-1."+c.wantExt)
 		if rel != want {
-			t.Errorf("mime %q: relPath = %q, want %q", c.mime, rel, want)
+			t.Errorf("relPath = %q, want %q", rel, want)
 		}
 
 		// File must exist on disk.
@@ -43,7 +47,7 @@ func TestWriteCoverExtMapping(t *testing.T) {
 
 func TestWriteCoverRelativePath(t *testing.T) {
 	root := t.TempDir()
-	rel, err := WriteCover(root, "mybook", []byte("data"), "image/png")
+	rel, err := WriteCover(root, "mybook", pngBytes)
 	if err != nil {
 		t.Fatalf("WriteCover: %v", err)
 	}
@@ -58,14 +62,14 @@ func TestWriteCoverRelativePath(t *testing.T) {
 
 func TestWriteCoverOverwrites(t *testing.T) {
 	root := t.TempDir()
-	first := []byte("first")
-	second := []byte("second content longer")
+	first := jpegBytes
+	second := append(append([]byte{}, jpegBytes...), "second content longer"...)
 
-	rel1, err := WriteCover(root, "bk", first, "image/jpeg")
+	rel1, err := WriteCover(root, "bk", first)
 	if err != nil {
 		t.Fatalf("first write: %v", err)
 	}
-	rel2, err := WriteCover(root, "bk", second, "image/jpeg")
+	rel2, err := WriteCover(root, "bk", second)
 	if err != nil {
 		t.Fatalf("second write: %v", err)
 	}
@@ -84,7 +88,7 @@ func TestWriteCoverOverwrites(t *testing.T) {
 
 func TestRemoveCover(t *testing.T) {
 	root := t.TempDir()
-	rel, err := WriteCover(root, "rm-test", []byte("img"), "image/png")
+	rel, err := WriteCover(root, "rm-test", pngBytes)
 	if err != nil {
 		t.Fatalf("WriteCover: %v", err)
 	}

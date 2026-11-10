@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { dateToUtcIso, formatAllDay, isoToUtcDate, localDateKey, occursOnDay, startsOnDay } from './calendarDates'
+import { allDayEndFromForm, allDayEndToForm, dateToUtcIso, formatAllDay, isoToUtcDate, localDateKey, occursOnDay, startsOnDay } from './calendarDates'
 
 // Node reads process.env.TZ on every Date operation, so a test can move the browser.
 const origTZ = process.env.TZ
@@ -65,5 +65,31 @@ describe('occursOnDay', () => {
   it('localDateKey uses the local date', () => {
     inZone('Asia/Bishkek')
     expect(localDateKey(new Date('2026-08-10T20:00:00Z'))).toBe('2026-08-11')
+  })
+})
+
+// On the wire an all-day end is exclusive; the form shows and takes the last day itself.
+describe('all-day end in the form', () => {
+  it('10–12 August is sent ending on the 13th and read back as the 12th', () => {
+    const end = allDayEndFromForm('2026-08-10', '2026-08-12')
+    expect(end).toBe('2026-08-13T00:00:00.000Z')
+    expect(allDayEndToForm('2026-08-10T00:00:00Z', end)).toBe('2026-08-12')
+    // and it covers the 12th on the grid
+    expect(occursOnDay({ start: '2026-08-10T00:00:00Z', end, all_day: true }, new Date(2026, 7, 12))).toBe(true)
+  })
+  it('a one-day event ends the next day and shows its own day', () => {
+    expect(allDayEndFromForm('2026-08-10', '2026-08-10')).toBe('2026-08-11T00:00:00.000Z')
+    expect(allDayEndFromForm('2026-08-10', '')).toBe('2026-08-11T00:00:00.000Z')
+    expect(allDayEndToForm('2026-08-10T00:00:00Z', '2026-08-11T00:00:00Z')).toBe('2026-08-10')
+  })
+  it('an end not after the start is the start day', () => {
+    expect(allDayEndToForm('2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z')).toBe('2026-08-10')
+    expect(allDayEndFromForm('2026-08-10', '2026-08-01')).toBe('2026-08-11T00:00:00.000Z')
+  })
+  it('crosses a month and does not depend on the browser zone', () => {
+    inZone('Asia/Bishkek')
+    expect(allDayEndFromForm('2026-08-30', '2026-08-31')).toBe('2026-09-01T00:00:00.000Z')
+    inZone('America/Los_Angeles')
+    expect(allDayEndToForm('2026-08-30T00:00:00Z', '2026-09-01T00:00:00Z')).toBe('2026-08-31')
   })
 })

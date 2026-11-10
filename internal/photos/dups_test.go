@@ -391,3 +391,27 @@ func TestRankKeep_IDTieBreak(t *testing.T) {
 		}
 	}
 }
+
+// The headline case: a DNG that records its UTC offset and the JPEG a converter made of
+// it without the offset tags. taken_at is the true instant for the first and the wall
+// clock labelled UTC for the second, hours apart; the wall clock at the place of capture
+// (taken_local) is the same.
+func TestGroup_SameShotWithAndWithoutTZOffset(t *testing.T) {
+	local := time.Date(2024, 5, 1, 18, 0, 0, 0, time.UTC) // 18:00 on the camera's clock
+	dng := dcand(1, 0, 0)
+	dng.TakenAt, dng.TakenLocal = local.Add(-6*time.Hour), local // offset +06:00 known
+	jpg := dcand(2, hashAt(3), 0)
+	jpg.TakenAt, jpg.TakenLocal = local, local // no offset: wall clock labelled UTC
+	if !IsDup(dng, jpg) {
+		t.Fatal("IsDup: the same shot with and without a recorded offset is not a duplicate")
+	}
+	if g := GroupDuplicates([]DupCandidate{dng, jpg}, nil); len(g) != 1 || len(g[0]) != 2 {
+		t.Fatalf("groups = %v, want one group of two", g)
+	}
+	// Different moments stay apart whatever their instants say.
+	other := dcand(3, hashAt(2), 0)
+	other.TakenAt, other.TakenLocal = dng.TakenAt, local.Add(-6*time.Hour)
+	if IsDup(dng, other) {
+		t.Fatal("IsDup: shots six hours apart on the camera's clock are duplicates")
+	}
+}

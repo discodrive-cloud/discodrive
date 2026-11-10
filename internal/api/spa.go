@@ -24,6 +24,7 @@ func spaHandler(ui fs.FS) http.Handler {
 		}
 		defer f.Close()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache") // names the hashed bundles: always fresh
 		_, _ = io.Copy(w, f)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +47,14 @@ func spaHandler(ui fs.FS) http.Handler {
 				serveHTML(w, "index.html")
 			}
 			return
+		}
+		// Embedded files have no modification time, so there is nothing to revalidate
+		// by: without a header the browser fetched every bundle again on each load.
+		// Names under _nuxt/ carry a content hash and never change their content.
+		if strings.HasPrefix(name, "_nuxt/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		fileSrv.ServeHTTP(w, r) // regular static file (_nuxt/*, *.html)
 	})

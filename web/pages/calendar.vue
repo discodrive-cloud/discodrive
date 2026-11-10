@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { browserTimeZone, dateToUtcIso, isoToUtcDate, localDateKey, occursOnDay, startsOnDay } from '~/lib/calendarDates'
+import { allDayEndFromForm, allDayEndToForm, browserTimeZone, dateToUtcIso, isoToUtcDate, localDateKey, occursOnDay, startsOnDay } from '~/lib/calendarDates'
 
 interface EventOccurrence {
   uid: string; recurrence_id?: string; summary: string; location?: string
@@ -194,6 +194,7 @@ const form = reactive<EventDetail & { recurring: boolean; calendar_id: string }>
   uid: '', summary: '', location: '', description: '', start: '', end: '',
   all_day: false, freq: '', until: '', alarm: '', recurring: false, calendar_id: '',
 })
+const formOrigCal = ref('') // the calendar the edited event lives in (form.calendar_id may move it)
 const formStartLocal = ref(''); const formEndLocal = ref('')
 const formStartDate = ref(''); const formEndDate = ref(''); const formUntilDate = ref('')
 
@@ -201,6 +202,7 @@ function resetForm() {
   form.uid = ''; form.summary = ''; form.location = ''; form.description = ''
   form.start = ''; form.end = ''; form.all_day = false; form.freq = ''
   form.until = ''; form.alarm = ''; form.recurring = false; form.calendar_id = ''
+  formOrigCal.value = ''
   formStartLocal.value = ''; formEndLocal.value = ''
   formStartDate.value = ''; formEndDate.value = ''; formUntilDate.value = ''
 }
@@ -226,16 +228,20 @@ async function openEvent(uid: string) {
     form.description = d.description || ''; form.start = d.start; form.end = d.end
     form.all_day = d.all_day; form.freq = d.freq || ''; form.until = d.until || ''
     form.alarm = d.alarm || ''; form.calendar_id = d.calendar_id || calId
+    formOrigCal.value = form.calendar_id
     form.recurring = occ?.recurring ?? false
     formStartLocal.value = isoToLocal(d.start); formEndLocal.value = isoToLocal(d.end)
-    formStartDate.value = isoToUtcDate(d.start); formEndDate.value = isoToUtcDate(d.end)
+    // An all-day end is exclusive on the wire and inclusive in the form; a timed event
+    // offers its local day should "all day" be switched on.
+    formStartDate.value = d.all_day ? isoToUtcDate(d.start) : localDateKey(new Date(d.start))
+    formEndDate.value = d.all_day ? allDayEndToForm(d.start, d.end) : localDateKey(new Date(d.end || d.start))
     formUntilDate.value = d.until ? isoToUtcDate(d.until) : ''
     modalOpen.value = true
   } catch (e: any) { error.value = e?.data?.error || t('calendar.error_load') }
 }
 function buildBody() {
   const startIso = form.all_day ? dateToUtcIso(formStartDate.value) : localToIso(formStartLocal.value)
-  const endIso = form.all_day ? dateToUtcIso(formEndDate.value) : localToIso(formEndLocal.value)
+  const endIso = form.all_day ? allDayEndFromForm(formStartDate.value, formEndDate.value) : localToIso(formEndLocal.value)
   const untilIso = form.freq && formUntilDate.value ? dateToUtcIso(formUntilDate.value) : ''
   // freq 'keep' leaves a rule the presets cannot show (every 2 weeks on Mon and Wed, ...) as
   // it is; tz lets the server write a series in this zone so it keeps its time across DST
@@ -247,7 +253,7 @@ async function saveEvent() {
   if (!form.summary.trim()) { error.value = t('calendar.error_name_required'); return }
   error.value = ''; modalBusy.value = true
   try {
-    if (form.uid) await request(`/me/calendar/events/${form.uid}`, { method: 'PUT', body: buildBody() })
+    if (form.uid) await request(`/me/calendar/events/${form.uid}?calendar_id=${encodeURIComponent(formOrigCal.value)}`, { method: 'PUT', body: buildBody() })
     else await request('/me/calendar/events', { method: 'POST', body: buildBody() })
     modalOpen.value = false; await loadEvents()
   } catch (e: any) { error.value = e?.data?.error || t('calendar.error_save') }
@@ -258,7 +264,7 @@ async function deleteEvent() {
   if (!(await confirm(t('calendar.delete_event'), { message: form.summary || t('calendar.confirm_delete_event_msg'), confirmText: t('calendar.delete_event_btn'), danger: true }))) return
   error.value = ''
   try {
-    await request(`/me/calendar/events/${form.uid}?calendar_id=${encodeURIComponent(form.calendar_id)}`, { method: 'DELETE' })
+    await request(`/me/calendar/events/${form.uid}?calendar_id=${encodeURIComponent(formOrigCal.value || form.calendar_id)}`, { method: 'DELETE' })
     modalOpen.value = false; await loadEvents()
   } catch (e: any) { error.value = e?.data?.error || t('calendar.error_delete') }
 }

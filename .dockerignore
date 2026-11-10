@@ -6,3 +6,12 @@ web/.output
 web/dist
 *.md
 docs
+# Secrets and local material must not reach the build context: COPY . . would bake
+# them into the build stage's layers and cache.
+.env
+.env.*
+!.env.example
+.local
+.claude
+.gstack
+deploy/nginx/certs

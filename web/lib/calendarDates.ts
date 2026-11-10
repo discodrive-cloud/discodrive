@@ -29,6 +29,29 @@ export function isoToUtcDate(iso: string): string {
   return iso ? utcDateKey(iso) : ''
 }
 
+const addDays = (key: string, n: number) => {
+  const d = new Date(`${key}T00:00:00.000Z`)
+  d.setUTCDate(d.getUTCDate() + n)
+  return utcDateKey(d.toISOString())
+}
+
+/**
+ * The last day of an all-day event as the form shows it. On the wire the end is exclusive
+ * (10–12 August ends on the 13th); a person reads and types the last day itself.
+ */
+export function allDayEndToForm(startIso: string, endIso: string): string {
+  const s = isoToUtcDate(startIso)
+  const e = endIso ? utcDateKey(endIso) : s
+  return e > s ? addDays(e, -1) : s
+}
+
+/** The form's last day (inclusive) as the exclusive all-day end the server expects. */
+export function allDayEndFromForm(startDate: string, endDate: string): string {
+  if (!startDate) return ''
+  const last = endDate && endDate > startDate ? endDate : startDate
+  return dateToUtcIso(addDays(last, 1))
+}
+
 /** A localized date for an all-day value. */
 export function formatAllDay(iso: string, locale?: string): string {
   return new Date(iso).toLocaleDateString(locale, { timeZone: 'UTC' })

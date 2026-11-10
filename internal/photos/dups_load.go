@@ -41,6 +41,7 @@ func dupCandidateOf(r db.ListDupCandidatesRow) DupCandidate {
 		Key:        r.Key,
 		Kind:       r.Kind,
 		TakenAt:    r.TakenAt.Time,
+		TakenLocal: r.TakenLocal.Time,
 		FileDated:  r.DateSource == "file",
 		ExifDated:  r.DateSource == "exif",
 		Make:       NormCamera(r.Make.String),

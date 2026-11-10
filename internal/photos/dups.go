@@ -14,10 +14,13 @@ import (
 
 // DupCandidate is a top-level photo/video card considered for duplicate search.
 type DupCandidate struct {
-	ID          pgtype.UUID
-	Key         string // the content: content_hash, or the id as text; dismissals name it
-	Kind        string // "photo" | "video"
-	TakenAt     time.Time
+	ID      pgtype.UUID
+	Key     string // the content: content_hash, or the id as text; dismissals name it
+	Kind    string // "photo" | "video"
+	TakenAt time.Time
+	// TakenLocal is the wall clock at the place of capture (taken_local). Zero in
+	// candidates built without it; when() then falls back to TakenAt.
+	TakenLocal  time.Time
 	FileDated   bool   // date_source = 'file'
 	ExifDated   bool   // date_source = 'exif'
 	Make, Model string // lower case, trimmed (LoadDuplicateGroupsWith does it)
@@ -82,6 +85,17 @@ func absDur(d time.Duration) time.Duration {
 	return d
 }
 
+// when is the time two shots are compared by: the camera's wall clock. TakenAt is the
+// true instant only for files that record a UTC offset and the wall clock labelled UTC
+// for the rest, so a RAW and the JPEG a converter made of it (offset tags dropped) are
+// hours apart by TakenAt and identical by wall clock.
+func (c DupCandidate) when() time.Time {
+	if !c.TakenLocal.IsZero() {
+		return c.TakenLocal
+	}
+	return c.TakenAt
+}
+
 // IsDup is the edge rule with default thresholds (dismissed pairs ignored).
 func IsDup(a, b DupCandidate) bool { return IsDupWith(DefaultDupParams, a, b) }
 
@@ -100,7 +114,7 @@ func IsDupWith(p DupParams, a, b DupCandidate) bool {
 	if Hamming(a.Hash, b.Hash) > maxDist {
 		return false
 	}
-	if timed && absDur(a.TakenAt.Sub(b.TakenAt)) > p.TimeWindow {
+	if timed && absDur(a.when().Sub(b.when())) > p.TimeWindow {
 		return false
 	}
 	if a.Kind == "video" && a.DurationMs > 0 && b.DurationMs > 0 {
@@ -251,10 +265,10 @@ func dupEdges(p DupParams, c []DupCandidate) [][]int {
 				timed = append(timed, i)
 			}
 		}
-		sort.Slice(timed, func(x, y int) bool { return c[timed[x]].TakenAt.Before(c[timed[y]].TakenAt) })
+		sort.Slice(timed, func(x, y int) bool { return c[timed[x]].when().Before(c[timed[y]].when()) })
 		for x, i := range timed {
 			for _, j := range timed[x+1:] {
-				if c[j].TakenAt.Sub(c[i].TakenAt) > p.TimeWindow {
+				if c[j].when().Sub(c[i].when()) > p.TimeWindow {
 					break
 				}
 				if IsDupWith(p, c[i], c[j]) {

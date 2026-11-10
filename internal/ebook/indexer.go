@@ -121,7 +121,7 @@ func (ix *Indexer) IndexNode(ctx context.Context, userID, nodeID, diskPath strin
 	// Cache extracted cover to disk and record the relative path.
 	if len(meta.CoverData) > 0 {
 		bookIDStr := db.UUIDString(book.ID)
-		relPath, werr := WriteCover(ix.storageRoot, bookIDStr, meta.CoverData, meta.CoverType)
+		relPath, werr := WriteCover(ix.storageRoot, bookIDStr, meta.CoverData)
 		if werr == nil {
 			_ = ix.q.SetBookCoverPath(ctx, db.SetBookCoverPathParams{
 				ID:        book.ID,

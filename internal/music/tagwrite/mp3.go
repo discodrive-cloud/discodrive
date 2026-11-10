@@ -2,6 +2,7 @@ package tagwrite
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/bogem/id3v2/v2"
 )
@@ -31,10 +32,9 @@ func (mp3Writer) Read(path string) (Tags, bool, error) {
 	if v := tag.Genre(); v != "" {
 		t.Genre = &v
 	}
-	if v := tag.Year(); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			t.Year = &n
-		}
+	// A v2.4 recording time may carry more than the year ("2019-12-05T18:30").
+	if n := leadingInt(tag.Year()); n > 0 {
+		t.Year = &n
 	}
 	if v := tag.GetTextFrame(tag.CommonID("Track number/Position in set")).Text; v != "" {
 		if n := leadingInt(v); n > 0 {
@@ -181,14 +181,23 @@ func normalizeMP3(tag *id3v2.Tag) {
 		}
 	}
 
+	// v2.3 splits the recording date over TYER (year), TDAT (DDMM) and TIME (HHMM);
+	// v2.4 has the one TDRC. A tag keeps a single text frame per id, so the parts are
+	// assembled into one value: writing each of them as TDRC left whichever came last
+	// out of the map, and "0512" for a year.
+	old := map[string]string{}
 	for _, tx := range texts {
-		id := tx.id
-		switch id {
-		case "TYER", "TDAT", "TIME", "TRDA": // v2.3 date frames → v2.4 recording time
-			id = "TDRC"
+		switch tx.id {
+		case "TYER", "TDAT", "TIME", "TRDA", "TDRC":
+			old[tx.id] = strings.TrimSpace(tx.text)
+			tag.DeleteFrames(tx.id)
+			continue
 		}
 		tag.DeleteFrames(tx.id)
-		tag.AddTextFrame(id, id3v2.EncodingUTF8, tx.text)
+		tag.AddTextFrame(tx.id, id3v2.EncodingUTF8, tx.text)
+	}
+	if when := recordingTime(old); when != "" {
+		tag.AddTextFrame("TDRC", id3v2.EncodingUTF8, when)
 	}
 	tag.DeleteFrames(picID)
 	for _, pf := range pics {
@@ -200,6 +209,37 @@ func normalizeMP3(tag *id3v2.Tag) {
 			Picture:     pf.Picture,
 		})
 	}
+}
+
+// recordingTime is the v2.4 TDRC value for a tag's date frames: an existing TDRC as it
+// is, else the v2.3 year with the day and time when they are well-formed. TRDA is free
+// text and has no place in a timestamp.
+func recordingTime(f map[string]string) string {
+	if f["TDRC"] != "" {
+		return f["TDRC"]
+	}
+	year := f["TYER"]
+	if len(year) != 4 || !allDigits(year) {
+		return year // nothing, or something unusual: keep what was there
+	}
+	date := f["TDAT"] // DDMM
+	if len(date) != 4 || !allDigits(date) {
+		return year
+	}
+	out := year + "-" + date[2:] + "-" + date[:2]
+	if clock := f["TIME"]; len(clock) == 4 && allDigits(clock) { // HHMM
+		out += "T" + clock[:2] + ":" + clock[2:]
+	}
+	return out
+}
+
+func allDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 func setIntText(tag *id3v2.Tag, id string, n int) {

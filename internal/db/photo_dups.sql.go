@@ -49,7 +49,7 @@ func (q *Queries) CountPhotoHashProgress(ctx context.Context, userID pgtype.UUID
 
 const listDupCandidates = `-- name: ListDupCandidates :many
 WITH base AS (
-    SELECT a.id, a.kind, a.taken_at, a.date_source, a.make, a.model, a.width, a.height,
+    SELECT a.id, a.kind, a.taken_at, a.taken_local, a.date_source, a.make, a.model, a.width, a.height,
            a.duration_ms, a.phash, a.phash_flat, a.indexed_at, a.thumb_state,
            coalesce(a.content_hash, a.id::text)::text AS key,
            n.name, n.disk_path, coalesce(n.size, 0)::bigint AS size,
@@ -66,7 +66,7 @@ WITH base AS (
     WHERE a.user_id = $1 AND a.parent_id IS NULL AND a.trashed_at IS NULL AND NOT a.hidden
       AND n.deleted_at IS NULL
 )
-SELECT id, kind, taken_at, date_source, make, model, width, height, duration_ms, phash,
+SELECT id, kind, taken_at, taken_local, date_source, make, model, width, height, duration_ms, phash,
        indexed_at, key, name, disk_path, total_bytes, copies, has_kids
 FROM base
 WHERE rn = 1 AND thumb_state = 'ready' AND phash IS NOT NULL AND NOT phash_flat
@@ -77,6 +77,7 @@ type ListDupCandidatesRow struct {
 	ID         pgtype.UUID        `json:"id"`
 	Kind       string             `json:"kind"`
 	TakenAt    pgtype.Timestamptz `json:"taken_at"`
+	TakenLocal pgtype.Timestamp   `json:"taken_local"`
 	DateSource string             `json:"date_source"`
 	Make       pgtype.Text        `json:"make"`
 	Model      pgtype.Text        `json:"model"`
@@ -109,6 +110,7 @@ func (q *Queries) ListDupCandidates(ctx context.Context, userID pgtype.UUID) ([]
 			&i.ID,
 			&i.Kind,
 			&i.TakenAt,
+			&i.TakenLocal,
 			&i.DateSource,
 			&i.Make,
 			&i.Model,
