@@ -9,7 +9,7 @@ RUN npm run generate
 
 # Stage 2: build the single Go binary (embeds web/dist).
 # Cross-compiles for the target platform instead of running under emulation.
-FROM --platform=$BUILDPLATFORM golang:1.25.14-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine AS build
 ARG TARGETOS=linux
 ARG TARGETARCH
 WORKDIR /src

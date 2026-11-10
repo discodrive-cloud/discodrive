@@ -27,11 +27,12 @@ let shared: Promise<MapLib> | null = null
 export function loadMapLib(): Promise<MapLib> {
   if (!shared) {
     shared = (async () => {
-      // The CSP build: the app's Content-Security-Policy allows scripts and workers from
-      // 'self' only, so the worker is a file of our own (not a blob:) and nothing evals.
+      // MapLibre 6 is an ES module with its worker in a file of its own. The app's
+      // Content-Security-Policy allows scripts and workers from 'self' only: given a
+      // same-origin URL MapLibre starts it as a module worker, with no blob: and no eval.
       const [ml, worker, pm, basemaps] = await Promise.all([
-        import('maplibre-gl/dist/maplibre-gl-csp.js' as string),
-        import('maplibre-gl/dist/maplibre-gl-csp-worker.js?url' as string),
+        import('maplibre-gl'),
+        import('maplibre-gl/dist/maplibre-gl-worker.mjs?url' as string),
         import('pmtiles'),
         import('@protomaps/basemaps'),
         import('maplibre-gl/dist/maplibre-gl.css'),
