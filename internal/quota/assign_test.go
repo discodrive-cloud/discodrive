@@ -18,6 +18,12 @@ const gib = int64(1) << 30
 // setup spins up a throwaway Postgres, migrates it, and returns a query set.
 func setup(t *testing.T) (*db.Queries, context.Context) {
 	t.Helper()
+	q, _, ctx := setupPool(t)
+	return q, ctx
+}
+
+func setupPool(t *testing.T) (*db.Queries, *pgxpool.Pool, context.Context) {
+	t.Helper()
 	ctx := context.Background()
 	pgC, err := tcpostgres.Run(ctx, "postgres:16-alpine",
 		tcpostgres.WithDatabase("kf"), tcpostgres.WithUsername("kf"), tcpostgres.WithPassword("kf"),
@@ -35,7 +41,7 @@ func setup(t *testing.T) (*db.Queries, context.Context) {
 		t.Fatalf("pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	return db.New(pool), ctx
+	return db.New(pool), pool, ctx
 }
 
 // makeUser creates a user with the given quota (nil = none).

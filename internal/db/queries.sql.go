@@ -909,6 +909,17 @@ func (q *Queries) DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAut
 	return err
 }
 
+const dropOrphanFileUsage = `-- name: DropOrphanFileUsage :exec
+DELETE FROM file_usage_deltas d WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = d.user_id)
+`
+
+// Rows of accounts that no longer exist. Their files subtracted themselves when the
+// account went, so these sum to nothing; this only takes the leftovers away.
+func (q *Queries) DropOrphanFileUsage(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, dropOrphanFileUsage)
+	return err
+}
+
 const fileVersionPathInUse = `-- name: FileVersionPathInUse :one
 SELECT EXISTS (SELECT 1 FROM file_versions WHERE disk_path = $1)::bool
 `
@@ -920,6 +931,25 @@ func (q *Queries) FileVersionPathInUse(ctx context.Context, diskPath pgtype.Text
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const foldFileUsage = `-- name: FoldFileUsage :exec
+WITH folded AS (
+    DELETE FROM file_usage_deltas d
+    WHERE d.user_id IN (SELECT user_id FROM file_usage_deltas GROUP BY user_id HAVING count(*) > 1)
+    RETURNING d.user_id, d.bytes
+)
+INSERT INTO file_usage_deltas (user_id, bytes)
+SELECT user_id, SUM(bytes)::bigint FROM folded GROUP BY user_id HAVING SUM(bytes) <> 0
+`
+
+// Folds the running count of file bytes to one row a user. Only rows this statement
+// sees are replaced by their sum, so a change committed meanwhile is neither lost nor
+// counted twice; a reader sees the rows before or the sum after, never a mix. Users with
+// a single row are left alone — an idle server writes nothing here.
+func (q *Queries) FoldFileUsage(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, foldFileUsage)
+	return err
 }
 
 const getActiveShareByToken = `-- name: GetActiveShareByToken :one
@@ -3305,12 +3335,7 @@ func (q *Queries) ListUserIDs(ctx context.Context) ([]pgtype.UUID, error) {
 const listUsersWithUsage = `-- name: ListUsersWithUsage :many
 SELECT u.id, u.email, u.role, u.storage_quota, u.created_at,
        (COALESCE((
-           SELECT SUM(n.size) FROM nodes n
-           WHERE n.user_id = u.id AND n.is_dir = false
-       ), 0) + COALESCE((
-           SELECT SUM(v.size) FROM file_versions v
-           JOIN nodes vn ON vn.id = v.node_id
-           WHERE vn.user_id = u.id
+           SELECT SUM(fu.bytes) FROM file_usage_deltas fu WHERE fu.user_id = u.id
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = u.id AND e.disk_path IS NOT NULL
@@ -3596,6 +3621,45 @@ func (q *Queries) NotificationPrefsForEvent(ctx context.Context, arg Notificatio
 	return items, nil
 }
 
+const reconcileFileUsage = `-- name: ReconcileFileUsage :many
+INSERT INTO file_usage_deltas (user_id, bytes)
+SELECT x.id, x.actual - x.counted
+FROM (
+    SELECT u.id,
+           (COALESCE((SELECT SUM(n.size) FROM nodes n WHERE n.user_id = u.id AND n.is_dir = false), 0)
+          + COALESCE((SELECT SUM(v.size) FROM file_versions v JOIN nodes vn ON vn.id = v.node_id WHERE vn.user_id = u.id), 0))::bigint AS actual,
+           COALESCE((SELECT SUM(d.bytes) FROM file_usage_deltas d WHERE d.user_id = u.id), 0)::bigint AS counted
+    FROM users u
+) AS x
+WHERE x.actual <> x.counted
+RETURNING user_id, bytes
+`
+
+// Compares the running count with the file tree and adds the difference as a correction,
+// returning what it corrected. One statement, one snapshot: a write is either wholly in
+// both sides of the comparison or in neither, so this needs no lock and can run while
+// the server works. The triggers keep the count exact; this is for what goes around them
+// (a data-only restore, a manual fix in psql) and for noticing if they ever do not.
+func (q *Queries) ReconcileFileUsage(ctx context.Context) ([]FileUsageDelta, error) {
+	rows, err := q.db.Query(ctx, reconcileFileUsage)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FileUsageDelta{}
+	for rows.Next() {
+		var i FileUsageDelta
+		if err := rows.Scan(&i.UserID, &i.Bytes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recordSubtreeChanges = `-- name: RecordSubtreeChanges :exec
 WITH descendants AS (
     SELECT id, version, disk_path, row_number() OVER (ORDER BY disk_path) AS rn
@@ -3639,13 +3703,8 @@ UPDATE users u SET storage_used = fresh.used
 FROM (
     SELECT usr.id,
            (COALESCE((
-               SELECT SUM(n.size) FROM nodes n
-               WHERE n.user_id = usr.id AND n.is_dir = false
-           ), 0) + COALESCE((
-               SELECT SUM(v.size) FROM file_versions v
-               JOIN nodes vn ON vn.id = v.node_id
-               WHERE vn.user_id = usr.id
-           ), 0) + COALESCE((
+           SELECT SUM(fu.bytes) FROM file_usage_deltas fu WHERE fu.user_id = usr.id
+       ), 0) + COALESCE((
                SELECT SUM(e.size) FROM podcast_episodes e
                WHERE e.user_id = usr.id AND e.disk_path IS NOT NULL
            ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = usr.id), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0)
@@ -3662,8 +3721,8 @@ WHERE u.id = fresh.id AND u.storage_used <> fresh.used
 `
 
 // Refreshes the users.storage_used cache from the live totals. The column feeds the
-// "90% of quota" notification job only — the quota check itself always computes usage
-// fresh, so a stale cache can never let a write through.
+// "90% of quota" notification job only — the quota check itself reads the live totals,
+// so a stale cache can never let a write through.
 func (q *Queries) RefreshStorageUsed(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, refreshStorageUsed)
 	return err
@@ -4044,9 +4103,7 @@ func (q *Queries) SumAssignedQuotas(ctx context.Context, excludeID pgtype.UUID) 
 
 const totalStorageUsage = `-- name: TotalStorageUsage :one
 SELECT (COALESCE((
-           SELECT SUM(size) FROM nodes WHERE is_dir = false
-       ), 0) + COALESCE((
-           SELECT SUM(size) FROM file_versions
+           SELECT SUM(bytes) FROM file_usage_deltas
        ), 0) + COALESCE((
            SELECT SUM(size) FROM podcast_episodes WHERE disk_path IS NOT NULL
        ), 0) + COALESCE((SELECT SUM(cover_size) FROM podcast_channels), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0)
@@ -4650,12 +4707,7 @@ func (q *Queries) UpsertSetting(ctx context.Context, arg UpsertSettingParams) er
 
 const userStorageUsage = `-- name: UserStorageUsage :one
 SELECT (COALESCE((
-           SELECT SUM(n.size) FROM nodes n
-           WHERE n.user_id = $1 AND n.is_dir = false
-       ), 0) + COALESCE((
-           SELECT SUM(v.size) FROM file_versions v
-           JOIN nodes vn ON vn.id = v.node_id
-           WHERE vn.user_id = $1
+           SELECT SUM(fu.bytes) FROM file_usage_deltas fu WHERE fu.user_id = $1
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = $1 AND e.disk_path IS NOT NULL
@@ -4672,7 +4724,9 @@ SELECT (COALESCE((
 // Include published and staged bytes in one snapshot: publication followed by
 // reservation release must never create a gap between separate usage reads.
 // Used space of a single user, same definition as ListUsersWithUsage. This is the
-// number the quota check runs against on every write.
+// number the quota check runs against on every write. Files and their versions come
+// from the running count (file_usage_deltas, kept by triggers in the transaction of
+// every change — migration 41), everything else is summed where it lives.
 func (q *Queries) UserStorageUsage(ctx context.Context, userID pgtype.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, userStorageUsage, userID)
 	var used int64

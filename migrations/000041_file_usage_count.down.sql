@@ -1,0 +1,12 @@
+DROP TRIGGER IF EXISTS file_usage_version_removed ON file_versions;
+DROP TRIGGER IF EXISTS file_usage_version_changed ON file_versions;
+DROP TRIGGER IF EXISTS file_usage_version_added ON file_versions;
+DROP TRIGGER IF EXISTS file_usage_removed ON nodes;
+DROP TRIGGER IF EXISTS file_usage_changed ON nodes;
+DROP TRIGGER IF EXISTS file_usage_added ON nodes;
+DROP FUNCTION IF EXISTS file_usage_version();
+DROP FUNCTION IF EXISTS file_usage_node_removed();
+DROP FUNCTION IF EXISTS file_usage_node_changed();
+DROP FUNCTION IF EXISTS file_usage_node_added();
+DROP FUNCTION IF EXISTS add_file_usage(uuid, bigint);
+DROP TABLE IF EXISTS file_usage_deltas;

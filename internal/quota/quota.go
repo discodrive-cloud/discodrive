@@ -1,11 +1,17 @@
 // Package quota enforces how much space a user may occupy (users.storage_quota) and
 // how much the whole service may occupy on its disk (STORAGE_TOTAL_GB).
 //
-// Occupied space is computed fresh from the database on every check — see the
-// UserStorageUsage query. It counts live files, files sitting in the trash (they are
-// removed from disk only after TRASH_DAYS), persisted upload reservations, version
-// snapshots and downloaded podcast
-// episodes, because all of them are bytes the user is actually holding on the disk.
+// Occupied space is read from the database on every check — see the UserStorageUsage
+// query. It counts live files, files sitting in the trash (they are removed from disk
+// only after TRASH_DAYS), persisted upload reservations, version snapshots and
+// downloaded podcast episodes, because all of them are bytes the user is actually
+// holding on the disk.
+//
+// Files and versions are not summed per check: the database keeps a running count of
+// them (file_usage_deltas, migration 41), changed by triggers inside the transaction
+// that changes a file, so it is committed with the file or not at all. Nothing in this
+// process caches it. The worker folds the count and, at start and daily, compares it
+// with the file tree. Everything else is small and is summed where it lives.
 // users.storage_used is only a cache for the "near limit" notification and is never
 // trusted here.
 //

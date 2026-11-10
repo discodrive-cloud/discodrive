@@ -46,6 +46,11 @@ type Config struct {
 	BookmarkGCInterval     time.Duration
 
 	LinksEnrichInterval time.Duration
+
+	// The running count of what users' files occupy (migration 41): how often its rows
+	// are folded to one a user, and how often it is compared with the file tree.
+	FileUsageFoldInterval  time.Duration
+	FileUsageCheckInterval time.Duration
 }
 
 // Default returns sensible defaults; keep/trashDays come from config.
@@ -68,6 +73,9 @@ func Default(versionKeep, trashDays int) Config {
 		BookmarkGCInterval:     24 * time.Hour,
 
 		LinksEnrichInterval: time.Minute,
+
+		FileUsageFoldInterval:  time.Minute,
+		FileUsageCheckInterval: 24 * time.Hour,
 	}
 }
 
@@ -110,6 +118,19 @@ func (w *Worker) Run(ctx context.Context) {
 	go w.tick(ctx, w.cfg.TrashInterval, "trash-gc", func(ctx context.Context) error {
 		return w.fs.TrashGC(ctx, w.cfg.TrashRetention)
 	})
+	if w.cfg.FileUsageFoldInterval > 0 {
+		go w.tick(ctx, w.cfg.FileUsageFoldInterval, "file-usage-fold", w.foldFileUsage)
+	}
+	if w.cfg.FileUsageCheckInterval > 0 {
+		go func() {
+			// Once at start — this is where a restore that went around the bookkeeping
+			// is caught — and then at the interval.
+			if err := runJob(ctx, w.checkFileUsage); err != nil {
+				log.Printf("discodrive: job file-usage-check: %v", err)
+			}
+			w.tick(ctx, w.cfg.FileUsageCheckInterval, "file-usage-check", w.checkFileUsage)
+		}()
+	}
 	go w.tick(ctx, w.cfg.QuotaInterval, "quota-notify", w.quotaNotify)
 	go w.tick(ctx, w.cfg.QuotaInterval, "storage-alert", w.storageAlert)
 	go w.tick(ctx, w.cfg.PairingGCInterval, "pairing-gc", func(ctx context.Context) error {
@@ -201,12 +222,36 @@ func runJob(ctx context.Context, job func(context.Context) error) (err error) {
 	return job(ctx)
 }
 
+// foldFileUsage keeps the running count of file bytes at one row a user. Each write adds
+// a row; a quota check sums a user's rows, so this bounds what a check reads to what was
+// written since the last tick.
+func (w *Worker) foldFileUsage(ctx context.Context) error {
+	if err := w.q.FoldFileUsage(ctx); err != nil {
+		return err
+	}
+	return w.q.DropOrphanFileUsage(ctx)
+}
+
+// checkFileUsage compares the running count with the file tree and corrects it. A
+// correction is worth a line in the log: the count is kept by the database in the same
+// transaction as every change, so a difference means rows were written around it.
+func (w *Worker) checkFileUsage(ctx context.Context) error {
+	drift, err := w.q.ReconcileFileUsage(ctx)
+	if err != nil {
+		return err
+	}
+	for _, d := range drift {
+		log.Printf("discodrive: file usage of user %s was off by %d bytes, corrected", db.UUIDString(d.UserID), d.Bytes)
+	}
+	return nil
+}
+
 // quotaNotify sends a notification to users who have crossed 90% of their quota (once),
 // and clears the flag for those who have dropped back below the threshold.
 func (w *Worker) quotaNotify(ctx context.Context) error {
 	// users.storage_used is a cache: nothing on the write path maintains it, so without
 	// this refresh it stays at 0 and the notification below never fires. The quota check
-	// itself never reads the column — it sums the live totals — so a cache that is up to
+	// itself never reads the column — it reads the live totals — so a cache that is up to
 	// one tick stale only delays a warning, it can never let a write through.
 	if err := w.q.RefreshStorageUsed(ctx); err != nil {
 		return err

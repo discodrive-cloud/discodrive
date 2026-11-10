@@ -258,6 +258,9 @@ type Querier interface {
 	DeleteUser(ctx context.Context, id pgtype.UUID) error
 	DeleteUserTOTP(ctx context.Context, userID pgtype.UUID) error
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) error
+	// Rows of accounts that no longer exist. Their files subtracted themselves when the
+	// account went, so these sum to nothing; this only takes the leftovers away.
+	DropOrphanFileUsage(ctx context.Context) error
 	EnabledEbookUsers(ctx context.Context) ([]EnabledEbookUsersRow, error)
 	EnabledMusicUsers(ctx context.Context) ([]EnabledMusicUsersRow, error)
 	// Cards whose thumbnail failed are never looked at (the file cannot be rendered): they
@@ -270,6 +273,11 @@ type Querier interface {
 	// (the commit went through after all).
 	FileVersionPathInUse(ctx context.Context, diskPath pgtype.Text) (bool, error)
 	FinishRescanRequest(ctx context.Context, arg FinishRescanRequestParams) error
+	// Folds the running count of file bytes to one row a user. Only rows this statement
+	// sees are replaced by their sum, so a change committed meanwhile is neither lost nor
+	// counted twice; a reader sees the rows before or the sum after, never a mix. Users with
+	// a single row are left alone — an idle server writes nothing here.
+	FoldFileUsage(ctx context.Context) error
 	GCBrowserBookmarkTombstones(ctx context.Context, updatedAt pgtype.Timestamptz) ([]GCBrowserBookmarkTombstonesRow, error)
 	GetActivePhotoAlbumLink(ctx context.Context, token string) (GetActivePhotoAlbumLinkRow, error)
 	GetActiveShareByToken(ctx context.Context, token string) (ResourceShare, error)
@@ -711,6 +719,12 @@ type Querier interface {
 	// Returns recent play_history rows for the caller, joined to song+album+artist, for songs
 	// the caller can still play.
 	RecentPlayHistory(ctx context.Context, arg RecentPlayHistoryParams) ([]RecentPlayHistoryRow, error)
+	// Compares the running count with the file tree and adds the difference as a correction,
+	// returning what it corrected. One statement, one snapshot: a write is either wholly in
+	// both sides of the comparison or in neither, so this needs no lock and can run while
+	// the server works. The triggers keep the count exact; this is for what goes around them
+	// (a data-only restore, a manual fix in psql) and for noticing if they ever do not.
+	ReconcileFileUsage(ctx context.Context) ([]FileUsageDelta, error)
 	// Append change_log rows for every live strict descendant of prefix. Needed after
 	// a subtree path rewrite (move/rename): cursor-based clients (and the scoped feed,
 	// which filters on current disk_path) only see rows recorded after their cursor,
@@ -720,8 +734,8 @@ type Querier interface {
 	RecordSubtreeChanges(ctx context.Context, arg RecordSubtreeChangesParams) error
 	RefreshAlbumSongCount(ctx context.Context, id pgtype.UUID) error
 	// Refreshes the users.storage_used cache from the live totals. The column feeds the
-	// "90% of quota" notification job only — the quota check itself always computes usage
-	// fresh, so a stale cache can never let a write through.
+	// "90% of quota" notification job only — the quota check itself reads the live totals,
+	// so a stale cache can never let a write through.
 	RefreshStorageUsed(ctx context.Context) error
 	// The owner takes out anything; a member what they added.
 	RemovePhotoAlbumItems(ctx context.Context, arg RemovePhotoAlbumItemsParams) (int64, error)
@@ -962,7 +976,9 @@ type Querier interface {
 	// Include published and staged bytes in one snapshot: publication followed by
 	// reservation release must never create a gap between separate usage reads.
 	// Used space of a single user, same definition as ListUsersWithUsage. This is the
-	// number the quota check runs against on every write.
+	// number the quota check runs against on every write. Files and their versions come
+	// from the running count (file_usage_deltas, kept by triggers in the transaction of
+	// every change — migration 41), everything else is summed where it lives.
 	UserStorageUsage(ctx context.Context, userID pgtype.UUID) (int64, error)
 	UserUploadReserved(ctx context.Context, userID pgtype.UUID) (int64, error)
 }

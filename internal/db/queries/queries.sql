@@ -47,12 +47,7 @@ SELECT id FROM users WHERE role = 'admin' ORDER BY created_at;
 -- name: ListUsersWithUsage :many
 SELECT u.id, u.email, u.role, u.storage_quota, u.created_at,
        (COALESCE((
-           SELECT SUM(n.size) FROM nodes n
-           WHERE n.user_id = u.id AND n.is_dir = false
-       ), 0) + COALESCE((
-           SELECT SUM(v.size) FROM file_versions v
-           JOIN nodes vn ON vn.id = v.node_id
-           WHERE vn.user_id = u.id
+           SELECT SUM(fu.bytes) FROM file_usage_deltas fu WHERE fu.user_id = u.id
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = u.id AND e.disk_path IS NOT NULL
@@ -70,15 +65,12 @@ ORDER BY u.created_at;
 -- Include published and staged bytes in one snapshot: publication followed by
 -- reservation release must never create a gap between separate usage reads.
 -- Used space of a single user, same definition as ListUsersWithUsage. This is the
--- number the quota check runs against on every write.
+-- number the quota check runs against on every write. Files and their versions come
+-- from the running count (file_usage_deltas, kept by triggers in the transaction of
+-- every change — migration 41), everything else is summed where it lives.
 -- name: UserStorageUsage :one
 SELECT (COALESCE((
-           SELECT SUM(n.size) FROM nodes n
-           WHERE n.user_id = sqlc.arg(user_id) AND n.is_dir = false
-       ), 0) + COALESCE((
-           SELECT SUM(v.size) FROM file_versions v
-           JOIN nodes vn ON vn.id = v.node_id
-           WHERE vn.user_id = sqlc.arg(user_id)
+           SELECT SUM(fu.bytes) FROM file_usage_deltas fu WHERE fu.user_id = sqlc.arg(user_id)
        ), 0) + COALESCE((
            SELECT SUM(e.size) FROM podcast_episodes e
            WHERE e.user_id = sqlc.arg(user_id) AND e.disk_path IS NOT NULL
@@ -107,9 +99,7 @@ SELECT (COALESCE((
 -- Used space across all users — checked against the server-wide cap (STORAGE_TOTAL_GB).
 -- name: TotalStorageUsage :one
 SELECT (COALESCE((
-           SELECT SUM(size) FROM nodes WHERE is_dir = false
-       ), 0) + COALESCE((
-           SELECT SUM(size) FROM file_versions
+           SELECT SUM(bytes) FROM file_usage_deltas
        ), 0) + COALESCE((
            SELECT SUM(size) FROM podcast_episodes WHERE disk_path IS NOT NULL
        ), 0) + COALESCE((SELECT SUM(cover_size) FROM podcast_channels), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r), 0)
@@ -129,21 +119,52 @@ SELECT COALESCE(SUM(storage_quota), 0)::bigint AS assigned FROM users
 WHERE storage_quota IS NOT NULL
   AND id IS DISTINCT FROM sqlc.narg(exclude_id)::uuid;
 
+-- Folds the running count of file bytes to one row a user. Only rows this statement
+-- sees are replaced by their sum, so a change committed meanwhile is neither lost nor
+-- counted twice; a reader sees the rows before or the sum after, never a mix. Users with
+-- a single row are left alone — an idle server writes nothing here.
+-- name: FoldFileUsage :exec
+WITH folded AS (
+    DELETE FROM file_usage_deltas d
+    WHERE d.user_id IN (SELECT user_id FROM file_usage_deltas GROUP BY user_id HAVING count(*) > 1)
+    RETURNING d.user_id, d.bytes
+)
+INSERT INTO file_usage_deltas (user_id, bytes)
+SELECT user_id, SUM(bytes)::bigint FROM folded GROUP BY user_id HAVING SUM(bytes) <> 0;
+
+-- Rows of accounts that no longer exist. Their files subtracted themselves when the
+-- account went, so these sum to nothing; this only takes the leftovers away.
+-- name: DropOrphanFileUsage :exec
+DELETE FROM file_usage_deltas d WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = d.user_id);
+
+-- Compares the running count with the file tree and adds the difference as a correction,
+-- returning what it corrected. One statement, one snapshot: a write is either wholly in
+-- both sides of the comparison or in neither, so this needs no lock and can run while
+-- the server works. The triggers keep the count exact; this is for what goes around them
+-- (a data-only restore, a manual fix in psql) and for noticing if they ever do not.
+-- name: ReconcileFileUsage :many
+INSERT INTO file_usage_deltas (user_id, bytes)
+SELECT x.id, x.actual - x.counted
+FROM (
+    SELECT u.id,
+           (COALESCE((SELECT SUM(n.size) FROM nodes n WHERE n.user_id = u.id AND n.is_dir = false), 0)
+          + COALESCE((SELECT SUM(v.size) FROM file_versions v JOIN nodes vn ON vn.id = v.node_id WHERE vn.user_id = u.id), 0))::bigint AS actual,
+           COALESCE((SELECT SUM(d.bytes) FROM file_usage_deltas d WHERE d.user_id = u.id), 0)::bigint AS counted
+    FROM users u
+) AS x
+WHERE x.actual <> x.counted
+RETURNING user_id, bytes;
+
 -- Refreshes the users.storage_used cache from the live totals. The column feeds the
--- "90% of quota" notification job only — the quota check itself always computes usage
--- fresh, so a stale cache can never let a write through.
+-- "90% of quota" notification job only — the quota check itself reads the live totals,
+-- so a stale cache can never let a write through.
 -- name: RefreshStorageUsed :exec
 UPDATE users u SET storage_used = fresh.used
 FROM (
     SELECT usr.id,
            (COALESCE((
-               SELECT SUM(n.size) FROM nodes n
-               WHERE n.user_id = usr.id AND n.is_dir = false
-           ), 0) + COALESCE((
-               SELECT SUM(v.size) FROM file_versions v
-               JOIN nodes vn ON vn.id = v.node_id
-               WHERE vn.user_id = usr.id
-           ), 0) + COALESCE((
+           SELECT SUM(fu.bytes) FROM file_usage_deltas fu WHERE fu.user_id = usr.id
+       ), 0) + COALESCE((
                SELECT SUM(e.size) FROM podcast_episodes e
                WHERE e.user_id = usr.id AND e.disk_path IS NOT NULL
            ), 0) + COALESCE((SELECT SUM(pc.cover_size) FROM podcast_channels pc WHERE pc.user_id = usr.id), 0) + COALESCE((SELECT SUM(r.bytes) FROM upload_reservations r WHERE r.user_id = usr.id), 0)

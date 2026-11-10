@@ -211,6 +211,11 @@ type EbookSetting struct {
 	IndexedSeq     int64              `json:"indexed_seq"`
 }
 
+type FileUsageDelta struct {
+	UserID pgtype.UUID `json:"user_id"`
+	Bytes  int64       `json:"bytes"`
+}
+
 type FileVersion struct {
 	ID              pgtype.UUID        `json:"id"`
 	NodeID          pgtype.UUID        `json:"node_id"`
