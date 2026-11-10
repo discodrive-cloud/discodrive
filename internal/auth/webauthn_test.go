@@ -15,12 +15,12 @@ import (
 )
 
 func TestNewWebAuthn(t *testing.T) {
-	wa, err := NewWebAuthn("")
+	wa, err := NewWebAuthn("", "")
 	if err != nil || wa != nil {
 		t.Fatalf("empty domain must yield (nil,nil), got (%v,%v)", wa, err)
 	}
 	for _, in := range []string{"disco.example.com", "localhost:8443", "https://localhost:8443"} {
-		wa, err = NewWebAuthn(in)
+		wa, err = NewWebAuthn(in, "")
 		if err != nil || wa == nil {
 			t.Fatalf("NewWebAuthn(%q) must yield an instance, got (%v,%v)", in, wa, err)
 		}
@@ -50,7 +50,7 @@ func TestBeginWebAuthnLogin(t *testing.T) {
 	if _, _, err := svc.BeginWebAuthnLogin(context.Background()); err != ErrWebAuthnNotConfigured {
 		t.Fatalf("nil relying party must refuse, got %v", err)
 	}
-	wa, _ := NewWebAuthn("disco.example.com")
+	wa, _ := NewWebAuthn("disco.example.com", "")
 	svc.SetWebAuthn(wa)
 	opts, tok, err := svc.BeginWebAuthnLogin(context.Background())
 	if err != nil {
@@ -100,7 +100,7 @@ func TestWebAuthnRegisterBeginAndCRUD(t *testing.T) {
 	}
 
 	// With a relying party, begin produces options (carrying a challenge) + a parseable token.
-	wa, _ := NewWebAuthn("disco.example.com")
+	wa, _ := NewWebAuthn("disco.example.com", "")
 	svc.SetWebAuthn(wa)
 	approval, err := svc.ApprovePasskeyWithPassword(ctx, userID, "test-password", "", "register")
 	if err != nil {

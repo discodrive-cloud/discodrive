@@ -35,6 +35,9 @@ type Config struct {
 	SettingsEncryptionKey string
 	// BaseDomain is the public server domain (used as the WebAuthn relying-party ID).
 	BaseDomain string
+	// HTTPSPort is the port HTTPS is published on (NGINX_HTTPS_PORT); a browser reaching
+	// the server there has it in its origin, which WebAuthn must accept.
+	HTTPSPort string
 	// StorageRoot is the root data directory on disk (mirror of user trees).
 	StorageRoot string
 	// SetupTokenFile stores the one-time bootstrap secret, outside user file trees.
@@ -116,6 +119,7 @@ func Load() Config {
 		JWTSecret:              os.Getenv("JWT_SECRET"),
 		SettingsEncryptionKey:  os.Getenv("SETTINGS_ENCRYPTION_KEY"),
 		BaseDomain:             os.Getenv("BASE_DOMAIN"),
+		HTTPSPort:              os.Getenv("NGINX_HTTPS_PORT"),
 		StorageRoot:            getenv("STORAGE_ROOT", "/data"),
 		SetupTokenFile:         getenv("SETUP_TOKEN_FILE", filepath.Join(getenv("STORAGE_ROOT", "/data"), ".bootstrap", "setup-token")),
 		VersionKeep:            getenvInt("VERSION_KEEP", 10),

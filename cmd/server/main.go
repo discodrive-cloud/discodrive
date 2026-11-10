@@ -263,7 +263,7 @@ func runServer(cfg config.Config) {
 	notifier := notify.New(queries, notify.NewEmailChannel(queries, cipher))
 	issuer := auth.NewTokenIssuer(cfg.JWTSecret, tokenTTL)
 	authSvc := auth.NewService(pool, issuer, cipher)
-	wa, err := auth.NewWebAuthn(cfg.BaseDomain)
+	wa, err := auth.NewWebAuthn(cfg.BaseDomain, cfg.HTTPSPort)
 	if err != nil {
 		log.Fatalf("webauthn config: %v", err)
 	}

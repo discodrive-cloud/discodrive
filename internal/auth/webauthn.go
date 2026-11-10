@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"net"
 	"net/url"
 	"strings"
 
@@ -32,7 +34,7 @@ var (
 // full origin URL ("https://localhost:8443"). The RP ID is the host alone (no scheme/port),
 // while the allowed origin includes the port — WebAuthn origin matching is port-sensitive, so
 // a non-443 port (typical in dev) must be carried through here.
-func NewWebAuthn(baseDomain string) (*webauthn.WebAuthn, error) {
+func NewWebAuthn(baseDomain, httpsPort string) (*webauthn.WebAuthn, error) {
 	if baseDomain == "" {
 		return nil, nil
 	}
@@ -44,10 +46,17 @@ func NewWebAuthn(baseDomain string) (*webauthn.WebAuthn, error) {
 	if err != nil || u.Hostname() == "" {
 		return nil, fmt.Errorf("invalid BASE_DOMAIN %q: %w", baseDomain, err)
 	}
+	origins := []string{u.Scheme + "://" + u.Host} // host incl port
+	// BASE_DOMAIN without a port, HTTPS published on another one (the default install:
+	// localhost on 8443): the browser's origin carries that port. Both are accepted — the
+	// same server may also be reached on 443 through a tunnel or another proxy.
+	if u.Port() == "" && httpsPort != "" && httpsPort != "443" {
+		origins = append(origins, u.Scheme+"://"+net.JoinHostPort(u.Hostname(), httpsPort))
+	}
 	return webauthn.New(&webauthn.Config{
 		RPDisplayName: "discodrive",
-		RPID:          u.Hostname(),                        // host only, no scheme/port
-		RPOrigins:     []string{u.Scheme + "://" + u.Host}, // host incl port
+		RPID:          u.Hostname(), // host only, no scheme/port
+		RPOrigins:     origins,
 	})
 }
 
@@ -171,10 +180,12 @@ func (s *Service) FinishWebAuthnRegistration(ctx context.Context, userID, sessio
 	}
 	parsed, err := protocol.ParseCredentialCreationResponseBytes(attestation)
 	if err != nil {
+		logWebAuthnFailure("registration", err)
 		return ErrWebAuthnFailed
 	}
 	cred, err := s.wa.CreateCredential(wu, sd, parsed)
 	if err != nil {
+		logWebAuthnFailure("registration", err)
 		return ErrWebAuthnFailed
 	}
 	blob, err := json.Marshal(cred)
@@ -345,4 +356,16 @@ func (s *Service) finishWebAuthnLogin(ctx context.Context, sessionToken string, 
 		return LoginResult{}, err
 	}
 	return LoginResult{Token: token, User: loggedIn}, nil
+}
+
+// logWebAuthnFailure records why a key was refused. The client only gets "could not
+// verify the authenticator"; the reason (an origin that does not match BASE_DOMAIN is the
+// usual one) is for whoever runs the server.
+func logWebAuthnFailure(what string, err error) {
+	var pe *protocol.Error
+	if errors.As(err, &pe) {
+		log.Printf("discodrive: webauthn %s refused: %s: %s (%s)", what, pe.Type, pe.Details, pe.DevInfo)
+		return
+	}
+	log.Printf("discodrive: webauthn %s refused: %v", what, err)
 }

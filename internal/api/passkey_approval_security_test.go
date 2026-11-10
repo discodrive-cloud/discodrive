@@ -27,7 +27,7 @@ func TestPasskeyApprovalRequiresExistingFactors(t *testing.T) {
 		t.Fatal(err)
 	}
 	uid := db.UUIDString(user.ID)
-	wa, err := auth.NewWebAuthn("disco.example.com")
+	wa, err := auth.NewWebAuthn("disco.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
