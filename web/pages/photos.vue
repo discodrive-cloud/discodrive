@@ -112,8 +112,12 @@ function openPerson(id: string) {
 }
 async function loadPersonInfo() {
   personInfo.value = null
-  if (!person.value) return
-  try { personInfo.value = await api.person(person.value) } catch (e: any) {
+  const id = person.value
+  if (!id) return
+  try {
+    const info = await api.person(id)
+    if (person.value === id) personInfo.value = info // the view may have moved on meanwhile
+  } catch (e: any) {
     loadError.value = e?.data?.error || t('common.error_load')
   }
 }
@@ -132,8 +136,12 @@ function openPartner(id: string, email: string) {
 }
 async function loadAlbumInfo() {
   albumInfo.value = null
-  if (!album.value) return
-  try { albumInfo.value = await api.album(album.value) } catch (e: any) {
+  const id = album.value
+  if (!id) return
+  try {
+    const info = await api.album(id)
+    if (album.value === id) albumInfo.value = info // the view may have moved on meanwhile
+  } catch (e: any) {
     loadError.value = e?.data?.error || t('common.error_load')
   }
 }
@@ -305,10 +313,12 @@ watch([area, album, owner, person], ([a, al, o, pe], [pa]) => {
   }
 })
 
+let alive = true
 onMounted(async () => {
   photosMapsReady().then((v) => { mapsReady.value = v })
   await loadSettings()
   await loadBuckets()
+  if (!alive) return // left the page while loading: no listener or poll to leave behind
   if (album.value) loadAlbumInfo()
   if (owner.value) loadOwnerEmail()
   if (person.value) loadPersonInfo()
@@ -317,6 +327,7 @@ onMounted(async () => {
   window.addEventListener('keydown', onKey)
 })
 onBeforeUnmount(() => {
+  alive = false
   stopPolling()
   window.removeEventListener('keydown', onKey)
   if (noticeTimer) clearTimeout(noticeTimer)

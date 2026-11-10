@@ -61,7 +61,7 @@ export function clearSession(persist = true) {
   setSession({ token: '', role: '', email: '' }, persist)
 }
 
-function parseStoredSession(raw: string | null): Session {
+export function parseStoredSession(raw: string | null): Session {
   try {
     const s = raw ? JSON.parse(raw) : null
     if (s && typeof s.token === 'string' && s.token) return s as Session

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isHttpUrl } from '~/lib/safeUrl'
 // Reader for saved articles: markdown from /me/saved/{id}/content rendered
 // in a narrow reader column. Article images are external: the CSP blocks them
 // (img-src 'self' data: blob:), so they are fetched through the server's
@@ -84,8 +85,8 @@ function savedDate(): string {
         <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
           <span v-if="savedDate()">{{ savedDate() }}</span>
           <a
-            v-if="item?.url"
-            :href="item.url"
+            v-if="isHttpUrl(item?.url)"
+            :href="item!.url"
             target="_blank"
             rel="noopener"
             class="inline-flex items-center gap-1 text-accent hover:underline"

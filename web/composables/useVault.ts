@@ -27,6 +27,8 @@ export interface VaultEntry {
   dirId?: string
   /** for files — node id (.c9r or contents.c9r) used for downloading */
   nodeId?: string
+  /** for files — size of the encrypted content; the plaintext is a little smaller */
+  size?: number
 }
 
 interface RateLimitState {
@@ -148,7 +150,7 @@ export function useVault() {
         if (!child.is_dir) {
           // file
           const plain = await decryptName(k, child.name, dirId)
-          return { name: plain, isDir: false, nodeId: child.id }
+          return { name: plain, isDir: false, nodeId: child.id, size: child.size ?? undefined }
         } else {
           // subdirectory: fetch dir.c9r to get subDirId
           const subChildren = await listNodes(child.id)
@@ -173,7 +175,7 @@ export function useVault() {
           const subDirId = (await fetchText(dirC9r.id)).trim()
           return { name: plain, isDir: true, dirId: subDirId }
         } else if (contentsC9r) {
-          return { name: plain, isDir: false, nodeId: contentsC9r.id }
+          return { name: plain, isDir: false, nodeId: contentsC9r.id, size: contentsC9r.size ?? undefined }
         }
       }
     })

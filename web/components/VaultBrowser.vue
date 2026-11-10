@@ -75,13 +75,15 @@ async function doUnlock() {
 // --- file preview ---
 // The shared PreviewModal works on bytes; here the source is decrypted vault
 // content, so files stay a fully client-side path (no plaintext leaves memory).
-// Vault entries carry no plaintext size, so the text cap can't apply (size: null).
+// The size is that of the encrypted file — a fraction of a percent above the plaintext —
+// which is enough for the preview caps: without it a 4 GB video with an unknown
+// extension was downloaded and decrypted whole just to see whether it is text.
 const preview = reactive({ open: false, index: 0 })
 const previewFiles = computed(() => entries.value.filter((e) => !e.isDir))
 const previewItems = computed<PreviewItem[]>(() =>
   previewFiles.value.map((e) => ({
     name: e.name,
-    size: null,
+    size: e.size ?? null,
     load: async () => new Blob([(await vault.openFile(e)).bytes as BlobPart]),
   })),
 )

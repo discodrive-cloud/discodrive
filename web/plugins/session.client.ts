@@ -1,3 +1,5 @@
+import { parseStoredSession } from '~/composables/useApi'
+
 // Hydrate the session from localStorage on SPA startup. Initial setup status
 // (/setup/status) is resolved by the route guard (auth.global.ts) — so we don't
 // depend on this plugin running before the initial navigation.
@@ -5,11 +7,11 @@ export default defineNuxtPlugin(() => {
   const sess = useSession()
   const raw = localStorage.getItem('kf_session')
   if (raw) {
-    try {
-      sess.value = JSON.parse(raw)
-    } catch {
-      localStorage.removeItem('kf_session')
-    }
+    // Checked for shape, not just for being JSON: anything else in the key reads as
+    // signed out instead of a session object the pages cannot use.
+    const stored = parseStoredSession(raw)
+    if (stored.token) sess.value = stored
+    else localStorage.removeItem('kf_session')
   }
 
   // Tabs share kf_session: a sign-in, account switch or logout in one tab must reach
