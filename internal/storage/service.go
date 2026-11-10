@@ -1023,7 +1023,7 @@ func (s *FileService) commitReplacing(ctx context.Context, tx pgx.Tx, src, dst, 
 	own := ""
 	if backup == "" {
 		own = tmpName()
-		switch err := s.st.Copy(dst, own); {
+		switch err := s.keep(dst, own); {
 		case err == nil:
 			backup = own
 			defer func() { _ = s.st.Remove(own) }()
@@ -1192,8 +1192,9 @@ func recordPathChange(ctx context.Context, qtx *db.Queries, userID, nodeID pgtyp
 // writes a file_versions row for the version it belonged to (trimmed to VERSION_KEEP by
 // the GC job). Callers pass the node as it is BEFORE the new content lands.
 //
-// Snapshots are a copy of the whole file, so a file that is written once and never
-// touched again costs exactly its own size; only editing it starts a history.
+// A snapshot is the whole previous file, so a file that is written once and never
+// touched again costs exactly its own size; only editing it starts a history. The
+// content is not written again where it can be helped (see keep).
 // It returns the snapshot's path ("" when versions are off, or when the version already
 // has a row) so a caller whose transaction then fails can drop the copy (dropSnapshot).
 // The path is new for every attempt: two writes of one node never share a snapshot
@@ -1203,7 +1204,7 @@ func (s *FileService) snapshot(ctx context.Context, qtx *db.Queries, node db.Nod
 		return "", nil
 	}
 	vpath := versionPath(db.UUIDString(node.UserID), db.UUIDString(node.ID), node.Version)
-	if err := s.st.Copy(node.DiskPath.String, vpath); err != nil {
+	if err := s.keep(node.DiskPath.String, vpath); err != nil {
 		// The live file is gone from the disk (removed outside the service, no rescan
 		// yet): there is no old content to keep, and refusing would fail every push of
 		// this path until someone rescans. Like commitReplacing and deleteOnce, carry on.
@@ -1229,6 +1230,28 @@ func (s *FileService) snapshot(ctx context.Context, qtx *db.Queries, node db.Nod
 		return "", nil
 	}
 	return vpath, nil
+}
+
+// linker is a store that can give a file a second name without writing it again.
+type linker interface {
+	Link(oldRel, newRel string) error
+}
+
+// keep preserves, at dst, the content of a live file that is about to be replaced. The
+// replacement always arrives by rename (commitReplacing, finishPush): a new file takes
+// the live name and the old one keeps existing under any other name it has. So a hard
+// link is enough — once the rename is done, dst is the old content's only name and no
+// write to the live path, from the service or from outside it, can reach it. Copying
+// the file instead cost its whole size in reads and writes inside the request.
+// Where the disk cannot link, the content is copied as before.
+func (s *FileService) keep(live, dst string) error {
+	if l, ok := s.st.(linker); ok {
+		err := l.Link(live, dst)
+		if err == nil || errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return s.st.Copy(live, dst)
 }
 
 // dropSnapshot removes a snapshot copy whose transaction did not commit. The path is

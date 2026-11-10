@@ -64,6 +64,28 @@ func renameAt(src *os.Root, from string, dst *os.Root, to string) error {
 	return nil
 }
 
+// linkAt is renameAt for a hard link: the existing file gets a second name. A symlink at
+// from is not followed (no AT_SYMLINK_FOLLOW), and an existing to fails with EEXIST.
+func linkAt(src *os.Root, from string, dst *os.Root, to string) error {
+	a, err := src.Open(".")
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+	b, err := dst.Open(".")
+	if err != nil {
+		return err
+	}
+	defer b.Close()
+	err = unix.Linkat(int(a.Fd()), from, int(b.Fd()), to, 0)
+	runtime.KeepAlive(a)
+	runtime.KeepAlive(b)
+	if err != nil {
+		return &os.LinkError{Op: "linkat", Old: from, New: to, Err: err}
+	}
+	return nil
+}
+
 func descriptorPath(f *os.File) (string, error) {
 	switch runtime.GOOS {
 	case "linux":

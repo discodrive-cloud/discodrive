@@ -127,6 +127,26 @@ func (d *LocalDisk) Move(oldRel, newRel string) error {
 	return renameAt(old, oldName, dest, newName)
 }
 
+// Link gives the file at oldRel a second name, newRel (creating its parents), without
+// writing its content again. It fails where the filesystem has no hard links (FAT/exFAT
+// on a USB disk) or the two names are on different mounts; callers fall back to Copy.
+func (d *LocalDisk) Link(oldRel, newRel string) error {
+	old, oldName, err := d.parent(oldRel, false)
+	if err != nil {
+		return err
+	}
+	defer old.Close()
+	dest, newName, err := d.parent(newRel, true)
+	if err != nil {
+		return err
+	}
+	defer dest.Close()
+	if err := rejectLink(old, oldName); err != nil {
+		return err
+	}
+	return linkAt(old, oldName, dest, newName)
+}
+
 func (d *LocalDisk) Copy(srcRel, dstRel string) error {
 	in, err := d.Open(srcRel)
 	if err != nil {

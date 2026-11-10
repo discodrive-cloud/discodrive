@@ -163,3 +163,51 @@ func TestVersions_DisabledKeepsNothing(t *testing.T) {
 		t.Fatalf("live content = %q, want %q", got, "second")
 	}
 }
+
+// Keeping the content an overwrite replaces must not write it out a second time: on a
+// small machine overwriting a 2 GiB file used to mean reading and writing 2 GiB more
+// inside the request. The old bytes stay where they are and only change their name.
+func TestVersions_OverwriteDoesNotCopyTheOldContent(t *testing.T) {
+	ctx := context.Background()
+	fs, q, userID, root := setupFS(t)
+
+	res, err := fs.Push(ctx, userID, nil, "big.bin", nil, "", strings.NewReader("first"))
+	if err != nil {
+		t.Fatalf("push 1: %v", err)
+	}
+	live := filepath.Join(root, res.Node.DiskPath.String)
+	before, err := os.Stat(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Push(ctx, userID, nil, "big.bin", nil, "", strings.NewReader("second")); err != nil {
+		t.Fatalf("push 2: %v", err)
+	}
+	versions, err := q.ListFileVersions(ctx, res.Node.ID)
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("versions: %+v (err %v)", versions, err)
+	}
+	kept := filepath.Join(root, versions[0].DiskPath.String)
+	snap, err := os.Stat(kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, snap) {
+		t.Error("the replaced content was written out again instead of being kept in place")
+	}
+	now, err := os.Stat(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(now, snap) {
+		t.Fatal("the live file and its old version are one file")
+	}
+	// The tree is also written from outside the service (a network share, an editor that
+	// saves in place): that must never reach into the history.
+	if err := os.WriteFile(live, []byte("scribbled over in place"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(kept); err != nil || string(got) != "first" {
+		t.Fatalf("the kept version reads %q (err %v), want the replaced content", got, err)
+	}
+}
