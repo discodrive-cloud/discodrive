@@ -144,9 +144,10 @@ func dupFolder(userID, diskPath string) string {
 	return dir
 }
 
-// dupGroupOf checks that ids are own live cards (404 otherwise, as ownCards) that all sit
-// in one current duplicate group, each content named once (400 otherwise; a byte copy of
-// a card stands for that card). It returns the ids with their content keys, in request
+// dupGroupOf checks that ids are own live cards (404 otherwise, as ownCards) that are
+// duplicates of one another right now, as the members of one duplicate group are, each
+// content named once (400 otherwise; a byte copy of a card stands for that card). The
+// check reads these cards only (photos.MutualDuplicates), not the whole library. It returns the ids with their content keys, in request
 // order, and answers the request itself when the check fails. Call it under dupLocks.
 func (s *Server) dupGroupOf(w http.ResponseWriter, r *http.Request, uid pgtype.UUID, raw []string) ([]pgtype.UUID, []string, bool) {
 	ids, ok := s.ownCards(w, r, uid, raw, false)
@@ -180,25 +181,14 @@ func (s *Server) dupGroupOf(w http.ResponseWriter, r *http.Request, uid pgtype.U
 		seen[k] = true
 		keys[i] = k
 	}
-	groups, err := photos.LoadDuplicateGroups(r.Context(), s.q, uid)
+	together, err := photos.MutualDuplicates(r.Context(), s.q, uid, keys)
 	if err != nil {
 		log.Printf("discodrive: photo duplicates: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return nil, nil, false
 	}
-	for _, g := range groups {
-		in := 0
-		for _, c := range g {
-			if seen[c.Key] {
-				in++
-			}
-		}
-		if in == len(keys) {
-			return ids, keys, true
-		}
-		if in > 0 {
-			break // some here, the rest elsewhere: not one group
-		}
+	if together {
+		return ids, keys, true
 	}
 	writeError(w, http.StatusBadRequest, "not one duplicate group")
 	return nil, nil, false

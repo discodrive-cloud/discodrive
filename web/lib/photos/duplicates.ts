@@ -25,6 +25,12 @@ export function deletedBytes(group: Pick<DupCopy, 'id' | 'bytes'>[], keepId: str
   return group.reduce((n, c) => (c.id === keepId ? n : n + (c.bytes || 0)), 0)
 }
 
+// groupReclaim: what the group adds to the reclaimable total the server reports — every
+// copy but the suggested one (the first).
+export function groupReclaim(group: Pick<DupCopy, 'bytes'>[]): number {
+  return group.slice(1).reduce((n, c) => n + (c.bytes || 0), 0)
+}
+
 // skipGroup: a new queue with item i moved to the end, the rest in their order.
 export function skipGroup<T>(queue: T[], i: number): T[] {
   if (i < 0 || i >= queue.length) return queue.slice()
@@ -61,6 +67,11 @@ export function mergeQueue<G extends { assets: { id: string }[] }>(queue: G[], f
   }
   return [...out, ...byKey.values()]
 }
+
+// DUP_SETTLE_MS: how long after the last «Удалить остальные» / «Оставить все» the list is
+// fetched again. Each fetch makes the server go through the whole library, so working
+// through the queue does not fetch after every group — only once the user pauses.
+export const DUP_SETTLE_MS = 4_000
 
 // DUP_POLL_MS: how often the list is fetched again while the server is still hashing the
 // library, and how long after a failed first load it is tried once more.

@@ -58,3 +58,41 @@ func dupCandidateOf(r db.ListDupCandidatesRow) DupCandidate {
 		Copies:     int(r.Copies),
 	}
 }
+
+// MutualDuplicates reports whether the contents named by keys are, right now, duplicates
+// of one another: each has a usable card, every two of them pass IsDup, and no pair among
+// them was dismissed. That is what the members of one duplicate group are (the grouping is
+// complete-linkage), and it is checked from these cards alone — a resolve or a dismiss
+// does not need a pass over the whole library to know its cards belong together.
+func MutualDuplicates(ctx context.Context, q db.Querier, userID pgtype.UUID, keys []string) (bool, error) {
+	if len(keys) < 2 {
+		return false, nil
+	}
+	rows, err := q.ListDupCandidatesByKeys(ctx, db.ListDupCandidatesByKeysParams{UserID: userID, Keys: keys})
+	if err != nil {
+		return false, err
+	}
+	if len(rows) != len(keys) {
+		return false, nil // a content without a ready, hashed card is in no group
+	}
+	dis, err := q.ListDupDismissedAmong(ctx, db.ListDupDismissedAmongParams{UserID: userID, Keys: keys})
+	if err != nil {
+		return false, err
+	}
+	dismissed := make(map[DupPair]bool, len(dis))
+	for _, d := range dis {
+		dismissed[MakeDupPair(d.A, d.B)] = true
+	}
+	cands := make([]DupCandidate, len(rows))
+	for i, r := range rows {
+		cands[i] = dupCandidateOf(db.ListDupCandidatesRow(r))
+	}
+	for i := range cands {
+		for j := i + 1; j < len(cands); j++ {
+			if dismissed[MakeDupPair(cands[i].Key, cands[j].Key)] || !IsDup(cands[i], cands[j]) {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}

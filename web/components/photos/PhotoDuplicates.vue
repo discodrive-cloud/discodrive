@@ -8,7 +8,7 @@
 // the group on screen is not touched by that.
 import type { DupAsset, DupGroups } from '~/composables/usePhotos'
 import { previewURL, thumbURL, thumbKey, takenLabel, formatDuration } from '~/composables/usePhotos'
-import { deleteWarnings, deletedBytes, groupKey, mergeQueue, nextLoad, skipGroup } from '~/lib/photos/duplicates'
+import { DUP_SETTLE_MS, deleteWarnings, deletedBytes, groupKey, groupReclaim, mergeQueue, nextLoad, skipGroup } from '~/lib/photos/duplicates'
 
 type Group = DupGroups['groups'][number]
 
@@ -103,11 +103,18 @@ function details(c: DupAsset): string {
 const folder = (c: DupAsset) => `/${c.path}`
 
 // ---- actions ----
+// A handled group leaves the queue and the total at once, from what is already known. The
+// list itself is fetched again only once the user pauses (DUP_SETTLE_MS): a fetch makes the
+// server go through the whole library, and one after every group would do that hundreds
+// of times while a long queue is being worked through.
 function done(g: Group) {
   seq++
   const k = groupKey(g)
   queue.value = queue.value.filter((x) => groupKey(x) !== k)
+  reclaim.value = Math.max(0, reclaim.value - groupReclaim(g.assets))
   handled.value++
+  if (timer) clearTimeout(timer)
+  timer = setTimeout(() => load(true), DUP_SETTLE_MS)
 }
 
 async function deleteRest() {
@@ -121,7 +128,6 @@ async function deleteRest() {
     await api.resolveDuplicates(keep, del)
     done(g)
     emit('resolved', deletedBytes(g.assets, keep))
-    await load() // the reclaimable size changed
   } catch (e: any) {
     const msg = e?.data?.error || t('photos.action_failed')
     await load() // a good load clears the error; this one must stay
@@ -139,7 +145,6 @@ async function keepAll() {
   try {
     await api.dismissDuplicates(g.assets.map((c) => c.id))
     done(g)
-    await load()
   } catch (e: any) {
     const msg = e?.data?.error || t('photos.action_failed')
     await load()

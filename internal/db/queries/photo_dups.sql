@@ -55,6 +55,39 @@ FROM base
 WHERE rn = 1 AND thumb_state = 'ready' AND phash IS NOT NULL AND NOT phash_flat
 ORDER BY id;
 
+-- ListDupCandidates for the contents named by keys only: what a resolve or dismiss needs to
+-- check the cards it was given, without a pass over the whole library. The windows are
+-- per content, so the rows are the ones ListDupCandidates returns for these contents.
+-- name: ListDupCandidatesByKeys :many
+WITH base AS (
+    SELECT a.id, a.kind, a.taken_at, a.taken_local, a.date_source, a.make, a.model, a.width, a.height,
+           a.duration_ms, a.phash, a.phash_flat, a.indexed_at, a.thumb_state,
+           coalesce(a.content_hash, a.id::text)::text AS key,
+           n.name, n.disk_path, coalesce(n.size, 0)::bigint AS size,
+           EXISTS (SELECT 1 FROM photo_assets k
+                   WHERE k.parent_id = a.id AND k.role IN ('live-video', 'original')
+                     AND k.trashed_at IS NULL) AS has_kids,
+           row_number() OVER (PARTITION BY coalesce(a.content_hash, a.id::text)
+                              ORDER BY (a.thumb_state = 'ready' AND a.phash IS NOT NULL AND NOT a.phash_flat) DESC,
+                                       a.id) AS rn,
+           sum(coalesce(n.size, 0)) OVER (PARTITION BY coalesce(a.content_hash, a.id::text))::bigint AS total_bytes,
+           count(*) OVER (PARTITION BY coalesce(a.content_hash, a.id::text))::int AS copies
+    FROM photo_assets a
+    JOIN nodes n ON n.id = a.node_id
+    WHERE a.user_id = $1 AND a.parent_id IS NULL AND a.trashed_at IS NULL AND NOT a.hidden
+      AND coalesce(a.content_hash, a.id::text) = ANY(sqlc.arg(keys)::text[])
+      AND n.deleted_at IS NULL
+)
+SELECT id, kind, taken_at, taken_local, date_source, make, model, width, height, duration_ms, phash,
+       indexed_at, key, name, disk_path, total_bytes, copies, has_kids
+FROM base
+WHERE rn = 1 AND thumb_state = 'ready' AND phash IS NOT NULL AND NOT phash_flat
+ORDER BY id;
+
+-- name: ListDupDismissedAmong :many
+SELECT a, b FROM photo_dup_dismissed
+WHERE user_id = $1 AND a = ANY(sqlc.arg(keys)::text[]) AND b = ANY(sqlc.arg(keys)::text[]);
+
 -- name: ListDupDismissed :many
 SELECT a, b FROM photo_dup_dismissed WHERE user_id = $1;
 

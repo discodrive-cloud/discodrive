@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { DUP_POLL_MS, deleteWarnings, deletedBytes, groupKey, mergeQueue, nextLoad, skipGroup } from './duplicates'
+import { DUP_POLL_MS, deleteWarnings, deletedBytes, groupKey, groupReclaim, mergeQueue, nextLoad, skipGroup } from './duplicates'
 
 const a = (id: string, live = false, edited = false, bytes = 0) => ({ id, live, edited, bytes })
 
@@ -15,6 +15,14 @@ describe('deleteWarnings', () => {
   })
   test('deleteWarnings: both, each once, live first', () => {
     expect(deleteWarnings([a('d1', false, true), a('k', true, true), a('d2', true), a('d3', true, true)], 'k')).toEqual(['live', 'edited'])
+  })
+})
+
+describe('groupReclaim', () => {
+  test('every copy but the suggested first one', () => {
+    expect(groupReclaim([a('keep', false, false, 500), a('d1', false, false, 300), a('d2', false, false, 200)])).toBe(500)
+    expect(groupReclaim([a('only', false, false, 500)])).toBe(0)
+    expect(groupReclaim([])).toBe(0)
   })
 })
 

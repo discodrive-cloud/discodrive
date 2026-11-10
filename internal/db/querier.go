@@ -463,7 +463,12 @@ type Querier interface {
 	// thumbnail and a usable hash); bytes/copies cover every copy of the content, trashed ones
 	// excluded. key names the content for the dismissed pairs.
 	ListDupCandidates(ctx context.Context, userID pgtype.UUID) ([]ListDupCandidatesRow, error)
+	// ListDupCandidates for the contents named by keys only: what a resolve or dismiss needs to
+	// check the cards it was given, without a pass over the whole library. The windows are
+	// per content, so the rows are the ones ListDupCandidates returns for these contents.
+	ListDupCandidatesByKeys(ctx context.Context, arg ListDupCandidatesByKeysParams) ([]ListDupCandidatesByKeysRow, error)
 	ListDupDismissed(ctx context.Context, userID pgtype.UUID) ([]ListDupDismissedRow, error)
+	ListDupDismissedAmong(ctx context.Context, arg ListDupDismissedAmongParams) ([]ListDupDismissedAmongRow, error)
 	ListEpisodesByChannel(ctx context.Context, channelID pgtype.UUID) ([]PodcastEpisode, error)
 	ListExpiredTombstones(ctx context.Context, deletedAt pgtype.Timestamptz) ([]ListExpiredTombstonesRow, error)
 	// Users with people turned on (the queue's passes after a restart).
