@@ -82,3 +82,38 @@ func TestCalendarObjectsInWindow(t *testing.T) {
 		t.Fatalf("June after the edit: %s\nwant %s", got, want)
 	}
 }
+
+// An object whose dates cannot be read is looked at once: it stays in every window, and
+// the next start of the server does not parse it again.
+func TestBackfillSpansSettlesUnreadableObjects(t *testing.T) {
+	svc, pool, userID, _ := setupReview(t)
+	ctx := context.Background()
+	cal, err := svc.CreateCalendar(ctx, userID, "Личный", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calID := db.UUIDString(cal.ID)
+	if _, err := svc.PutCalendarObject(ctx, calID, "odd", spanEvent("odd", "DTSTART:20240101T120000Z\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	// As a row written before the migration looks, with a start no parser reads.
+	if _, err := pool.Exec(ctx, `UPDATE calendar_objects SET span_start = NULL, span_end = NULL, span_known = false,
+		data = replace(data, 'DTSTART:20240101T120000Z', 'DTSTART:someday') WHERE uid = 'odd'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.BackfillSpans(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var pending int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM calendar_objects WHERE NOT span_known").Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Errorf("%d objects are left for the next start to parse again", pending)
+	}
+	objs, err := svc.CalendarObjectsInWindow(ctx, calID,
+		time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil || len(objs) != 1 {
+		t.Fatalf("the unreadable object left the window: %d objects (err %v)", len(objs), err)
+	}
+}

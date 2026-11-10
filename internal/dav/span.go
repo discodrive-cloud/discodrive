@@ -20,13 +20,13 @@ const spanSlack = 48 * time.Hour
 
 // eventSpan returns the interval outside which no occurrence of the object's events can
 // fall, for filtering a calendar by date in SQL. A nil bound is open: end is open for a
-// recurring object, both are for one without events. known is false when the object
-// cannot be read with confidence — it is then never filtered out. The span may be wider
+// recurring object, both are for one without events and for one that cannot be read
+// with confidence — such an object is never filtered out. The span may be wider
 // than the events; the exact check still runs on whatever passes the filter.
-func eventSpan(data string) (start, end *time.Time, known bool) {
+func eventSpan(data string) (start, end *time.Time) {
 	cal, err := ical.NewDecoder(strings.NewReader(data)).Decode()
 	if err != nil {
-		return nil, nil, false
+		return nil, nil
 	}
 	var first, last time.Time
 	events, open := 0, false
@@ -37,7 +37,7 @@ func eventSpan(data string) (start, end *time.Time, known bool) {
 		events++
 		st, date, ok := wallClock(comp.Props.Get(ical.PropDateTimeStart))
 		if !ok {
-			return nil, nil, false
+			return nil, nil
 		}
 		en := st
 		if date {
@@ -46,7 +46,7 @@ func eventSpan(data string) (start, end *time.Time, known bool) {
 		if p := comp.Props.Get(ical.PropDateTimeEnd); p != nil {
 			t, _, ok := wallClock(p)
 			if !ok {
-				return nil, nil, false
+				return nil, nil
 			}
 			if t.After(st) {
 				en = t
@@ -64,13 +64,13 @@ func eventSpan(data string) (start, end *time.Time, known bool) {
 		}
 	}
 	if events == 0 {
-		return nil, nil, true
+		return nil, nil
 	}
 	first, last = first.Add(-spanSlack), last.Add(spanSlack)
 	if open {
-		return &first, nil, true
+		return &first, nil
 	}
-	return &first, &last, true
+	return &first, &last
 }
 
 // wallClock reads a DATE or DATE-TIME value as the clock time it states, in UTC, ignoring
@@ -98,7 +98,7 @@ func spanValue(t *time.Time) pgtype.Timestamptz {
 
 // CalendarObjectsInWindow returns the objects of a calendar that can have an occurrence
 // between start and end: those whose span overlaps the window, the open-ended ones, and
-// those whose span is not known. It is the listing for a date range — a month view reads
+// those not yet looked at. It is the listing for a date range — a month view reads
 // the month's events, not the calendar's whole history.
 func (s *Service) CalendarObjectsInWindow(ctx context.Context, calID string, start, end time.Time) ([]db.CalendarObject, error) {
 	cid, err := db.ParseUUID(calID)
@@ -128,10 +128,9 @@ func (s *Service) BackfillSpans(ctx context.Context) (int, error) {
 		}
 		for _, r := range rows {
 			after = r.ID
-			start, end, known := eventSpan(r.Data)
-			if !known {
-				continue
-			}
+			// An object that cannot be read gets an open span and is settled too: it is
+			// not parsed again at every start.
+			start, end := eventSpan(r.Data)
 			// Only if the object is still the one that was read: a write in between has
 			// stored its own span.
 			n, err := s.q.SetCalendarObjectSpan(ctx, db.SetCalendarObjectSpanParams{

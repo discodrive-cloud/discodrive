@@ -2,12 +2,15 @@ package coverthumb
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"image/png"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func picture(t *testing.T, w, h int) []byte {
@@ -85,4 +88,93 @@ func TestGetGivesNothingItCannotStandBehind(t *testing.T) {
 	if _, ok := Get(root, key, 320, func() ([]byte, bool) { return []byte("<svg></svg>"), true }); ok {
 		t.Error("a thumbnail of something that is not a raster image")
 	}
+}
+
+// Scaling decodes the whole picture into memory. A cover beyond what a small machine can
+// afford is not decoded: the caller serves the file itself, as it did before thumbnails.
+func TestGetLeavesAHugeCoverAlone(t *testing.T) {
+	root := t.TempDir()
+	if _, ok := Get(root, key, 320, func() ([]byte, bool) { return picture(t, 2400, 2400), true }); ok {
+		t.Fatal("a 5.8-megapixel cover was decoded")
+	}
+	if _, ok := Get(root, key, 320, func() ([]byte, bool) { return picture(t, 2000, 2000), true }); !ok {
+		t.Fatal("a 2000x2000 cover got no thumbnail")
+	}
+}
+
+// A cold grid asks for the same cover from several places at once, and for a hundred
+// others. One picture is in memory at a time, and a picture is made once.
+func TestGetMakesOneThumbnailAtATime(t *testing.T) {
+	root := t.TempDir()
+	data := picture(t, 600, 600)
+	var mu sync.Mutex
+	inside, most, calls := 0, 0, 0
+	original := func() ([]byte, bool) {
+		mu.Lock()
+		inside++
+		calls++
+		most = max(most, inside)
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		mu.Lock()
+		inside--
+		mu.Unlock()
+		return data, true
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			k := key
+			if i >= 3 {
+				k = strings.Repeat("ab", 32)
+			}
+			if _, ok := Get(root, k, 320, original); !ok {
+				t.Error("no thumbnail")
+			}
+		}(i)
+	}
+	wg.Wait()
+	if most != 1 {
+		t.Errorf("%d originals were held at once, want 1", most)
+	}
+	if calls != 2 {
+		t.Errorf("the originals were read %d times for 2 pictures", calls)
+	}
+}
+
+// The line for the one slot is short: past it a request gets no thumbnail right away
+// (and so the original, as before) instead of waiting behind a whole cold grid.
+func TestGetDoesNotQueueWithoutBound(t *testing.T) {
+	root := t.TempDir()
+	data := picture(t, 600, 600)
+	started, release := make(chan struct{}), make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		Get(root, key, 320, func() ([]byte, bool) { close(started); <-release; return data, true })
+	}()
+	<-started
+	keyOf := func(i int) string { return fmt.Sprintf("%064x", i+1) }
+	for i := 0; i < maxWaiting; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			Get(root, keyOf(i), 320, func() ([]byte, bool) { return data, true })
+		}(i)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for waiting.Load() < maxWaiting {
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d requests lined up", waiting.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, ok := Get(root, keyOf(1000), 320, func() ([]byte, bool) { t.Error("the original was read"); return nil, false }); ok {
+		t.Error("a request past the line got a thumbnail")
+	}
+	close(release)
+	wg.Wait()
 }
