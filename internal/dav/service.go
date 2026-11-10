@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -663,6 +664,47 @@ func (s *Service) CalendarObjectsByUIDs(ctx context.Context, calID string, uids 
 	out := make(map[string]StoredObject, len(rows))
 	for _, r := range rows {
 		out[r.Uid] = StoredObject{Data: r.Data, ETag: r.Etag}
+	}
+	return out, nil
+}
+
+// ObjectHead is a stored object without its data: what a listing with ETags needs.
+type ObjectHead struct {
+	UID, ETag string
+	UpdatedAt time.Time
+	Size      int64
+}
+
+// CalendarObjectHeads lists a calendar's objects without reading their data.
+func (s *Service) CalendarObjectHeads(ctx context.Context, calID string) ([]ObjectHead, error) {
+	cid, err := db.ParseUUID(calID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.q.ListCalendarObjectHeads(ctx, cid)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ObjectHead, len(rows))
+	for i, r := range rows {
+		out[i] = ObjectHead{UID: r.Uid, ETag: r.Etag, UpdatedAt: r.UpdatedAt.Time, Size: r.Size}
+	}
+	return out, nil
+}
+
+// AddressbookObjectHeads lists an address book's cards without reading their data.
+func (s *Service) AddressbookObjectHeads(ctx context.Context, abID string) ([]ObjectHead, error) {
+	aid, err := db.ParseUUID(abID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.q.ListAddressbookObjectHeads(ctx, aid)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ObjectHead, len(rows))
+	for i, r := range rows {
+		out[i] = ObjectHead{UID: r.Uid, ETag: r.Etag, UpdatedAt: r.UpdatedAt.Time, Size: r.Size}
 	}
 	return out, nil
 }

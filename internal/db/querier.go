@@ -402,6 +402,8 @@ type Querier interface {
 	// WebAuthn credentials (A.4). The full go-webauthn Credential is stored as JSON.
 	InsertWebAuthnCredential(ctx context.Context, arg InsertWebAuthnCredentialParams) (WebauthnCredential, error)
 	IsPhotoPartner(ctx context.Context, arg IsPhotoPartnerParams) (bool, error)
+	// What a listing with ETags needs, without the cards themselves.
+	ListAddressbookObjectHeads(ctx context.Context, addressbookID pgtype.UUID) ([]ListAddressbookObjectHeadsRow, error)
 	ListAddressbookObjects(ctx context.Context, addressbookID pgtype.UUID) ([]AddressbookObject, error)
 	// The contact list needs the name, e-mails and phones (parsed) only. data holds the whole
 	// vCard with its base64 photo — hundreds of megabytes across a large address book.
@@ -429,6 +431,8 @@ type Querier interface {
 	// cursor at that seq would otherwise skip the rest of the group.
 	ListBrowserBookmarksAtSeq(ctx context.Context, arg ListBrowserBookmarksAtSeqParams) ([]BrowserBookmark, error)
 	ListBrowserBookmarksNeedingFavicon(ctx context.Context, limit int32) ([]BrowserBookmark, error)
+	// What a listing with ETags needs, without the objects themselves.
+	ListCalendarObjectHeads(ctx context.Context, calendarID pgtype.UUID) ([]ListCalendarObjectHeadsRow, error)
 	ListCalendarObjects(ctx context.Context, calendarID pgtype.UUID) ([]CalendarObject, error)
 	ListCalendars(ctx context.Context, userID pgtype.UUID) ([]Calendar, error)
 	// Changes after seq with each node's current state, for library indexing.

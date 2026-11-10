@@ -1877,6 +1877,44 @@ func (q *Queries) InsertWebAuthnCredential(ctx context.Context, arg InsertWebAut
 	return i, err
 }
 
+const listAddressbookObjectHeads = `-- name: ListAddressbookObjectHeads :many
+SELECT uid, etag, updated_at, octet_length(data)::bigint AS size
+FROM addressbook_objects WHERE addressbook_id = $1 ORDER BY uid
+`
+
+type ListAddressbookObjectHeadsRow struct {
+	Uid       string             `json:"uid"`
+	Etag      string             `json:"etag"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	Size      int64              `json:"size"`
+}
+
+// What a listing with ETags needs, without the cards themselves.
+func (q *Queries) ListAddressbookObjectHeads(ctx context.Context, addressbookID pgtype.UUID) ([]ListAddressbookObjectHeadsRow, error) {
+	rows, err := q.db.Query(ctx, listAddressbookObjectHeads, addressbookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAddressbookObjectHeadsRow{}
+	for rows.Next() {
+		var i ListAddressbookObjectHeadsRow
+		if err := rows.Scan(
+			&i.Uid,
+			&i.Etag,
+			&i.UpdatedAt,
+			&i.Size,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAddressbookObjects = `-- name: ListAddressbookObjects :many
 SELECT id, addressbook_id, uid, data, etag, parsed, created_at, updated_at FROM addressbook_objects WHERE addressbook_id = $1 ORDER BY uid
 `
@@ -2024,6 +2062,44 @@ func (q *Queries) ListAuditLog(ctx context.Context, arg ListAuditLogParams) ([]A
 			&i.UserAgent,
 			&i.Detail,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCalendarObjectHeads = `-- name: ListCalendarObjectHeads :many
+SELECT uid, etag, updated_at, octet_length(data)::bigint AS size
+FROM calendar_objects WHERE calendar_id = $1 ORDER BY uid
+`
+
+type ListCalendarObjectHeadsRow struct {
+	Uid       string             `json:"uid"`
+	Etag      string             `json:"etag"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	Size      int64              `json:"size"`
+}
+
+// What a listing with ETags needs, without the objects themselves.
+func (q *Queries) ListCalendarObjectHeads(ctx context.Context, calendarID pgtype.UUID) ([]ListCalendarObjectHeadsRow, error) {
+	rows, err := q.db.Query(ctx, listCalendarObjectHeads, calendarID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCalendarObjectHeadsRow{}
+	for rows.Next() {
+		var i ListCalendarObjectHeadsRow
+		if err := rows.Scan(
+			&i.Uid,
+			&i.Etag,
+			&i.UpdatedAt,
+			&i.Size,
 		); err != nil {
 			return nil, err
 		}

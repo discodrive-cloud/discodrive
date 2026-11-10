@@ -830,6 +830,11 @@ SELECT * FROM calendar_objects WHERE calendar_id = $1 AND uid = $2;
 -- name: ListCalendarObjects :many
 SELECT * FROM calendar_objects WHERE calendar_id = $1 ORDER BY uid;
 
+-- What a listing with ETags needs, without the objects themselves.
+-- name: ListCalendarObjectHeads :many
+SELECT uid, etag, updated_at, octet_length(data)::bigint AS size
+FROM calendar_objects WHERE calendar_id = $1 ORDER BY uid;
+
 -- The objects a multiget names, in one query.
 -- name: GetCalendarObjectsByUIDs :many
 SELECT uid, data, etag FROM calendar_objects
@@ -881,6 +886,11 @@ SELECT * FROM addressbook_objects WHERE addressbook_id = $1 ORDER BY uid;
 -- vCard with its base64 photo — hundreds of megabytes across a large address book.
 -- name: ListAddressbookSummaries :many
 SELECT uid, parsed FROM addressbook_objects WHERE addressbook_id = $1 ORDER BY uid;
+
+-- What a listing with ETags needs, without the cards themselves.
+-- name: ListAddressbookObjectHeads :many
+SELECT uid, etag, updated_at, octet_length(data)::bigint AS size
+FROM addressbook_objects WHERE addressbook_id = $1 ORDER BY uid;
 
 -- The cards a multiget names, in one query.
 -- name: GetAddressbookObjectsByUIDs :many

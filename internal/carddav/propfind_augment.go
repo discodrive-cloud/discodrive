@@ -1,7 +1,9 @@
 package carddav
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -40,6 +42,12 @@ func (b *bufResponseWriter) Write(p []byte) (int, error) {
 // servePropfind passes PROPFIND through go-webdav and rewrites the body to inject getctag /
 // supported-report-set for address book collections.
 func (b *Backend) servePropfind(w http.ResponseWriter, r *http.Request, dav http.Handler) {
+	if raw, err := io.ReadAll(r.Body); err == nil {
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		if headsOnlyPropfind(raw, "address-data") {
+			r = r.WithContext(context.WithValue(r.Context(), headsOnlyKey{}, true))
+		}
+	}
 	buf := newBufRW()
 	dav.ServeHTTP(buf, r)
 	body := []byte(buf.body.String())
@@ -128,4 +136,20 @@ func (b *Backend) augmentPropfind(ctx context.Context, body []byte) []byte {
 		return body
 	}
 	return out
+}
+
+// headsOnlyKey marks a PROPFIND that names its properties and does not ask for the cards'
+// data: listing an address book for it reads uid, ETag, date and size only.
+type headsOnlyKey struct{}
+
+func headsOnly(ctx context.Context) bool {
+	v, _ := ctx.Value(headsOnlyKey{}).(bool)
+	return v
+}
+
+// headsOnlyPropfind reports whether a PROPFIND body lists the properties it wants and the
+// data property is not among them. An empty body means allprop (RFC 4918), which is.
+func headsOnlyPropfind(body []byte, dataProp string) bool {
+	return bytes.Contains(body, []byte("prop")) &&
+		!bytes.Contains(body, []byte("allprop")) && !bytes.Contains(body, []byte(dataProp))
 }

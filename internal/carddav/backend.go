@@ -189,6 +189,21 @@ func (b *Backend) ListAddressObjects(ctx context.Context, path string, req *card
 	if err != nil {
 		return nil, err
 	}
+	if headsOnly(ctx) {
+		// A listing for ETags: nothing reads Card, so the cards are neither loaded nor
+		// decoded (go-webdav touches Card only for an address-data property).
+		heads, err := b.svc.AddressbookObjectHeads(ctx, db.UUIDString(ab.ID))
+		if err != nil {
+			return nil, err
+		}
+		out := make([]carddav.AddressObject, len(heads))
+		for i, h := range heads {
+			out[i] = carddav.AddressObject{
+				Path: objectPath(uid, uri, h.UID), ETag: h.ETag, ModTime: h.UpdatedAt, ContentLength: h.Size,
+			}
+		}
+		return out, nil
+	}
 	objs, err := b.svc.ListAddressbookObjects(ctx, db.UUIDString(ab.ID))
 	if err != nil {
 		return nil, err

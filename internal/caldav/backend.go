@@ -172,6 +172,21 @@ func (b *Backend) ListCalendarObjects(ctx context.Context, path string, req *cal
 	if err != nil {
 		return nil, err
 	}
+	if headsOnly(ctx) {
+		// A listing for ETags: nothing reads Data, so the objects are neither loaded nor
+		// decoded (go-webdav touches Data only for a calendar-data property).
+		heads, err := b.svc.CalendarObjectHeads(ctx, db.UUIDString(cal.ID))
+		if err != nil {
+			return nil, err
+		}
+		out := make([]caldav.CalendarObject, len(heads))
+		for i, h := range heads {
+			out[i] = caldav.CalendarObject{
+				Path: objectPath(uid, uri, h.UID), ETag: h.ETag, ModTime: h.UpdatedAt, ContentLength: h.Size,
+			}
+		}
+		return out, nil
+	}
 	objs, err := b.svc.ListCalendarObjects(ctx, db.UUIDString(cal.ID))
 	if err != nil {
 		return nil, err

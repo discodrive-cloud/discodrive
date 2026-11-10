@@ -33,11 +33,37 @@ type reviewEnv struct {
 }
 
 // queryCounter counts the statements sent to the database.
-type queryCounter struct{ n atomic.Int64 }
+type queryCounter struct {
+	n   atomic.Int64
+	mu  sync.Mutex
+	sql []string
+}
 
-func (c *queryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+func (c *queryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, q pgx.TraceQueryStartData) context.Context {
 	c.n.Add(1)
+	c.mu.Lock()
+	c.sql = append(c.sql, q.SQL)
+	c.mu.Unlock()
 	return ctx
+}
+
+// reset forgets what was counted; ran reports whether a statement with this sqlc name ran since.
+func (c *queryCounter) reset() {
+	c.n.Store(0)
+	c.mu.Lock()
+	c.sql = nil
+	c.mu.Unlock()
+}
+
+func (c *queryCounter) ran(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, q := range c.sql {
+		if strings.Contains(q, "-- name: "+name+" ") {
+			return true
+		}
+	}
+	return false
 }
 func (c *queryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
@@ -254,7 +280,7 @@ func TestMultigetQueriesDoNotGrowWithEvents(t *testing.T) {
 	}
 	body.WriteString("<D:href>" + e.calDir + "missing.ics</D:href></C:calendar-multiget>")
 
-	e.queries.n.Store(0)
+	e.queries.reset()
 	rep := e.req(t, e.ownerID, "REPORT", e.calDir, body.String(), map[string]string{"Depth": "1"})
 	if rep.Code != http.StatusMultiStatus {
 		t.Fatalf("REPORT: %d %s", rep.Code, rep.Body)
@@ -271,5 +297,44 @@ func TestMultigetQueriesDoNotGrowWithEvents(t *testing.T) {
 	}
 	if used > 12 {
 		t.Fatalf("a multiget of %d events made %d queries, want a constant handful", events, used)
+	}
+}
+
+// A client checking what changed lists the calendar with ETags only (PROPFIND Depth:1).
+// That must not read and parse every event.
+func TestPropfindListingDoesNotLoadEvents(t *testing.T) {
+	e := setupReview(t)
+	for _, uid := range []string{"a", "b", "c"} {
+		if rec := e.req(t, e.ownerID, http.MethodPut, e.calDir+uid+".ics", eventWith(uid, "secret-"+uid), nil); rec.Code/100 != 2 {
+			t.Fatalf("PUT %s: %d %s", uid, rec.Code, rec.Body)
+		}
+	}
+	etags := `<?xml version="1.0" encoding="UTF-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/><D:getcontentlength/></D:prop></D:propfind>`
+	e.queries.reset()
+	rec := e.req(t, e.ownerID, "PROPFIND", e.calDir, etags, map[string]string{"Depth": "1"})
+	if rec.Code != http.StatusMultiStatus {
+		t.Fatalf("PROPFIND: %d %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	for _, uid := range []string{"a.ics", "b.ics", "c.ics"} {
+		if !strings.Contains(body, uid) {
+			t.Errorf("the listing misses %s", uid)
+		}
+	}
+	if n := strings.Count(body, "getetag>"); n < 3 {
+		t.Errorf("the listing carries %d getetag tags, want one per event", n)
+	}
+	if strings.Contains(body, "secret-") {
+		t.Error("the listing carries event data nobody asked for")
+	}
+	if e.queries.ran("ListCalendarObjects") {
+		t.Error("an ETag listing read every event in full")
+	}
+
+	// A client that does ask for the data in PROPFIND still gets it.
+	withData := `<?xml version="1.0" encoding="UTF-8"?><D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:prop><D:getetag/><C:calendar-data/></D:prop></D:propfind>`
+	rec = e.req(t, e.ownerID, "PROPFIND", e.calDir, withData, map[string]string{"Depth": "1"})
+	if rec.Code != http.StatusMultiStatus || !strings.Contains(rec.Body.String(), "secret-a") {
+		t.Errorf("PROPFIND with calendar-data: %d, data present: %v", rec.Code, strings.Contains(rec.Body.String(), "secret-a"))
 	}
 }

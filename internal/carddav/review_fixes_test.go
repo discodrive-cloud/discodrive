@@ -32,11 +32,37 @@ type reviewEnv struct {
 }
 
 // queryCounter counts the statements sent to the database.
-type queryCounter struct{ n atomic.Int64 }
+type queryCounter struct {
+	n   atomic.Int64
+	mu  sync.Mutex
+	sql []string
+}
 
-func (c *queryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+func (c *queryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, q pgx.TraceQueryStartData) context.Context {
 	c.n.Add(1)
+	c.mu.Lock()
+	c.sql = append(c.sql, q.SQL)
+	c.mu.Unlock()
 	return ctx
+}
+
+// reset forgets what was counted; ran reports whether a statement with this sqlc name ran since.
+func (c *queryCounter) reset() {
+	c.n.Store(0)
+	c.mu.Lock()
+	c.sql = nil
+	c.mu.Unlock()
+}
+
+func (c *queryCounter) ran(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, q := range c.sql {
+		if strings.Contains(q, "-- name: "+name+" ") {
+			return true
+		}
+	}
+	return false
 }
 func (c *queryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
@@ -83,6 +109,9 @@ func setupReview(t *testing.T) *reviewEnv {
 			return
 		case "REPORT":
 			backend.serveReport(w, r.WithContext(ctx), gh)
+			return
+		case "PROPFIND":
+			backend.servePropfind(w, r.WithContext(ctx), gh)
 			return
 		case http.MethodGet:
 			if backend.ServeRawObject(w, r.WithContext(ctx)) {
@@ -281,7 +310,7 @@ func TestMultigetQueriesDoNotGrowWithCards(t *testing.T) {
 	}
 	hrefs = append(hrefs, e.abDir+"missing.vcf")
 
-	e.queries.n.Store(0)
+	e.queries.reset()
 	rep := e.req(t, e.ownerID, "REPORT", e.abDir, multiget(hrefs...), map[string]string{"Depth": "1"})
 	if rep.Code != http.StatusMultiStatus {
 		t.Fatalf("REPORT: %d %s", rep.Code, rep.Body)
@@ -298,5 +327,45 @@ func TestMultigetQueriesDoNotGrowWithCards(t *testing.T) {
 	}
 	if used > 12 {
 		t.Fatalf("a multiget of %d cards made %d queries, want a constant handful", cards, used)
+	}
+}
+
+// A client checking what changed lists the address book with ETags only (PROPFIND
+// Depth:1). That must not read — let alone parse — every card: with photos an address
+// book is hundreds of megabytes of vCard.
+func TestPropfindListingDoesNotLoadCards(t *testing.T) {
+	e := setupReview(t)
+	for _, uid := range []string{"a", "b", "c"} {
+		if rec := e.req(t, e.ownerID, http.MethodPut, e.abDir+uid+".vcf", vcardWith(uid, "NOTE:secret-"+uid+"\r\n"), nil); rec.Code/100 != 2 {
+			t.Fatalf("PUT %s: %d %s", uid, rec.Code, rec.Body)
+		}
+	}
+	etags := `<?xml version="1.0" encoding="UTF-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/><D:getcontentlength/></D:prop></D:propfind>`
+	e.queries.reset()
+	rec := e.req(t, e.ownerID, "PROPFIND", e.abDir, etags, map[string]string{"Depth": "1"})
+	if rec.Code != http.StatusMultiStatus {
+		t.Fatalf("PROPFIND: %d %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	for _, uid := range []string{"a.vcf", "b.vcf", "c.vcf"} {
+		if !strings.Contains(body, uid) {
+			t.Errorf("the listing misses %s", uid)
+		}
+	}
+	if n := strings.Count(body, "getetag>"); n < 3 {
+		t.Errorf("the listing carries %d getetag tags, want one per card", n)
+	}
+	if strings.Contains(body, "secret-") {
+		t.Error("the listing carries card data nobody asked for")
+	}
+	if e.queries.ran("ListAddressbookObjects") {
+		t.Error("an ETag listing read every card in full")
+	}
+
+	// A client that does ask for the data in PROPFIND still gets it.
+	withData := `<?xml version="1.0" encoding="UTF-8"?><D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:prop><D:getetag/><C:address-data/></D:prop></D:propfind>`
+	rec = e.req(t, e.ownerID, "PROPFIND", e.abDir, withData, map[string]string{"Depth": "1"})
+	if rec.Code != http.StatusMultiStatus || !strings.Contains(rec.Body.String(), "secret-a") {
+		t.Errorf("PROPFIND with address-data: %d, data present: %v", rec.Code, strings.Contains(rec.Body.String(), "secret-a"))
 	}
 }
