@@ -18,5 +18,8 @@ SELECT COALESCE(SUM(bytes),0)::bigint FROM upload_reservations;
 SELECT * FROM upload_reservations WHERE touched_at < $1 ORDER BY touched_at LIMIT 256;
 -- name: LockUploadQuota :exec
 SELECT pg_advisory_xact_lock(749341217);
+-- One user's quota checks, serialized among themselves (see quota.Checker.Lock).
+-- name: LockUserQuota :exec
+SELECT pg_advisory_xact_lock(749341218, hashtext(sqlc.arg(user_id)::uuid::text));
 -- name: DeleteEmptyUploadReservation :exec
 DELETE FROM upload_reservations WHERE id=$1 AND bytes=0;

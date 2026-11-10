@@ -166,7 +166,11 @@ func storeCover(ctx context.Context, q *db.Queries, root, rel string, ch db.Podc
 	defer tx.Rollback(context.Background())
 	qt := q.WithTx(tx)
 	// Serialize publication with quota reservations; charge bytes in the same transaction.
-	if err = qt.LockUploadQuota(ctx); err != nil {
+	var total int64
+	if len(limits) > 0 {
+		total = limits[0].Total()
+	}
+	if err = quota.New(qt, total).Lock(ctx, qt, ch.UserID); err != nil {
 		return err
 	}
 	current, err := qt.LockPodcastChannel(ctx, db.LockPodcastChannelParams{ID: ch.ID, UserID: ch.UserID})
@@ -175,10 +179,6 @@ func storeCover(ctx context.Context, q *db.Queries, root, rel string, ch db.Podc
 	}
 	if current.CoverPath.Valid && current.CoverPath.String != "" {
 		return nil
-	}
-	var total int64
-	if len(limits) > 0 {
-		total = limits[0].Total()
 	}
 	if err = quota.New(qt, total).Check(ctx, ch.UserID, info.Size()); err != nil {
 		return err

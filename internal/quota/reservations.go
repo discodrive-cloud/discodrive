@@ -168,7 +168,7 @@ func (r *reservationReader) Read(p []byte) (int, error) {
 		_ = tx.Rollback(cleanup)
 	}()
 	q := db.New(tx)
-	if err = q.LockUploadQuota(v.ctx); err != nil {
+	if err = v.c.Lock(v.ctx, q, v.Row.UserID); err != nil {
 		return 0, err
 	}
 	// Read the sums AFTER acquiring the lock, using a fresh statement/snapshot.

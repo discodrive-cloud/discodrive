@@ -502,7 +502,7 @@ func (h *Handler) publishEpisode(ctx context.Context, user pgtype.UUID, arg db.S
 	}
 	defer tx.Rollback(context.Background())
 	qt := h.q.WithTx(tx)
-	if err := qt.LockUploadQuota(ctx); err != nil {
+	if err := h.files.Quota().Lock(ctx, qt, user); err != nil {
 		return err
 	}
 	if err := quota.New(qt, h.files.Quota().Total()).Check(ctx, user, arg.Size.Int64); err != nil {

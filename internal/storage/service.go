@@ -111,7 +111,7 @@ func (s *FileService) CheckQuota(ctx context.Context, userID string, n int64) er
 
 // holdQuota charges n bytes to owner before a write that cannot be streamed through an
 // upload reservation (a version restore, an undelete copy). The check runs under the
-// global upload-quota lock and leaves a reservation row behind, so concurrent writers of
+// owner's quota lock (quota.Checker.Lock) and leaves a reservation row behind, so concurrent writers of
 // the same user see these bytes as used until release is called — after the write has
 // committed or failed. A crash leaves the row to the stale-reservation GC.
 func (s *FileService) holdQuota(ctx context.Context, owner pgtype.UUID, n int64) (release func(), err error) {
@@ -124,7 +124,7 @@ func (s *FileService) holdQuota(ctx context.Context, owner pgtype.UUID, n int64)
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
-	if err := qtx.LockUploadQuota(ctx); err != nil {
+	if err := s.quota.Lock(ctx, qtx, owner); err != nil {
 		return nil, err
 	}
 	if err := quota.New(qtx, s.quota.Total()).Check(ctx, owner, n); err != nil {
@@ -1906,9 +1906,9 @@ func (s *FileService) adoptOnce(ctx context.Context, userID, tmpRel, diskRel, di
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
 	// Parallel downloads each sampled the same allowance; charge the file under the
-	// upload-quota lock so they cannot all land.
+	// owner's quota lock so they cannot all land.
 	if s.quota != nil && size > counted {
-		if err := qtx.LockUploadQuota(ctx); err != nil {
+		if err := s.quota.Lock(ctx, qtx, ownerUUID); err != nil {
 			return db.Node{}, err
 		}
 		if err := quota.New(qtx, s.quota.Total()).Check(ctx, ownerUUID, size-counted); err != nil {

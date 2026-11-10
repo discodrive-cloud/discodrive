@@ -48,13 +48,13 @@ type Service struct {
 func (s *Service) SetQuota(c *quota.Checker) { s.quota = c }
 
 // chargeQuota refuses a write that grows the owner's data by grow bytes past the quota.
-// It takes the upload-quota lock, so concurrent writes (here and in the file tree) cannot
+// It takes the owner's quota lock (quota.Checker.Lock), so concurrent writes (here and in the file tree) cannot
 // each pass the check against the same free space; the lock is held until tx ends.
 func (s *Service) chargeQuota(ctx context.Context, qtx *db.Queries, owner pgtype.UUID, grow int64) error {
 	if s.quota == nil || grow <= 0 {
 		return nil
 	}
-	if err := qtx.LockUploadQuota(ctx); err != nil {
+	if err := s.quota.Lock(ctx, qtx, owner); err != nil {
 		return err
 	}
 	return quota.New(qtx, s.quota.Total()).Check(ctx, owner, grow)

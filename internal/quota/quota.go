@@ -171,6 +171,22 @@ func (c *Checker) Allowance(ctx context.Context, userID pgtype.UUID) (int64, err
 	return allowance, nil
 }
 
+// Lock serializes quota checks until q's transaction ends, so that concurrent writers
+// cannot each pass the check against the same free space. What is shared decides who
+// waits for whom: a user's own quota is shared by that user's writes only, so they queue
+// among themselves; the server-wide cap is shared by everyone, and only when one is
+// configured do all checks queue together. The user lock is always taken first.
+// (A nil Checker — no limits — still locks the user: callers reserve under it.)
+func (c *Checker) Lock(ctx context.Context, q *db.Queries, userID pgtype.UUID) error {
+	if err := q.LockUserQuota(ctx, userID); err != nil {
+		return err
+	}
+	if c != nil && c.total > 0 {
+		return q.LockUploadQuota(ctx)
+	}
+	return nil
+}
+
 // Check reports whether the user may write n more bytes.
 func (c *Checker) Check(ctx context.Context, userID pgtype.UUID, n int64) error {
 	if c == nil || n <= 0 {

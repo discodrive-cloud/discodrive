@@ -673,6 +673,8 @@ type Querier interface {
 	// a hash collision only makes two unrelated paths wait for each other.
 	LockTreePath(ctx context.Context, path string) error
 	LockUploadQuota(ctx context.Context) error
+	// One user's quota checks, serialized among themselves (see quota.Checker.Lock).
+	LockUserQuota(ctx context.Context, userID pgtype.UUID) error
 	MarkBackupCodeUsed(ctx context.Context, id pgtype.UUID) (int64, error)
 	MarkFacesClustered(ctx context.Context, ids []pgtype.UUID) error
 	MarkQuotaNotified(ctx context.Context, id pgtype.UUID) error

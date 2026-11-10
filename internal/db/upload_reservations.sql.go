@@ -111,6 +111,16 @@ func (q *Queries) LockUploadQuota(ctx context.Context) error {
 	return err
 }
 
+const lockUserQuota = `-- name: LockUserQuota :exec
+SELECT pg_advisory_xact_lock(749341218, hashtext($1::uuid::text))
+`
+
+// One user's quota checks, serialized among themselves (see quota.Checker.Lock).
+func (q *Queries) LockUserQuota(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockUserQuota, userID)
+	return err
+}
+
 const totalUploadReserved = `-- name: TotalUploadReserved :one
 SELECT COALESCE(SUM(bytes),0)::bigint FROM upload_reservations
 `
