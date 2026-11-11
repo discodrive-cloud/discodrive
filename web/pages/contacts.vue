@@ -124,6 +124,7 @@ async function exportContacts() {
 // --- form ---
 const formOpen = ref(false)
 const formBusy = ref(false)
+const formError = ref<HTMLElement>()
 const form = reactive<ContactDetail>({
   uid: '',
   full_name: '',
@@ -221,6 +222,9 @@ async function save() {
     // A stale form is replaced with what is saved now (selectContact clears the error).
     if (changedElsewhere(e) && form.uid) await selectContact(form.uid)
     error.value = changedElsewhere(e) ? t('common.changed_elsewhere') : e?.data?.error || t('contacts.error_save')
+    // The message appears above the button just pressed and pushes it down: keep it on screen.
+    await nextTick()
+    formError.value?.scrollIntoView({ block: 'nearest' })
   } finally {
     formBusy.value = false
   }
@@ -397,6 +401,11 @@ async function remove() {
           <label class="mb-1 block text-xs font-medium text-muted">{{ t('contacts.field_note') }}</label>
           <textarea v-model="form.note" class="input min-h-20 resize-y" :placeholder="t('contacts.field_note_ph')" />
         </div>
+
+        <!-- On a phone the list column, and the message above it, is hidden while the form is open. -->
+        <p v-if="error" ref="formError" class="mb-3 flex items-center gap-2 text-sm text-danger md:hidden">
+          <Icon name="lucide:triangle-alert" size="16" /> {{ error }}
+        </p>
 
         <!-- buttons -->
         <div class="flex items-center justify-between gap-2">
