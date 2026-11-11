@@ -59,6 +59,7 @@ type Server struct {
 	maps           *maps.Manager  // nil in the lite build
 	sections       Sections       // optional sections the operator left on
 	dupLocks       userLocks      // one duplicates resolve/dismiss at a time per user
+	ticketRoutes   *http.ServeMux // the routes that take a download ticket (see ticketed)
 }
 
 // quotaChecker is the same checker the storage layer enforces writes with, so the admin
@@ -137,7 +138,8 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("DELETE /me/webauthn/{id}", prot(http.HandlerFunc(s.handleWebAuthnDelete)))
 	mux.Handle("GET /files", prot(http.HandlerFunc(s.handleListFiles)))
 	mux.Handle("GET /files/{id}", prot(http.HandlerFunc(s.handleGetFile)))
-	mux.Handle("GET /files/{id}/content", prot(http.HandlerFunc(s.handleDownload)))
+	s.ticketed(mux, "GET /files/{id}/content", http.HandlerFunc(s.handleDownload))
+	mux.Handle("POST /me/download-url", prot(http.HandlerFunc(s.handleDownloadURL)))
 	mux.Handle("GET /files/media", prot(http.HandlerFunc(s.handleMediaListing))) // root variant: no node id
 	mux.Handle("GET /files/{id}/media", prot(http.HandlerFunc(s.handleMediaListing)))
 	mux.Handle("GET /files/{id}/media-cover", prot(http.HandlerFunc(s.handleMediaCover)))
@@ -207,7 +209,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("GET /me/ebooks/library", prot(http.HandlerFunc(s.handleListEbooks)))
 	mux.Handle("GET /me/ebooks/library/facets", prot(http.HandlerFunc(s.handleEbookFacets)))
 	mux.Handle("GET /me/ebooks/library/{id}/cover", prot(http.HandlerFunc(s.handleGetEbookCover)))
-	mux.Handle("GET /me/ebooks/library/{id}/download", prot(http.HandlerFunc(s.handleDownloadEbook)))
+	s.ticketed(mux, "GET /me/ebooks/library/{id}/download", http.HandlerFunc(s.handleDownloadEbook))
 
 	// music settings (OpenSubsonic)
 	mux.Handle("GET /me/features", prot(http.HandlerFunc(s.handleGetFeatures)))
@@ -273,7 +275,7 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("GET /me/photos/v1/maps/region.pmtiles", prot(http.HandlerFunc(s.handlePhotoMapsRegion)))
 	mux.Handle("GET /me/photos/v1/maps/assets/{path...}", prot(http.HandlerFunc(s.handlePhotoMapsAsset)))
 	mux.HandleFunc("GET /me/photos/v1/assets/{id}/video", s.handlePhotoVideo) // auth = stream token in ?t=
-	mux.Handle("GET /me/photos/v1/assets/{id}/original", prot(http.HandlerFunc(s.handlePhotoOriginal)))
+	s.ticketed(mux, "GET /me/photos/v1/assets/{id}/original", http.HandlerFunc(s.handlePhotoOriginal))
 	mux.Handle("GET /me/photos/v1/partners", prot(http.HandlerFunc(s.handlePhotoPartners)))
 	mux.Handle("POST /me/photos/v1/partners", prot(http.HandlerFunc(s.handleAddPhotoPartner)))
 	mux.Handle("DELETE /me/photos/v1/partners/{userId}", prot(s.handleDeletePhotoPartner(false)))

@@ -31,6 +31,7 @@ const previewItems = computed<PreviewItem[]>(() =>
   previewables.value.map((n) => ({
     name: n.name,
     size: n.size,
+    path: `/files/${n.id}/content`,
     load: () => request<Blob>(`/files/${n.id}/content`, { responseType: 'blob' }),
   })),
 )
@@ -50,6 +51,7 @@ const currentFolderNode = computed<Node>(() => {
 })
 
 const { request } = useApi()
+const saveFile = useDownload()
 const { confirm, prompt } = useDialog()
 const { enqueue, enqueueFolder, enqueueEntries } = useUploads()
 const dragActive = ref(false)
@@ -88,7 +90,9 @@ async function onDrop(e: DragEvent) {
 const folderInput = ref<HTMLInputElement>()
 const uploadsTick = useUploadsTick()
 watch(uploadsTick, () => load())
-const nodes = ref<Node[]>([])
+// Replaced whole on every load and never changed in place: a deep ref would wrap each of
+// a large folder's rows in a proxy for nothing.
+const nodes = shallowRef<Node[]>([])
 const error = ref('')
 const busy = ref(false)
 const stack = ref<{ id: string; name: string }[]>([{ id: '', name: t('files.root_name') }])
@@ -119,6 +123,9 @@ const sorted = computed(() =>
 // Only the latest load may fill the list: navigating again before a slow answer arrives
 // used to leave the previous folder's rows under the new breadcrumbs, and rename/delete
 // then acted on rows of a folder the user was no longer in.
+// A folder of thousands of files is drawn a part at a time (see useChunkWindow).
+const { chunks, shown, bind, blank } = useChunkWindow(sorted)
+
 let loadSeq = 0
 async function load() {
   const seq = ++loadSeq
@@ -182,11 +189,7 @@ async function uploadFailed(err: any) {
 
 async function download(n: Node) {
   try {
-    const blob = await request<Blob>(`/files/${n.id}/content`, { responseType: 'blob' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url; a.download = n.name; a.click()
-    URL.revokeObjectURL(url)
+    await saveFile(`/files/${n.id}/content`, n.name)
   } catch (e: any) { error.value = e?.data?.error || t('files.error_download') }
 }
 
@@ -351,51 +354,66 @@ useModalEscape(computed(() => vaultOpen.value), () => { vaultOpen.value = false 
       <div v-else-if="!sorted.length" class="p-10 text-center text-sm text-muted">
         <Icon name="lucide:folder-open" size="28" class="mx-auto mb-2 block opacity-50" /> {{ t('files.folder_empty') }}
       </div>
-      <table v-else class="w-full text-sm">
-        <tbody>
-          <tr v-for="n in sorted" :key="n.id" class="group border-b border-line/50 last:border-0 hover:bg-ink/5">
-            <td class="w-8 py-2.5 pl-4">
-              <Icon :name="n.is_dir ? 'lucide:folder' : 'lucide:file'" :class="n.is_dir ? 'text-accent' : 'text-muted'" size="18" />
-            </td>
-            <td class="py-2.5">
-              <button v-if="n.is_dir" class="hover:underline" @click="open(n)">{{ n.name }}</button>
-              <button
-                v-else-if="isPlayable(n)"
-                class="group/play inline-flex items-center gap-1.5 hover:text-accent hover:underline"
-                :title="t('files.btn_play')"
-                @click="play(n)"
-              >
-                {{ n.name }}
-                <Icon name="lucide:play" size="12" class="opacity-0 transition group-hover/play:opacity-100" />
-              </button>
-              <button
-                v-else
-                class="text-left hover:underline"
-                :class="n.mime && (n.mime.startsWith('audio/') || n.mime.startsWith('video/')) ? 'opacity-50' : ''"
-                @click="openPreview(n)"
-              >{{ n.name }}</button>
-            </td>
-            <td class="whitespace-nowrap py-2.5 text-right text-xs text-muted">{{ n.is_dir ? '' : formatBytes(n.size) }}</td>
-            <td class="py-2.5 pr-4">
-              <div class="ml-auto flex w-20 flex-wrap justify-end gap-1 opacity-100 transition md:w-auto md:flex-nowrap md:opacity-0 md:group-hover:opacity-100">
-                <button v-if="!n.is_dir" class="btn-ghost px-2 py-1" :title="t('files.btn_download')" @click="download(n)">
-                  <Icon name="lucide:download" size="16" />
-                </button>
-                <button v-if="!n.is_dir" class="btn-ghost px-2 py-1" :title="t('files.btn_versions')" @click="openVersions(n)">
-                  <Icon name="lucide:history" size="16" />
-                </button>
-                <button class="btn-ghost px-2 py-1" :title="t('files.btn_share')" @click="openShare(n)">
-                  <Icon name="lucide:share-2" size="16" />
-                </button>
-                <button class="btn-ghost px-2 py-1" :title="t('files.btn_rename')" @click="rename(n)">
-                  <Icon name="lucide:pencil" size="16" />
-                </button>
-                <button class="btn-danger px-2 py-1" :title="t('files.btn_delete')" @click="remove(n)">
-                  <Icon name="lucide:trash-2" size="16" />
-                </button>
-              </div>
-            </td>
+      <!-- A list drawn in parts cannot size its columns by content: they would move as
+           parts with other names come and go. Such a list gets fixed columns. -->
+      <table v-else class="w-full text-sm" :class="chunks.length > 1 ? 'table-fixed' : ''">
+        <colgroup v-if="chunks.length > 1">
+          <col class="w-12" /><col /><col class="w-24" /><col class="w-24 md:w-52" />
+        </colgroup>
+        <tbody v-for="(chunk, ci) in chunks" :key="ci" :ref="(el) => bind(ci, el as Element | null)">
+          <tr v-if="!shown.has(ci)" aria-hidden="true">
+            <td colspan="4" class="p-0" :style="{ height: blank(ci) + 'px' }"></td>
           </tr>
+          <template v-else>
+            <tr
+              v-for="(n, ri) in chunk"
+              :key="n.id"
+              class="group border-line/50 hover:bg-ink/5"
+              :class="ci === 0 && ri === 0 ? '' : 'border-t'"
+            >
+              <td class="w-8 py-2.5 pl-4">
+                <Icon :name="n.is_dir ? 'lucide:folder' : 'lucide:file'" :class="n.is_dir ? 'text-accent' : 'text-muted'" size="18" />
+              </td>
+              <td class="py-2.5" :class="chunks.length > 1 ? '[overflow-wrap:anywhere]' : ''">
+                <button v-if="n.is_dir" class="hover:underline" @click="open(n)">{{ n.name }}</button>
+                <button
+                  v-else-if="isPlayable(n)"
+                  class="group/play inline-flex items-center gap-1.5 hover:text-accent hover:underline"
+                  :title="t('files.btn_play')"
+                  @click="play(n)"
+                >
+                  {{ n.name }}
+                  <Icon name="lucide:play" size="12" class="opacity-0 transition group-hover/play:opacity-100" />
+                </button>
+                <button
+                  v-else
+                  class="text-left hover:underline"
+                  :class="n.mime && (n.mime.startsWith('audio/') || n.mime.startsWith('video/')) ? 'opacity-50' : ''"
+                  @click="openPreview(n)"
+                >{{ n.name }}</button>
+              </td>
+              <td class="whitespace-nowrap py-2.5 text-right text-xs text-muted">{{ n.is_dir ? '' : formatBytes(n.size) }}</td>
+              <td class="py-2.5 pr-4">
+                <div class="ml-auto flex w-20 flex-wrap justify-end gap-1 opacity-100 transition md:w-auto md:flex-nowrap md:opacity-0 md:group-hover:opacity-100">
+                  <button v-if="!n.is_dir" class="btn-ghost px-2 py-1" :title="t('files.btn_download')" @click="download(n)">
+                    <Icon name="lucide:download" size="16" />
+                  </button>
+                  <button v-if="!n.is_dir" class="btn-ghost px-2 py-1" :title="t('files.btn_versions')" @click="openVersions(n)">
+                    <Icon name="lucide:history" size="16" />
+                  </button>
+                  <button class="btn-ghost px-2 py-1" :title="t('files.btn_share')" @click="openShare(n)">
+                    <Icon name="lucide:share-2" size="16" />
+                  </button>
+                  <button class="btn-ghost px-2 py-1" :title="t('files.btn_rename')" @click="rename(n)">
+                    <Icon name="lucide:pencil" size="16" />
+                  </button>
+                  <button class="btn-danger px-2 py-1" :title="t('files.btn_delete')" @click="remove(n)">
+                    <Icon name="lucide:trash-2" size="16" />
+                  </button>
+                </div>
+              </td>
+            </tr>
+          </template>
         </tbody>
       </table>
     </div>

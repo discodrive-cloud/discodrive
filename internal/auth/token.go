@@ -23,7 +23,8 @@ type Claims struct {
 	// "stream-v2" marks a URL-carried media token scoped to a single node (Nid).
 	// The main middleware rejects any token with a non-empty purpose.
 	Pur string `json:"pur,omitempty"`
-	// Nid is set only on purpose=stream-v2 tokens: the single node the token may read.
+	// Nid is what a URL-carried token is for: the node of a purpose=stream-v2 token, the
+	// request path of a purpose=download-v1 ticket.
 	Nid string `json:"nid,omitempty"`
 	// Reject ceremony tokens issued before purpose separation as well.
 	LegacyWebAuthn string `json:"was,omitempty"`
@@ -116,12 +117,22 @@ const streamTokenTTL = time.Hour
 // session access (the main middleware rejects non-empty purposes); only the stream
 // endpoint accepts it, and that endpoint re-checks node access on every request.
 func (t *TokenIssuer) IssueStream(userID, nodeID string, ver int64, deviceID string, sessionID ...string) (string, error) {
+	return t.issueScoped(purposeStream, userID, nodeID, ver, deviceID, sessionID...)
+}
+
+const (
+	purposeStream = "stream-v2"
+	// purposeDownload marks a download ticket: Nid is the request path it opens.
+	purposeDownload = "download-v1"
+)
+
+func (t *TokenIssuer) issueScoped(purpose, userID, scope string, ver int64, deviceID string, sessionID ...string) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		Ver:      ver,
-		Pur:      "stream-v2",
+		Pur:      purpose,
 		DeviceID: deviceID,
-		Nid:      nodeID,
+		Nid:      scope,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			IssuedAt:  jwt.NewNumericDate(now),

@@ -453,8 +453,12 @@ function remove() {
   return removeIds(selectedIds.value)
 }
 
-// Downloads the originals one by one (no zip endpoint): the browser saves each file.
+// Downloads the originals one by one (no zip endpoint): the browser saves each file,
+// straight from the server. A hidden card opens only with the unlock header, which a
+// link cannot carry: that one is still read into the page first.
 const DOWNLOAD_CONFIRM = 20
+const DOWNLOAD_GAP_MS = 250 // browsers drop downloads started in the same instant
+const saveFile = useDownload()
 function downloadIds(ids: string[]) {
   return act(async () => {
     if (ids.length > DOWNLOAD_CONFIRM) {
@@ -467,6 +471,11 @@ function downloadIds(ids: string[]) {
     for (const id of ids) {
       try {
         const a = await api.asset(id)
+        if (!a.hidden) {
+          await saveFile(api.originalPath(id), a.file.name)
+          if (ids.length > 1) await new Promise((r) => setTimeout(r, DOWNLOAD_GAP_MS))
+          continue
+        }
         const blob = await api.original(id)
         const url = URL.createObjectURL(blob)
         const link = document.createElement('a')

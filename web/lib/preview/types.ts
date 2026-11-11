@@ -5,4 +5,7 @@ export interface PreviewItem {
   name: string
   size: number | null
   load: () => Promise<Blob>
+  // The server path the file downloads from, when it is a plain server file (not a
+  // vault entry decrypted in the page): "Download" then saves it without loading it.
+  path?: string
 }

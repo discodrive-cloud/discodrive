@@ -108,13 +108,47 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 		// spurious 401/logout on the next navigation. no-store also keeps authenticated
 		// data out of the browser cache.
 		w.Header().Set("Cache-Control", "no-store")
-		ctx := context.WithValue(r.Context(), ctxUserID, claims.Subject)
-		ctx = context.WithValue(ctx, ctxTenantID, claims.TenantID)
-		ctx = context.WithValue(ctx, ctxRole, u.Role)
-		ctx = context.WithValue(ctx, ctxDeviceID, claims.DeviceID)
-		ctx = context.WithValue(ctx, ctxTokenVersion, claims.Ver)
-		ctx = context.WithValue(ctx, ctxSessionID, claims.SessionID)
+		ctx := withIdentity(r.Context(), claims, u.Role)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func withIdentity(ctx context.Context, claims *Claims, role string) context.Context {
+	ctx = context.WithValue(ctx, ctxUserID, claims.Subject)
+	ctx = context.WithValue(ctx, ctxTenantID, claims.TenantID)
+	ctx = context.WithValue(ctx, ctxRole, role)
+	ctx = context.WithValue(ctx, ctxDeviceID, claims.DeviceID)
+	ctx = context.WithValue(ctx, ctxTokenVersion, claims.Ver)
+	return context.WithValue(ctx, ctxSessionID, claims.SessionID)
+}
+
+// TicketParam is the query parameter a download ticket travels in.
+const TicketParam = "dl"
+
+// MiddlewareOrTicket is Middleware for a route a browser saves a file from. A browser
+// following a link cannot send the Authorization header, and reading the file into the
+// page to save it from there costs the file's size in memory. Such a GET may carry a
+// ticket instead: minted for the signed-in session (DownloadTicket), good for this one
+// path, dead with that session. The handler runs as that user, so its access checks are
+// the ones a session request gets; the session is not renewed, the link is not a login.
+func (s *Service) MiddlewareOrTicket(next http.Handler) http.Handler {
+	session := s.Middleware(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ticket := r.URL.Query().Get(TicketParam)
+		if ticket == "" || r.Method != http.MethodGet || r.Header.Get("Authorization") != "" {
+			session.ServeHTTP(w, r)
+			return
+		}
+		claims, u, err := s.validateScoped(r.Context(), ticket, purposeDownload, r.URL.Path)
+		if err != nil {
+			writeUnauthorized(w, "invalid download link")
+			return
+		}
+		claims.TenantID = db.UUIDString(u.TenantID)
+		w.Header().Set("Cache-Control", "private, no-store")
+		// The link must not travel on: not to another site, not into a shared cache.
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), claims, u.Role)))
 	})
 }
 

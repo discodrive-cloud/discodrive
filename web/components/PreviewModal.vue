@@ -142,11 +142,18 @@ function onKey(e: KeyboardEvent) {
 onMounted(() => window.addEventListener('keydown', onKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
+const saveFile = useDownload()
 const downloading = ref(false)
 async function download() {
   if (downloading.value) return
   downloading.value = true
   try {
+    // Bytes already loaded for the preview are saved as they are; a file that was not
+    // loaded (too large, no preview) goes straight from the server to disk.
+    if (!st.blob && current.value.path) {
+      await saveFile(current.value.path, current.value.name)
+      return
+    }
     const blob = st.blob ?? (await current.value.load())
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

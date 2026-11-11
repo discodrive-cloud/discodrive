@@ -343,6 +343,7 @@ export function usePhotosApi() {
       request<Cluster<PhotoRow>[]>(`${PHOTOS_API}/map/clusters?${clustersQuery(z, box)}`, { signal }),
     mapBounds: () => request<BBox | null>(`${PHOTOS_API}/map/bounds`),
     asset: (id: string) => request<PhotoAsset>(`${PHOTOS_API}/assets/${id}`, { headers: h() }),
+    originalPath: (id: string) => `${PHOTOS_API}/assets/${id}/original`,
     original: (id: string) => request<Blob>(`${PHOTOS_API}/assets/${id}/original`, { headers: h(), responseType: 'blob' }),
     partners: () => request<PhotoPartners>(`${PHOTOS_API}/partners`),
     addPartner: (email: string) => request<PhotoPartner>(`${PHOTOS_API}/partners`, { method: 'POST', body: { email } }),

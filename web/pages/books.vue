@@ -126,17 +126,10 @@ function clearFilters() {
   loadBooks()
 }
 
-// Download a book using the authed request → blob → anchor click pattern,
-// mirroring the approach in files.vue (Bearer token in header, not cookie).
+const saveFile = useDownload()
 async function downloadBook(b: BookDTO) {
   try {
-    const blob = await request<Blob>(`/me/ebooks/library/${b.id}/download`, { responseType: 'blob' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${b.title}.${b.format}`
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(url), 5000)
+    await saveFile(`/me/ebooks/library/${b.id}/download`, `${b.title}.${b.format}`)
   } catch (e: any) {
     error.value = e?.data?.error || t('books_page.error_download')
   }

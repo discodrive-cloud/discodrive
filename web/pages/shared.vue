@@ -4,6 +4,7 @@ interface Node { id: string; name: string; is_dir: boolean; size: number | null;
 
 const { t } = useI18n()
 const { request } = useApi()
+const saveFile = useDownload()
 const error = ref('')
 const stack = ref<{ id: string; name: string }[]>([{ id: '', name: t('shared.root_name') }])
 const atRoot = computed(() => stack.value.length === 1)
@@ -46,11 +47,7 @@ function crumbTo(i: number) { stack.value = stack.value.slice(0, i + 1); load() 
 
 async function download(id: string, name: string) {
   try {
-    const blob = await request<Blob>(`/files/${id}/content`, { responseType: 'blob' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url; a.download = name; a.click()
-    URL.revokeObjectURL(url)
+    await saveFile(`/files/${id}/content`, name)
   } catch (e: any) { error.value = e?.data?.error || t('common.error_load') }
 }
 
