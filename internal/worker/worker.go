@@ -150,6 +150,9 @@ func (w *Worker) Run(ctx context.Context) {
 		if _, err := w.q.DeleteDeadBrowserSessions(ctx); err != nil {
 			return err
 		}
+		if _, err := w.q.DeleteIdleBrowserSessions(ctx); err != nil {
+			return err
+		}
 		return w.q.DeleteExpiredAuthChallenges(ctx)
 	})
 	if w.cfg.PodcastRefreshInterval > 0 { // 0: music (and with it podcasts) is turned off

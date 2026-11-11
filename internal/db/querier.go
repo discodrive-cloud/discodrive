@@ -94,6 +94,13 @@ type Querier interface {
 	ApprovePairing(ctx context.Context, arg ApprovePairingParams) (pgtype.UUID, error)
 	// Only faces still without a person: a merge or another pass meanwhile wins.
 	AssignFaces(ctx context.Context, arg AssignFacesParams) error
+	// Everything the auth middleware needs to know about who is asking, in one read: the
+	// user row, whether the browser session of the token is alive, whether its device is.
+	// A session is alive while its row exists under the account's current token version and
+	// it was used within the account's session lifetime (0: sessions never expire). The
+	// token's own expiry cannot be the only clock: a token issued while sessions never
+	// expired has none, and it would outlive any lifetime set afterwards.
+	AuthRequester(ctx context.Context, arg AuthRequesterParams) (AuthRequesterRow, error)
 	// Authors and tags of a page of books at once (the lists used to ask per book).
 	AuthorsOfBooks(ctx context.Context, bookIds []pgtype.UUID) ([]AuthorsOfBooksRow, error)
 	// Which interactive second factors the user has. Used by Login to branch.
@@ -230,6 +237,10 @@ type Querier interface {
 	DeleteExpiredPairings(ctx context.Context) error
 	DeleteFileVersion(ctx context.Context, id pgtype.UUID) error
 	DeleteFinishedDownloads(ctx context.Context, arg DeleteFinishedDownloadsParams) (int64, error)
+	// Sessions idle longer than their account allows are refused by AuthRequester; an hour
+	// later the links they minted (stream URLs, download tickets) are over too and the row
+	// is only a row.
+	DeleteIdleBrowserSessions(ctx context.Context) (int64, error)
 	DeleteInternetRadioStation(ctx context.Context, arg DeleteInternetRadioStationParams) (int64, error)
 	DeletePhotoAlbum(ctx context.Context, id pgtype.UUID) (int64, error)
 	DeletePhotoAlbumLink(ctx context.Context, arg DeletePhotoAlbumLinkParams) (int64, error)
@@ -900,6 +911,9 @@ type Querier interface {
 	// Used space across all users — checked against the server-wide cap (STORAGE_TOTAL_GB).
 	TotalStorageUsage(ctx context.Context) (int64, error)
 	TotalUploadReserved(ctx context.Context) (int64, error)
+	// Notes that a session was used. At most one write a minute per session: the lifetime
+	// is counted in minutes, a write on every request would buy nothing.
+	TouchBrowserSession(ctx context.Context, id string) error
 	TouchDevice(ctx context.Context, id pgtype.UUID) error
 	TouchPhotoAlbum(ctx context.Context, id pgtype.UUID) error
 	TouchUploadReservation(ctx context.Context, id string) error

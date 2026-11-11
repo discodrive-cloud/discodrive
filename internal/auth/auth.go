@@ -39,6 +39,9 @@ type Service struct {
 	// lookupUser verifies a user against the DB in the middleware (role/existence check).
 	// Extracted as a field so the seam is testable without a live DB.
 	lookupUser func(context.Context, pgtype.UUID) (db.User, error)
+	// authRead answers the middleware's questions in one query (see requester); nil in a
+	// test that sets lookupUser and sessionActive instead.
+	authRead func(context.Context, db.AuthRequesterParams) (db.AuthRequesterRow, error)
 	// getUserByEmail / availableFactors are seams so Login is testable without a live DB.
 	getUserByEmail   func(context.Context, string) (db.User, error)
 	availableFactors func(context.Context, pgtype.UUID) ([]string, error)
@@ -73,6 +76,7 @@ func (s *Service) quotaFor(requested *int64, role string) pgtype.Int8 {
 func NewService(pool *pgxpool.Pool, issuer *TokenIssuer, cipher *secret.Cipher) *Service {
 	q := db.New(pool)
 	s := &Service{pool: pool, q: q, issuer: issuer, cipher: cipher, lookupUser: q.GetUserByID, davCache: newDAVCache()}
+	s.authRead = q.AuthRequester
 	s.createSession = s.createBrowserSession
 	s.sessionActive = s.browserSessionActive
 	s.getUserByEmail = q.GetUserByEmail

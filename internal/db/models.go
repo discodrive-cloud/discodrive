@@ -134,6 +134,7 @@ type BrowserSession struct {
 	UserID       pgtype.UUID        `json:"user_id"`
 	TokenVersion int64              `json:"token_version"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	LastSeen     pgtype.Timestamptz `json:"last_seen"`
 }
 
 type Calendar struct {

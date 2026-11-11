@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"discodrive/internal/db"
 )
 
@@ -48,11 +50,12 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 			writeUnauthorized(w, "invalid token")
 			return
 		}
-		u, err := s.lookupUser(r.Context(), uid)
+		who, err := s.requester(r.Context(), uid, claims)
 		if err != nil {
 			writeUnauthorized(w, "session is invalid")
 			return
 		}
+		u := who.user
 		// Token version must match the DB: a password change increments the counter,
 		// making all previously issued tokens (including stolen ones) return 401.
 		if claims.Ver != u.TokenVersion {
@@ -71,21 +74,17 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 		// A device token (sync daemon) is valid only as long as the device itself is alive:
 		// removing it in the admin panel causes the daemon's very next request to get 401
 		// (instant revocation, same logic as demotion/account deletion above).
-		if claims.DeviceID != "" {
-			did, derr := db.ParseUUID(claims.DeviceID)
-			if derr != nil {
-				writeUnauthorized(w, "session is invalid")
-				return
-			}
-			dev, derr := s.q.GetDevice(r.Context(), did)
-			if derr != nil || db.UUIDString(dev.UserID) != claims.Subject || !dev.TokenHash.Valid || dev.TokenVersion != claims.Ver {
-				writeUnauthorized(w, "device has been revoked")
-				return
-			}
+		if claims.DeviceID != "" && !who.deviceOK {
+			writeUnauthorized(w, "device has been revoked")
+			return
 		}
-		if claims.DeviceID == "" && (claims.SessionID == "" || s.sessionActive == nil || !s.sessionActive(r.Context(), claims)) {
+		if claims.DeviceID == "" && !who.sessionOK {
 			writeUnauthorized(w, "session has been revoked; sign in again")
 			return
+		}
+		if who.sessionStale {
+			// Best effort: a session whose use could not be noted is still in use.
+			_ = s.q.TouchBrowserSession(r.Context(), claims.SessionID)
 		}
 		// Sliding session: on every authorized request we renew the token
 		// (new exp = now+TTL) and return it in X-Token; the client saves it. Idle
@@ -111,6 +110,49 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 		ctx := withIdentity(r.Context(), claims, u.Role)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// requester is what the middleware knows about who is asking.
+type requester struct {
+	user db.User
+	// sessionOK: the token's browser session exists and was used recently enough.
+	// sessionStale: it is time to note that it was used again.
+	sessionOK, sessionStale bool
+	// deviceOK: the token's device is still paired under this token version.
+	deviceOK bool
+}
+
+// requester reads the user and the state of the token's session or device. With a
+// database it is one query (two on every request, user then session, was a third of the
+// work of serving a thumbnail); the seams a test sets instead answer the same questions.
+func (s *Service) requester(ctx context.Context, uid pgtype.UUID, claims *Claims) (requester, error) {
+	var did pgtype.UUID
+	if claims.DeviceID != "" {
+		var err error
+		if did, err = db.ParseUUID(claims.DeviceID); err != nil {
+			return requester{}, err
+		}
+	}
+	if s.authRead != nil {
+		row, err := s.authRead(ctx, db.AuthRequesterParams{UserID: uid, SessionID: claims.SessionID, DeviceID: did})
+		if err != nil {
+			return requester{}, err
+		}
+		return requester{user: row.User, sessionOK: claims.SessionID != "" && row.SessionOk,
+			sessionStale: row.SessionStale, deviceOK: row.DeviceOk}, nil
+	}
+	u, err := s.lookupUser(ctx, uid)
+	if err != nil {
+		return requester{}, err
+	}
+	who := requester{user: u}
+	if claims.DeviceID != "" {
+		dev, err := s.q.GetDevice(ctx, did)
+		who.deviceOK = err == nil && dev.UserID == uid && dev.TokenHash.Valid && dev.TokenVersion == claims.Ver
+	} else {
+		who.sessionOK = claims.SessionID != "" && s.sessionActive != nil && s.sessionActive(ctx, claims)
+	}
+	return who, nil
 }
 
 func withIdentity(ctx context.Context, claims *Claims, role string) context.Context {

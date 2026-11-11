@@ -11,6 +11,66 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const authRequester = `-- name: AuthRequester :one
+SELECT u.id, u.tenant_id, u.email, u.password_hash, u.storage_quota, u.storage_used, u.created_at, u.role, u.change_seq, u.quota_notified_at, u.token_version, u.language, u.must_change_password, u.bookmark_seq, u.bookmark_gc_seq, u.session_ttl_minutes,
+       (b.id IS NOT NULL AND b.token_version = u.token_version
+        AND (u.session_ttl_minutes <= 0
+             OR b.last_seen > now() - make_interval(mins => u.session_ttl_minutes)))::boolean AS session_ok,
+       (b.id IS NOT NULL AND b.last_seen < now() - interval '1 minute')::boolean AS session_stale,
+       (d.id IS NOT NULL AND d.user_id = u.id AND d.token_hash IS NOT NULL
+        AND d.token_version = u.token_version)::boolean AS device_ok
+FROM users u
+LEFT JOIN browser_sessions b ON b.id = $1::text AND b.user_id = u.id
+LEFT JOIN devices d ON d.id = $2::uuid
+WHERE u.id = $3
+`
+
+type AuthRequesterParams struct {
+	SessionID string      `json:"session_id"`
+	DeviceID  pgtype.UUID `json:"device_id"`
+	UserID    pgtype.UUID `json:"user_id"`
+}
+
+type AuthRequesterRow struct {
+	User         User `json:"user"`
+	SessionOk    bool `json:"session_ok"`
+	SessionStale bool `json:"session_stale"`
+	DeviceOk     bool `json:"device_ok"`
+}
+
+// Everything the auth middleware needs to know about who is asking, in one read: the
+// user row, whether the browser session of the token is alive, whether its device is.
+// A session is alive while its row exists under the account's current token version and
+// it was used within the account's session lifetime (0: sessions never expire). The
+// token's own expiry cannot be the only clock: a token issued while sessions never
+// expired has none, and it would outlive any lifetime set afterwards.
+func (q *Queries) AuthRequester(ctx context.Context, arg AuthRequesterParams) (AuthRequesterRow, error) {
+	row := q.db.QueryRow(ctx, authRequester, arg.SessionID, arg.DeviceID, arg.UserID)
+	var i AuthRequesterRow
+	err := row.Scan(
+		&i.User.ID,
+		&i.User.TenantID,
+		&i.User.Email,
+		&i.User.PasswordHash,
+		&i.User.StorageQuota,
+		&i.User.StorageUsed,
+		&i.User.CreatedAt,
+		&i.User.Role,
+		&i.User.ChangeSeq,
+		&i.User.QuotaNotifiedAt,
+		&i.User.TokenVersion,
+		&i.User.Language,
+		&i.User.MustChangePassword,
+		&i.User.BookmarkSeq,
+		&i.User.BookmarkGcSeq,
+		&i.User.SessionTtlMinutes,
+		&i.SessionOk,
+		&i.SessionStale,
+		&i.DeviceOk,
+	)
+	return i, err
+}
+
 const browserSessionActive = `-- name: BrowserSessionActive :one
 SELECT EXISTS(SELECT 1 FROM browser_sessions
  WHERE id = $1 AND user_id = $2 AND token_version = $3)
@@ -72,4 +132,33 @@ func (q *Queries) DeleteDeadBrowserSessions(ctx context.Context) (int64, error) 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const deleteIdleBrowserSessions = `-- name: DeleteIdleBrowserSessions :execrows
+DELETE FROM browser_sessions b USING users u
+WHERE u.id = b.user_id AND u.session_ttl_minutes > 0
+  AND b.last_seen < now() - make_interval(mins => u.session_ttl_minutes) - interval '1 hour'
+`
+
+// Sessions idle longer than their account allows are refused by AuthRequester; an hour
+// later the links they minted (stream URLs, download tickets) are over too and the row
+// is only a row.
+func (q *Queries) DeleteIdleBrowserSessions(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteIdleBrowserSessions)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const touchBrowserSession = `-- name: TouchBrowserSession :exec
+UPDATE browser_sessions SET last_seen = now()
+WHERE id = $1 AND last_seen < now() - interval '1 minute'
+`
+
+// Notes that a session was used. At most one write a minute per session: the lifetime
+// is counted in minutes, a write on every request would buy nothing.
+func (q *Queries) TouchBrowserSession(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, touchBrowserSession, id)
+	return err
 }
