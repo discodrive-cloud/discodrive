@@ -27,6 +27,7 @@ type contactForm struct {
 	Bday     string       `json:"bday"`
 	HasPhoto bool         `json:"has_photo"`
 	PhotoURI string       `json:"photo_uri,omitempty"`
+	Etag     string       `json:"etag,omitempty"` // the version loaded; sent back, a save over a newer one is refused
 }
 
 type typedValue struct {
@@ -86,7 +87,7 @@ func (s *Server) handleGetContact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	data, _, err := s.dav.GetAddressbookObject(r.Context(), abID, r.PathValue("uid"))
+	data, etag, err := s.dav.GetAddressbookObject(r.Context(), abID, r.PathValue("uid"))
 	if err == dav.ErrNotFound {
 		writeError(w, http.StatusNotFound, "contact not found")
 		return
@@ -100,7 +101,9 @@ func (s *Server) handleGetContact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to parse vCard")
 		return
 	}
-	writeJSON(w, http.StatusOK, cardToForm(r.PathValue("uid"), card))
+	form := cardToForm(r.PathValue("uid"), card)
+	form.Etag = etag
+	writeJSON(w, http.StatusOK, form)
 }
 
 func cardToForm(uid string, card vcard.Card) contactForm {
@@ -183,7 +186,7 @@ func (s *Server) handleUpdateContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := r.PathValue("uid")
-	data, _, err := s.dav.GetAddressbookObject(r.Context(), abID, uid)
+	data, etag, err := s.dav.GetAddressbookObject(r.Context(), abID, uid)
 	if err == dav.ErrNotFound {
 		writeError(w, http.StatusNotFound, "contact not found")
 		return
@@ -197,17 +200,27 @@ func (s *Server) handleUpdateContact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	if staleForm(form.Etag, etag) {
+		writeError(w, http.StatusPreconditionFailed, errChangedElsewhere)
+		return
+	}
 	card, err := vcard.NewDecoder(strings.NewReader(data)).Decode()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to parse vCard")
 		return
 	}
 	applyForm(card, form) // modify-existing: PHOTO/X-* fields are preserved
-	if err := s.putCard(r, abID, uid, card); err != nil {
+	var b strings.Builder
+	if err := vcard.NewEncoder(&b).Encode(card); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save")
+		return
+	}
+	newEtag, err := s.dav.PutAddressbookObjectIf(r.Context(), abID, uid, b.String(), unchangedSince(etag))
+	if err != nil {
 		writePutCalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"uid": uid})
+	writeJSON(w, http.StatusOK, map[string]any{"uid": uid, "etag": newEtag})
 }
 
 func (s *Server) handleDeleteContact(w http.ResponseWriter, r *http.Request) {

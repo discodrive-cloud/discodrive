@@ -1,6 +1,7 @@
 package dav
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -290,17 +291,82 @@ func (s *Service) PutCalendarObjectIf(ctx context.Context, calID, uid, data stri
 	if err != nil {
 		return "", err
 	}
-	parsedUID, parsed := parseICal(data)
-	if uid == "" {
-		uid = parsedUID
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", err
 	}
-	etag := etagOf(data)
+	defer tx.Rollback(ctx)
+	etag, err := s.putCalendarObject(ctx, s.q.WithTx(tx), cid, uid, data, check)
+	if err != nil {
+		return "", err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return etag, nil
+}
+
+// MoveCalendarObject stores data as uid in dst and removes uid from src, both or neither:
+// written as two separate steps, a failure between them left the object in both. A
+// non-empty etag is the version of the object in src the caller read; ErrPrecondition if
+// it has changed since.
+func (s *Service) MoveCalendarObject(ctx context.Context, srcID, dstID, uid, data, etag string) (string, error) {
+	src, err := db.ParseUUID(srcID)
+	if err != nil {
+		return "", err
+	}
+	dst, err := db.ParseUUID(dstID)
+	if err != nil {
+		return "", err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
+	// Both calendars are locked (the ctag bump) in a fixed order, so two moves in opposite
+	// directions cannot wait on each other.
+	first, second := src, dst
+	if bytes.Compare(first.Bytes[:], second.Bytes[:]) > 0 {
+		first, second = second, first
+	}
+	for _, id := range []pgtype.UUID{first, second} {
+		if err = qtx.BumpCalendarCtag(ctx, id); err != nil {
+			return "", err
+		}
+	}
+	cur, err := qtx.GetCalendarObject(ctx, db.GetCalendarObjectParams{CalendarID: src, Uid: uid})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if etag != "" && cur.Etag != etag {
+		return "", ErrPrecondition
+	}
+	newEtag, err := s.putCalendarObject(ctx, qtx, dst, uid, data, nil)
+	if err != nil {
+		return "", err
+	}
+	if _, err = qtx.DeleteCalendarObject(ctx, db.DeleteCalendarObjectParams{CalendarID: src, Uid: uid}); err != nil {
+		return "", err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return newEtag, nil
+}
+
+// putCalendarObject is the write of PutCalendarObjectIf inside the caller's transaction.
+func (s *Service) putCalendarObject(ctx context.Context, qtx *db.Queries, cid pgtype.UUID, uid, data string, check PutCheck) (string, error) {
+	var err error
+	parsedUID, parsed := parseICal(data)
+	if uid == "" {
+		uid = parsedUID
+	}
+	etag := etagOf(data)
 	// The ctag bump comes first: it row-locks the calendar, which serializes the writes to
 	// it, so the checks below still hold when the object is written.
 	if err = qtx.BumpCalendarCtag(ctx, cid); err != nil {
@@ -350,9 +416,6 @@ func (s *Service) PutCalendarObjectIf(ctx context.Context, calID, uid, data stri
 		CalendarID: cid, Uid: uid, Data: data, Etag: etag, Parsed: parsed,
 		SpanStart: spanValue(spanStart), SpanEnd: spanValue(spanEnd), SpanKnown: true,
 	}); err != nil {
-		return "", err
-	}
-	if err = tx.Commit(ctx); err != nil {
 		return "", err
 	}
 	return etag, nil

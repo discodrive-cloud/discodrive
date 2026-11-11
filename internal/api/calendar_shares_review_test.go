@@ -69,6 +69,18 @@ func TestShareCalendarResponses(t *testing.T) {
 	if shared == nil || shared.ShareID == "" {
 		t.Fatalf("B's calendar list: %s", rec.Body.String())
 	}
+	// The share is addressed under its own calendar: under another one it is not found
+	// (a share list shown under the wrong calendar used to revoke the other's access).
+	other, err := h.dav.CreateCalendar(context.Background(), h.uidA, "Other", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := h.do(t, h.tokA, "DELETE", "/me/calendars/"+db.UUIDString(other.ID)+"/shares/"+shared.ShareID, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("revoke under another calendar: %d, want 404", rec.Code)
+	}
+	if ok, _ := h.dav.CanAccessCalendar(context.Background(), h.uidB, calA); !ok {
+		t.Fatal("revoking under another calendar took B's access away")
+	}
 	if rec, _ := h.do(t, h.tokB, "DELETE", "/me/calendars/"+calA+"/shares/"+shared.ShareID, nil); rec.Code != http.StatusNoContent {
 		t.Fatalf("recipient leaves: %d, want 204", rec.Code)
 	}

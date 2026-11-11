@@ -16,6 +16,7 @@
   },
   "common": {
     "loading": "Chargement…",
+    "changed_elsewhere": "Cet élément a été modifié ailleurs. Il a été rechargé — refaites votre modification.",
     "cancel": "Annuler",
     "save": "Enregistrer",
     "delete": "Supprimer",

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { changedElsewhere } from '~/lib/changedElsewhere'
 import { dateToUtcIso, formatAllDay, isoToUtcDate, localDateKey } from '~/lib/calendarDates'
 
 interface Task {
@@ -177,6 +178,9 @@ const form = reactive<Task>({
   uid: '', summary: '', notes: '', due: '', due_all_day: false, priority: 0, completed: false, list_id: '',
 })
 const formOrigList = ref('') // the list the edited task lives in (form.list_id may move it)
+// The version of the task the form was loaded from: the server refuses a save over a
+// newer one (412) instead of undoing what somebody else changed in a shared list.
+const formEtag = ref('')
 const dueDateTime = ref('')
 const dueDate = ref('')
 
@@ -191,7 +195,7 @@ function localToIso(v: string): string { return v ? new Date(v).toISOString() : 
 function resetForm() {
   form.uid = ''; form.summary = ''; form.notes = ''; form.due = ''
   form.due_all_day = false; form.priority = 0; form.completed = false
-  form.list_id = currentList.value?.id || defaultList.value?.id || ''; formOrigList.value = ''
+  form.list_id = currentList.value?.id || defaultList.value?.id || ''; formOrigList.value = ''; formEtag.value = ''
   dueDateTime.value = ''; dueDate.value = ''
 }
 
@@ -200,8 +204,8 @@ function newTask() { resetForm(); modalOpen.value = true }
 async function openTask(task: Task) {
   error.value = ''
   try {
-    const d = await request<Task>(taskPath(task))
-    form.list_id = d.list_id || ''; formOrigList.value = d.list_id || ''
+    const d = await request<Task & { etag?: string }>(taskPath(task))
+    form.list_id = d.list_id || ''; formOrigList.value = d.list_id || ''; formEtag.value = d.etag || ''
     form.uid = d.uid; form.summary = d.summary; form.notes = d.notes || ''
     form.due = d.due || ''; form.due_all_day = d.due_all_day
     form.priority = d.priority || 0; form.completed = d.completed
@@ -225,13 +229,16 @@ async function save() {
   modalBusy.value = true
   try {
     if (form.uid) {
-      await request(taskPath({ uid: form.uid, list_id: formOrigList.value }), { method: 'PUT', body: buildBody() })
+      await request(taskPath({ uid: form.uid, list_id: formOrigList.value }), { method: 'PUT', body: { ...buildBody(), etag: formEtag.value || undefined } })
     } else {
       await request('/me/tasks', { method: 'POST', body: buildBody() })
     }
     modalOpen.value = false
     await loadList()
-  } catch (e: any) { error.value = e?.data?.error || t('tasks.error_save') }
+  } catch (e: any) {
+    if (changedElsewhere(e)) { modalOpen.value = false; await loadList() }
+    error.value = changedElsewhere(e) ? t('common.changed_elsewhere') : e?.data?.error || t('tasks.error_save')
+  }
   finally { modalBusy.value = false }
 }
 

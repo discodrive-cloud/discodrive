@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { changedElsewhere } from '~/lib/changedElsewhere'
 interface ContactSummary { uid: string; full_name: string; emails: string[]; phones: string[] }
 interface EmailEntry { type: string; value: string }
 interface PhoneEntry { type: string; value: string }
 interface Adr { street: string; city: string; region: string; postal: string; country: string }
 interface ContactDetail {
   uid: string
+  etag?: string
   full_name: string
   family: string
   given: string
@@ -152,6 +154,7 @@ function resetForm() {
     bday: '',
     has_photo: false,
     photo_uri: '',
+    etag: '',
   })
 }
 
@@ -206,14 +209,18 @@ async function save() {
   formBusy.value = true
   try {
     if (form.uid) {
-      await request(`/me/contacts/${form.uid}`, { method: 'PUT', body: bodyFromForm() })
+      // etag: the version the form was loaded from; the server refuses a save over a newer one
+      const res = await request<{ etag?: string }>(`/me/contacts/${form.uid}`, { method: 'PUT', body: { ...bodyFromForm(), etag: form.etag || undefined } })
+      form.etag = res.etag || ''
     } else {
       const res = await request<{ uid: string }>('/me/contacts', { method: 'POST', body: bodyFromForm() })
       form.uid = res.uid
     }
     await loadList()
   } catch (e: any) {
-    error.value = e?.data?.error || t('contacts.error_save')
+    // A stale form is replaced with what is saved now (selectContact clears the error).
+    if (changedElsewhere(e) && form.uid) await selectContact(form.uid)
+    error.value = changedElsewhere(e) ? t('common.changed_elsewhere') : e?.data?.error || t('contacts.error_save')
   } finally {
     formBusy.value = false
   }

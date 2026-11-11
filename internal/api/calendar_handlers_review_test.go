@@ -44,6 +44,13 @@ func newCalHarness(t *testing.T) *calHarness {
 		"DELETE /me/calendar/events/{uid}":           s.handleDeleteEvent,
 		"GET /me/calendar/events":                    s.handleListEvents,
 		"POST /me/contacts/share":                    s.handleShareContacts,
+		"POST /me/contacts":                          s.handleCreateContact,
+		"GET /me/contacts/{uid}":                     s.handleGetContact,
+		"PUT /me/contacts/{uid}":                     s.handleUpdateContact,
+		"POST /me/tasks":                             s.handleCreateTask,
+		"GET /me/tasks/{uid}":                        s.handleGetTask,
+		"PUT /me/tasks/{uid}":                        s.handleUpdateTask,
+		"PUT /me/tasks/{uid}/done":                   s.handleToggleTask,
 	} {
 		mux.Handle(pattern, svc.Middleware(h))
 	}

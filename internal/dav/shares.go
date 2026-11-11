@@ -127,13 +127,24 @@ func (s *Service) DeleteCalendarShare(ctx context.Context, callerID, shareID str
 	return s.deleteCollectionShare(ctx, "calendar", callerID, shareID)
 }
 
-func (s *Service) deleteCollectionShare(ctx context.Context, kind, callerID, shareID string) error {
+// DeleteCalendarShareOf is DeleteCalendarShare for a share of one given calendar:
+// ErrNotFound when the share is another calendar's.
+func (s *Service) DeleteCalendarShareOf(ctx context.Context, callerID, calendarID, shareID string) error {
+	return s.deleteCollectionShare(ctx, "calendar", callerID, shareID, calendarID)
+}
+
+// deleteCollectionShare removes a share of a collection of kind; with of, only if it is
+// a share of that collection.
+func (s *Service) deleteCollectionShare(ctx context.Context, kind, callerID, shareID string, of ...string) error {
 	sid, err := db.ParseUUID(shareID)
 	if err != nil {
 		return ErrNotFound
 	}
 	sh, err := s.q.GetShare(ctx, sid)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && sh.ResourceType != kind) {
+		return ErrNotFound
+	}
+	if err == nil && len(of) == 1 && db.UUIDString(sh.ResourceID) != of[0] {
 		return ErrNotFound
 	}
 	if err != nil {

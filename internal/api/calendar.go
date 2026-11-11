@@ -361,7 +361,7 @@ func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 		writeResolveCalError(w, status)
 		return
 	}
-	data, _, err := s.dav.GetCalendarObject(r.Context(), calID, r.PathValue("uid"))
+	data, etag, err := s.dav.GetCalendarObject(r.Context(), calID, r.PathValue("uid"))
 	if err == dav.ErrNotFound {
 		writeError(w, http.StatusNotFound, "event not found")
 		return
@@ -377,6 +377,7 @@ func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	form := eventToForm(r.PathValue("uid"), cal)
 	form.CalendarID = calID
+	form.Etag = etag
 	writeJSON(w, http.StatusOK, form)
 }
 
@@ -396,6 +397,9 @@ type eventForm struct {
 	Until      string `json:"until"`
 	Alarm      string `json:"alarm"` // "" none; "keep" leave unchanged; "0|5|15|30|60|1440" minutes before start
 	CalendarID string `json:"calendar_id"`
+	// Etag: the version the form was loaded from; sent back, it makes the save refuse to
+	// overwrite a newer one (412).
+	Etag string `json:"etag,omitempty"`
 	// TZ: in a request, the browser's IANA zone — a recurring event is written in it (so
 	// that it keeps its wall-clock time across DST changes) unless it already has a zone of
 	// its own. In a response, the event's own TZID ("" for UTC or floating times).
@@ -638,13 +642,17 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	data, _, err := s.dav.GetCalendarObject(r.Context(), srcID, uid)
+	data, etag, err := s.dav.GetCalendarObject(r.Context(), srcID, uid)
 	if err == dav.ErrNotFound {
 		writeError(w, http.StatusNotFound, "event not found")
 		return
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if staleForm(form.Etag, etag) {
+		writeError(w, http.StatusPreconditionFailed, errChangedElsewhere)
 		return
 	}
 	cal, derr := ical.NewDecoder(strings.NewReader(data)).Decode()
@@ -661,18 +669,12 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if err := s.putCal(r, calID, uid, cal); err != nil {
+	newEtag, err := s.saveEdited(r, srcID, calID, uid, cal, etag)
+	if err != nil {
 		writePutCalError(w, err)
 		return
 	}
-	if srcID != calID {
-		// moved: the copy is in place, now drop the original (as tasks move between lists)
-		if err := s.dav.DeleteCalendarObject(r.Context(), srcID, uid); err != nil && !errors.Is(err, dav.ErrNotFound) {
-			writeError(w, http.StatusInternalServerError, "failed to move")
-			return
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"uid": uid})
+	writeJSON(w, http.StatusOK, map[string]any{"uid": uid, "etag": newEtag})
 }
 
 func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
@@ -695,14 +697,48 @@ func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 // putCal stores a calendar object built or edited by the web handlers, with a VTIMEZONE
 // for every zone it references.
 func (s *Server) putCal(r *http.Request, calID, uid string, cal *ical.Calendar) error {
+	data, err := encodeCal(cal)
+	if err != nil {
+		return err
+	}
+	_, err = s.dav.PutCalendarObject(r.Context(), calID, uid, data)
+	return err
+}
+
+func encodeCal(cal *ical.Calendar) (string, error) {
 	ensureVTimezones(cal)
 	var b strings.Builder
 	if err := ical.NewEncoder(&b).Encode(cal); err != nil {
-		return err
+		return "", err
 	}
-	_, err := s.dav.PutCalendarObject(r.Context(), calID, uid, b.String())
-	return err
+	return b.String(), nil
 }
+
+// saveEdited writes an object a handler read as version base and then changed: in place,
+// or into dstID when the edit also moves it out of srcID. dav.ErrPrecondition when the
+// object is no longer that version — the write would undo whatever changed it.
+func (s *Server) saveEdited(r *http.Request, srcID, dstID, uid string, cal *ical.Calendar, base string) (string, error) {
+	data, err := encodeCal(cal)
+	if err != nil {
+		return "", err
+	}
+	if srcID != dstID {
+		return s.dav.MoveCalendarObject(r.Context(), srcID, dstID, uid, data, base)
+	}
+	return s.dav.PutCalendarObjectIf(r.Context(), dstID, uid, data, unchangedSince(base))
+}
+
+// unchangedSince allows a write only over the version the editor read.
+func unchangedSince(etag string) dav.PutCheck {
+	return func(exists bool, cur string) bool { return exists && cur == etag }
+}
+
+// staleForm reports a form loaded from a version that is no longer the current one. A
+// form without an etag (a client that does not send one) is never stale: it overwrites,
+// as every save used to.
+func staleForm(formEtag, current string) bool { return formEtag != "" && formEtag != current }
+
+const errChangedElsewhere = "changed since it was loaded"
 
 // writePutCalError answers a failed calendar, task or contact write.
 func writePutCalError(w http.ResponseWriter, err error) {
@@ -711,6 +747,10 @@ func writePutCalError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusInsufficientStorage, "insufficient storage")
 	case errors.Is(err, dav.ErrUIDConflict):
 		writeError(w, http.StatusConflict, "another object in this collection has the same UID")
+	case errors.Is(err, dav.ErrPrecondition):
+		writeError(w, http.StatusPreconditionFailed, errChangedElsewhere)
+	case errors.Is(err, dav.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not found")
 	default:
 		writeError(w, http.StatusInternalServerError, "failed to save")
 	}

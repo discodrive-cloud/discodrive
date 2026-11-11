@@ -24,33 +24,34 @@ type taskForm struct {
 	Priority  int    `json:"priority"`      // 0=none, 1..9 (iCal; 1 = highest)
 	Completed bool   `json:"completed"`
 	ListID    string `json:"list_id,omitempty"` // the task's list; on create/update — the target list
+	Etag      string `json:"etag,omitempty"`    // the version loaded; sent back, a save over a newer one is refused
 }
 
 // findTask locates a task by uid: in the list given by ?list=, otherwise in any of the
 // user's lists (older clients — the MCP tools — address tasks by uid alone).
-func (s *Server) findTask(r *http.Request, uid string) (db.Calendar, string, error) {
+func (s *Server) findTask(r *http.Request, uid string) (list db.Calendar, data, etag string, err error) {
 	if id := r.URL.Query().Get("list"); id != "" {
 		c, err := s.taskList(r, id)
 		if err != nil {
-			return db.Calendar{}, "", err
+			return db.Calendar{}, "", "", err
 		}
-		data, _, err := s.dav.GetCalendarObject(r.Context(), db.UUIDString(c.ID), uid)
-		return c, data, err
+		data, etag, err := s.dav.GetCalendarObject(r.Context(), db.UUIDString(c.ID), uid)
+		return c, data, etag, err
 	}
 	lists, err := s.accessibleTaskLists(r)
 	if err != nil {
-		return db.Calendar{}, "", err
+		return db.Calendar{}, "", "", err
 	}
 	for _, c := range lists {
-		data, _, err := s.dav.GetCalendarObject(r.Context(), db.UUIDString(c.ID), uid)
+		data, etag, err := s.dav.GetCalendarObject(r.Context(), db.UUIDString(c.ID), uid)
 		if err == nil {
-			return c, data, nil
+			return c, data, etag, nil
 		}
 		if !errors.Is(err, dav.ErrNotFound) {
-			return db.Calendar{}, "", err
+			return db.Calendar{}, "", "", err
 		}
 	}
-	return db.Calendar{}, "", dav.ErrNotFound
+	return db.Calendar{}, "", "", dav.ErrNotFound
 }
 
 // writeFindTaskError answers a findTask failure.
@@ -205,7 +206,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 
 // GET /me/tasks/{uid}[?list=id]
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
-	c, data, err := s.findTask(r, r.PathValue("uid"))
+	c, data, etag, err := s.findTask(r, r.PathValue("uid"))
 	if err != nil {
 		writeFindTaskError(w, err)
 		return
@@ -217,6 +218,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	}
 	f := taskToForm(r.PathValue("uid"), cal)
 	f.ListID = db.UUIDString(c.ID)
+	f.Etag = etag
 	writeJSON(w, http.StatusOK, f)
 }
 
@@ -253,7 +255,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 // task's own moves it to that list.
 func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
-	src, data, err := s.findTask(r, uid)
+	src, data, etag, err := s.findTask(r, uid)
 	if err != nil {
 		writeFindTaskError(w, err)
 		return
@@ -261,6 +263,10 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	var form taskForm
 	if err := json.NewDecoder(r.Body).Decode(&form); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if staleForm(form.Etag, etag) {
+		writeError(w, http.StatusPreconditionFailed, errChangedElsewhere)
 		return
 	}
 	dst := src
@@ -282,28 +288,19 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	dstID := db.UUIDString(dst.ID)
-	if err := s.putCal(r, dstID, uid, cal); err != nil {
+	// A move writes the task into the new list and takes it out of the old one in one
+	// step (Reminders sees a delete and an add).
+	newEtag, err := s.saveEdited(r, db.UUIDString(src.ID), dstID, uid, cal, etag)
+	if err != nil {
 		writePutCalError(w, err)
 		return
 	}
-	if dst.ID != src.ID {
-		// moved: the copy is in place, now drop the original (Reminders sees a delete + an add)
-		if err := s.dav.DeleteCalendarObject(r.Context(), db.UUIDString(src.ID), uid); err != nil && !errors.Is(err, dav.ErrNotFound) {
-			writeError(w, http.StatusInternalServerError, "failed to move")
-			return
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"uid": uid, "list_id": dstID})
+	writeJSON(w, http.StatusOK, map[string]any{"uid": uid, "list_id": dstID, "etag": newEtag})
 }
 
 // PUT /me/tasks/{uid}/done[?list=id] — lightweight status toggle (modify-existing; everything else is preserved).
 func (s *Server) handleToggleTask(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
-	list, data, err := s.findTask(r, uid)
-	if err != nil {
-		writeFindTaskError(w, err)
-		return
-	}
 	var body struct {
 		Completed bool `json:"completed"`
 	}
@@ -311,18 +308,33 @@ func (s *Server) handleToggleTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	cal, derr := ical.NewDecoder(strings.NewReader(data)).Decode()
-	if derr != nil {
-		writeError(w, http.StatusInternalServerError, "failed to parse iCalendar")
-		return
-	}
-	for _, comp := range cal.Children {
-		if comp.Name == ical.CompToDo {
-			setTaskCompleted(comp, body.Completed)
+	// One field changes on the copy read here, so there is no stale form to refuse: when
+	// somebody else saves the task in between, the toggle is simply done again on theirs.
+	var err error
+	for try := 0; try < 3; try++ {
+		var list db.Calendar
+		var data, etag string
+		if list, data, etag, err = s.findTask(r, uid); err != nil {
+			writeFindTaskError(w, err)
+			return
+		}
+		cal, derr := ical.NewDecoder(strings.NewReader(data)).Decode()
+		if derr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to parse iCalendar")
+			return
+		}
+		for _, comp := range cal.Children {
+			if comp.Name == ical.CompToDo {
+				setTaskCompleted(comp, body.Completed)
+				break
+			}
+		}
+		listID := db.UUIDString(list.ID)
+		if _, err = s.saveEdited(r, listID, listID, uid, cal, etag); !errors.Is(err, dav.ErrPrecondition) {
 			break
 		}
 	}
-	if err := s.putCal(r, db.UUIDString(list.ID), uid, cal); err != nil {
+	if err != nil {
 		writePutCalError(w, err)
 		return
 	}
@@ -332,7 +344,7 @@ func (s *Server) handleToggleTask(w http.ResponseWriter, r *http.Request) {
 // DELETE /me/tasks/{uid}[?list=id]
 func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
-	list, _, err := s.findTask(r, uid)
+	list, _, _, err := s.findTask(r, uid)
 	if err != nil {
 		writeFindTaskError(w, err)
 		return

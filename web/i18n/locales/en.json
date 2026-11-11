@@ -16,6 +16,7 @@
   },
   "common": {
     "loading": "Loading…",
+    "changed_elsewhere": "This was changed somewhere else. It has been reloaded — make your change again.",
     "cancel": "Cancel",
     "save": "Save",
     "delete": "Delete",

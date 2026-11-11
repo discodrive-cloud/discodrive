@@ -16,6 +16,7 @@
   },
   "common": {
     "loading": "Cargando…",
+    "changed_elsewhere": "Esto se modificó en otro lugar. Se ha recargado: vuelva a hacer su cambio.",
     "cancel": "Cancelar",
     "save": "Guardar",
     "delete": "Eliminar",

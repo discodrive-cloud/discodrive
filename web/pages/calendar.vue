@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { changedElsewhere } from '~/lib/changedElsewhere'
 import { allDayEndFromForm, allDayEndToForm, browserTimeZone, dateToUtcIso, isoToUtcDate, localDateKey, occursOnDay, startsOnDay } from '~/lib/calendarDates'
 
 interface EventOccurrence {
@@ -195,6 +196,7 @@ const form = reactive<EventDetail & { recurring: boolean; calendar_id: string }>
   all_day: false, freq: '', until: '', alarm: '', recurring: false, calendar_id: '',
 })
 const formOrigCal = ref('') // the calendar the edited event lives in (form.calendar_id may move it)
+const formEtag = ref('') // the version the form was loaded from (a save over a newer one is refused)
 const formStartLocal = ref(''); const formEndLocal = ref('')
 const formStartDate = ref(''); const formEndDate = ref(''); const formUntilDate = ref('')
 
@@ -218,18 +220,21 @@ function openNewEvent(day?: Date) {
   }
   modalOpen.value = true
 }
-async function openEvent(uid: string) {
+// Takes the occurrence that was clicked, not just its uid: the same event can be in two
+// calendars, and looking it up by uid opened (and saved, and deleted) the first one's.
+async function openEvent(occ: { uid: string; calendar_id?: string; recurring?: boolean }) {
   error.value = ''
-  const occ = (events.value ?? []).find((e) => e.uid === uid)
-  const calId = occ?.calendar_id || ''
+  const uid = occ.uid
+  const calId = occ.calendar_id || ''
   try {
-    const d = await request<EventDetail>(`/me/calendar/events/${uid}?calendar_id=${encodeURIComponent(calId)}`)
+    const d = await request<EventDetail & { etag?: string }>(`/me/calendar/events/${uid}?calendar_id=${encodeURIComponent(calId)}`)
+    formEtag.value = d.etag || ''
     form.uid = d.uid; form.summary = d.summary; form.location = d.location || ''
     form.description = d.description || ''; form.start = d.start; form.end = d.end
     form.all_day = d.all_day; form.freq = d.freq || ''; form.until = d.until || ''
     form.alarm = d.alarm || ''; form.calendar_id = d.calendar_id || calId
     formOrigCal.value = form.calendar_id
-    form.recurring = occ?.recurring ?? false
+    form.recurring = occ.recurring ?? false
     formStartLocal.value = isoToLocal(d.start); formEndLocal.value = isoToLocal(d.end)
     // An all-day end is exclusive on the wire and inclusive in the form; a timed event
     // offers its local day should "all day" be switched on.
@@ -253,10 +258,13 @@ async function saveEvent() {
   if (!form.summary.trim()) { error.value = t('calendar.error_name_required'); return }
   error.value = ''; modalBusy.value = true
   try {
-    if (form.uid) await request(`/me/calendar/events/${form.uid}?calendar_id=${encodeURIComponent(formOrigCal.value)}`, { method: 'PUT', body: buildBody() })
+    if (form.uid) await request(`/me/calendar/events/${form.uid}?calendar_id=${encodeURIComponent(formOrigCal.value)}`, { method: 'PUT', body: { ...buildBody(), etag: formEtag.value || undefined } })
     else await request('/me/calendar/events', { method: 'POST', body: buildBody() })
     modalOpen.value = false; await loadEvents()
-  } catch (e: any) { error.value = e?.data?.error || t('calendar.error_save') }
+  } catch (e: any) {
+    if (changedElsewhere(e)) { modalOpen.value = false; await loadEvents() }
+    error.value = changedElsewhere(e) ? t('common.changed_elsewhere') : e?.data?.error || t('calendar.error_save')
+  }
   finally { modalBusy.value = false }
 }
 async function deleteEvent() {
@@ -325,9 +333,14 @@ async function revokeFeed(id: string) {
   catch (e: any) { error.value = e?.data?.error || t('calendar.error_feed_revoke') }
 }
 async function copyText(text: string) { try { await navigator.clipboard.writeText(text) } catch { /* no access */ } }
+// Only the answer for the calendar the dialog shows now may fill it: a slow answer for
+// the one opened before used to list its shares under this one's name.
 async function loadShares() {
-  try { share.list = await request<{ id: string; email: string }[]>(`/me/calendars/${share.calId}/shares`) }
-  catch { share.list = [] }
+  const calId = share.calId
+  let list: { id: string; email: string }[] = []
+  try { list = await request<{ id: string; email: string }[]>(`/me/calendars/${calId}/shares`) }
+  catch { /* shown as none */ }
+  if (share.calId === calId) share.list = list
 }
 function openShare(c: CalendarMeta) {
   Object.assign(share, { open: true, calId: c.id, name: c.name, email: '', list: [], busy: false })
@@ -434,7 +447,7 @@ useModalEscape(computed(() => share.open), () => { share.open = false })
             <template v-for="(ev, idx) in eventsForDay(day).slice(0, 3)" :key="ev.uid + (ev.recurrence_id || '')">
               <div class="mb-0.5 truncate rounded px-1 text-[11px] leading-4 cursor-pointer transition"
                 :style="{ backgroundColor: calColor(ev.calendar_id) + '33', color: calColor(ev.calendar_id) }"
-                @click.stop="openEvent(ev.uid)">
+                @click.stop="openEvent(ev)">
                 <span v-if="startsOnDay(ev, day)" class="opacity-70">{{ formatEventTime(ev.start) }} </span>{{ ev.summary }}
               </div>
             </template>
@@ -455,7 +468,7 @@ useModalEscape(computed(() => share.open), () => { share.open = false })
             <div v-for="ev in eventsForDay(day)" :key="ev.uid + (ev.recurrence_id || '')"
               class="mb-1 truncate rounded px-1.5 py-0.5 text-xs cursor-pointer transition"
               :style="{ backgroundColor: calColor(ev.calendar_id) + '33', color: calColor(ev.calendar_id) }"
-              @click="openEvent(ev.uid)">
+              @click="openEvent(ev)">
               <span v-if="startsOnDay(ev, day)" class="opacity-70">{{ formatEventTime(ev.start) }} </span>{{ ev.summary }}
             </div>
             <div v-if="!eventsForDay(day).length" class="text-[10px] text-muted/40 mt-1 text-center cursor-pointer" @click="openNewEvent(day)">+</div>
@@ -478,7 +491,7 @@ useModalEscape(computed(() => share.open), () => { share.open = false })
             <div v-for="ev in eventsForDay(cursor)"
               :key="ev.uid + (ev.recurrence_id || '')"
               class="flex items-start gap-3 rounded-lg border border-line/50 px-4 py-3 cursor-pointer hover:bg-ink/5 transition"
-              @click="openEvent(ev.uid)">
+              @click="openEvent(ev)">
               <span class="mt-1 h-2.5 w-2.5 shrink-0 rounded-full" :style="{ backgroundColor: calColor(ev.calendar_id) }" />
               <div class="mt-0.5 shrink-0 text-sm text-muted font-mono">
                 <span v-if="ev.all_day">{{ t('calendar.all_day') }}</span>

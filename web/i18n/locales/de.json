@@ -16,6 +16,7 @@
   },
   "common": {
     "loading": "Wird geladen…",
+    "changed_elsewhere": "Dies wurde an anderer Stelle geändert. Die Daten wurden neu geladen – nehmen Sie Ihre Änderung erneut vor.",
     "cancel": "Abbrechen",
     "save": "Speichern",
     "delete": "Löschen",

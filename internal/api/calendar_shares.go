@@ -109,7 +109,9 @@ func (s *Server) handleListCalendarShares(w http.ResponseWriter, r *http.Request
 // DELETE /me/calendars/{id}/shares/{shareId} — the owner revokes a share, or the recipient
 // leaves the calendar (shareId: share_id of GET /me/calendars).
 func (s *Server) handleDeleteCalendarShare(w http.ResponseWriter, r *http.Request) {
-	err := s.dav.DeleteCalendarShare(r.Context(), auth.UserID(r.Context()), r.PathValue("shareId"))
+	// The share has to be one of the calendar the path names: a list of shares shown under
+	// the wrong calendar must not be able to revoke another calendar's access.
+	err := s.dav.DeleteCalendarShareOf(r.Context(), auth.UserID(r.Context()), r.PathValue("id"), r.PathValue("shareId"))
 	switch err {
 	case nil:
 		w.WriteHeader(http.StatusNoContent)
