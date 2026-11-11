@@ -312,42 +312,69 @@ func (s *Server) handleAdminListSettings(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, out)
 }
 
-// PUT /admin/settings {key,value}
+// PUT /admin/settings {key,value} — one setting; {settings:[{key,value},…]} — several,
+// all saved or none. A form that belongs together (the SMTP host with its password) is
+// sent the second way: saved key by key, a failure halfway left the new host with the
+// old password and mail stopped.
 func (s *Server) handleAdminPutSetting(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	type setting struct {
 		Key   string `json:"key"`
 		Value string `json:"value"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Key == "" {
+	var req struct {
+		setting
+		Settings []setting `json:"settings"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.Key == "") == (len(req.Settings) == 0) {
 		writeError(w, http.StatusBadRequest, "key and value are required")
 		return
 	}
-	isSecret := secretSettingKeys[req.Key]
-	value := req.Value
-	if isSecret {
-		if !s.cipher.Enabled() {
-			writeError(w, http.StatusBadRequest, "secret encryption is not configured (SETTINGS_ENCRYPTION_KEY)")
-			return
-		}
-		enc, err := s.cipher.Encrypt(req.Value)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "encryption error")
-			return
-		}
-		value = enc
+	single := req.Key != ""
+	if single {
+		req.Settings = []setting{req.setting}
 	}
 	updatedBy, _ := db.ParseUUID(auth.UserID(r.Context()))
-	if err := s.q.UpsertSetting(r.Context(), db.UpsertSettingParams{
-		Key: req.Key, Value: value, IsSecret: isSecret, UpdatedBy: updatedBy,
-	}); err != nil {
+	rows := make([]db.UpsertSettingParams, 0, len(req.Settings))
+	for _, st := range req.Settings {
+		if st.Key == "" {
+			writeError(w, http.StatusBadRequest, "key and value are required")
+			return
+		}
+		row := db.UpsertSettingParams{Key: st.Key, Value: st.Value, IsSecret: secretSettingKeys[st.Key], UpdatedBy: updatedBy}
+		if row.IsSecret {
+			if !s.cipher.Enabled() {
+				writeError(w, http.StatusBadRequest, "secret encryption is not configured (SETTINGS_ENCRYPTION_KEY)")
+				return
+			}
+			enc, err := s.cipher.Encrypt(st.Value)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "encryption error")
+				return
+			}
+			row.Value = enc
+		}
+		rows = append(rows, row)
+	}
+	err := s.q.InTx(r.Context(), func(q *db.Queries) error {
+		for _, row := range rows {
+			if err := q.UpsertSetting(r.Context(), row); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if isSecret {
+	switch {
+	case !single:
+		writeJSON(w, http.StatusOK, map[string]any{"saved": len(rows)})
+	case rows[0].IsSecret:
 		writeJSON(w, http.StatusOK, map[string]any{"key": req.Key, "set": true})
-		return
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"key": req.Key, "value": req.Value})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"key": req.Key, "value": req.Value})
 }
 
 // GET /devices — the caller's own devices.

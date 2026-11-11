@@ -80,20 +80,21 @@ async function saveAccess(key: keyof AccessFlags, on: boolean) {
   }
 }
 
-async function putSetting(key: string, value: string) {
-  await request('/admin/settings', { method: 'PUT', body: { key, value } })
-}
-
 async function save() {
   error.value = ''; ok.value = ''; saving.value = true
   try {
-    await putSetting('smtp.host', smtp.host)
-    await putSetting('smtp.port', smtp.port)
-    await putSetting('smtp.username', smtp.username)
-    await putSetting('smtp.from', smtp.from)
-    await putSetting('smtp.security', smtp.security)
-    await putSetting('notifications.enabled', smtp.notifications_enabled ? 'true' : 'false')
-    if (smtp.password) await putSetting('smtp.password', smtp.password)
+    // One request, saved together or not at all: key by key, a failure halfway left the
+    // new host with the old password.
+    const settings = [
+      { key: 'smtp.host', value: smtp.host },
+      { key: 'smtp.port', value: smtp.port },
+      { key: 'smtp.username', value: smtp.username },
+      { key: 'smtp.from', value: smtp.from },
+      { key: 'smtp.security', value: smtp.security },
+      { key: 'notifications.enabled', value: smtp.notifications_enabled ? 'true' : 'false' },
+    ]
+    if (smtp.password) settings.push({ key: 'smtp.password', value: smtp.password })
+    await request('/admin/settings', { method: 'PUT', body: { settings } })
     ok.value = t('admin.saved')
     await load()
   } catch (e: any) {
