@@ -29,6 +29,15 @@ services:
       - ./data:/data
     expose:
       - "${APP_PORT:-8080}"
+    # The server listens only after its migrations: until then nginx would answer 502.
+    # A failed check during start_period does not count, so a long migration is not a
+    # failure; the image has no shell, the binary checks itself.
+    healthcheck:
+      test: ["CMD", "/server", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 15m
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,7 +76,7 @@ services:
       - "${NGINX_HTTPS_PORT:-8443}:443"
     depends_on:
       app:
-        condition: service_started
+        condition: service_healthy
       init:
         condition: service_completed_successfully
 

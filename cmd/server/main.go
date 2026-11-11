@@ -71,6 +71,10 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(runHealthcheck(cfg.Host, cfg.Port, 3*time.Second))
+	}
+
 	if len(os.Args) > 2 && os.Args[1] == probeCmd {
 		os.Exit(runWriteProbe(os.Args[2]))
 	}
