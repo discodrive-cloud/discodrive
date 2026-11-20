@@ -43,9 +43,14 @@ func (s *Service) IssuePhotosHidden(ctx context.Context, userID, approvalToken s
 	if err := tx.Commit(ctx); err != nil {
 		return "", time.Time{}, err
 	}
+	return s.issuePhotosHiddenToken(userID, u.TokenVersion)
+}
+
+// issuePhotosHiddenToken is the short-lived token that opens the hidden gallery.
+func (s *Service) issuePhotosHiddenToken(userID string, ver int64) (string, time.Time, error) {
 	now := time.Now()
 	exp := now.Add(photosHiddenTTL)
-	claims := Claims{Pur: "photos-hidden", Ver: u.TokenVersion, RegisteredClaims: jwt.RegisteredClaims{
+	claims := Claims{Pur: "photos-hidden", Ver: ver, RegisteredClaims: jwt.RegisteredClaims{
 		Subject: userID, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(exp)}}
 	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.issuer.secret)
 	if err != nil {

@@ -206,6 +206,7 @@ type Querier interface {
 	CreatePhotoAlbum(ctx context.Context, arg CreatePhotoAlbumParams) (PhotoAlbum, error)
 	CreatePhotoAlbumLink(ctx context.Context, arg CreatePhotoAlbumLinkParams) (PhotoAlbumLink, error)
 	CreatePhotoPerson(ctx context.Context, userID pgtype.UUID) (pgtype.UUID, error)
+	CreatePhotoUnlockKey(ctx context.Context, arg CreatePhotoUnlockKeyParams) (pgtype.UUID, error)
 	CreatePlaylist(ctx context.Context, arg CreatePlaylistParams) (Playlist, error)
 	CreatePodcastChannel(ctx context.Context, arg CreatePodcastChannelParams) (PodcastChannel, error)
 	CreateRescanRequest(ctx context.Context, arg CreateRescanRequestParams) (RescanRequest, error)
@@ -257,6 +258,7 @@ type Querier interface {
 	DeletePhotoPartner(ctx context.Context, arg DeletePhotoPartnerParams) (int64, error)
 	DeletePhotoPersons(ctx context.Context, arg DeletePhotoPersonsParams) error
 	DeletePhotoSources(ctx context.Context, userID pgtype.UUID) error
+	DeletePhotoUnlockKey(ctx context.Context, arg DeletePhotoUnlockKeyParams) (int64, error)
 	DeletePlaylistForUser(ctx context.Context, arg DeletePlaylistForUserParams) error
 	DeletePodcastChannelForUser(ctx context.Context, arg DeletePodcastChannelForUserParams) (int64, error)
 	DeletePodcastEpisodeForUser(ctx context.Context, arg DeletePodcastEpisodeForUserParams) (int64, error)
@@ -351,6 +353,7 @@ type Querier interface {
 	GetPhotoMapBounds(ctx context.Context, userID pgtype.UUID) (GetPhotoMapBoundsRow, error)
 	GetPhotoPerson(ctx context.Context, arg GetPhotoPersonParams) (GetPhotoPersonRow, error)
 	GetPhotoSettings(ctx context.Context, userID pgtype.UUID) (PhotoSetting, error)
+	GetPhotoUnlockKey(ctx context.Context, arg GetPhotoUnlockKeyParams) (PhotoUnlockKey, error)
 	GetPlayQueue(ctx context.Context, userID pgtype.UUID) (PlayQueue, error)
 	// The caller's saved queue, for songs the caller can still play.
 	GetPlayQueueEntries(ctx context.Context, userID pgtype.UUID) ([]GetPlayQueueEntriesRow, error)
@@ -916,6 +919,7 @@ type Querier interface {
 	TouchBrowserSession(ctx context.Context, id string) error
 	TouchDevice(ctx context.Context, id pgtype.UUID) error
 	TouchPhotoAlbum(ctx context.Context, id pgtype.UUID) error
+	TouchPhotoUnlockKey(ctx context.Context, id pgtype.UUID) error
 	TouchUploadReservation(ctx context.Context, id string) error
 	TrashPhotoAssetByNode(ctx context.Context, nodeID pgtype.UUID) error
 	// A trashed folder: its assets go to the gallery trash, not away. Only rows whose node
