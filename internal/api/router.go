@@ -266,8 +266,10 @@ func NewRouter(authSvc *auth.Service, q *db.Queries, files *storage.FileService,
 	mux.Handle("POST /me/photos/v1/duplicates/dismiss", prot(http.HandlerFunc(s.handleDismissPhotoDuplicates)))
 	mux.Handle("POST /me/photos/v1/hidden/unlock", prot(http.HandlerFunc(s.rateLimited(s.handlePhotosHiddenUnlock))))
 	mux.Handle("POST /me/photos/v1/hidden/keys", prot(http.HandlerFunc(s.rateLimited(s.handlePhotosKeyRegister))))
-	mux.Handle("POST /me/photos/v1/hidden/keys/{id}/challenge", prot(http.HandlerFunc(s.rateLimited(s.handlePhotosKeyChallenge))))
-	mux.Handle("POST /me/photos/v1/hidden/keys/{id}/unlock", prot(http.HandlerFunc(s.rateLimited(s.handlePhotosKeyUnlock))))
+	// Failures only: a key open is not a password guess, and a household behind one
+	// address must not lock itself out of signing in by opening Hidden.
+	mux.Handle("POST /me/photos/v1/hidden/keys/{id}/challenge", prot(http.HandlerFunc(s.authLimited(s.handlePhotosKeyChallenge))))
+	mux.Handle("POST /me/photos/v1/hidden/keys/{id}/unlock", prot(http.HandlerFunc(s.authLimited(s.handlePhotosKeyUnlock))))
 	mux.Handle("DELETE /me/photos/v1/hidden/keys/{id}", prot(http.HandlerFunc(s.handlePhotosKeyDelete)))
 	mux.Handle("GET /me/photos/v1/hidden/buckets", prot(http.HandlerFunc(s.handlePhotosHiddenBuckets)))
 	mux.Handle("GET /me/photos/v1/hidden", prot(http.HandlerFunc(s.handlePhotosHidden)))

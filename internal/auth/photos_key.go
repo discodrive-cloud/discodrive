@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"time"
+	"unicode/utf8"
 
 	"discodrive/internal/db"
 	"github.com/golang-jwt/jwt/v5"
@@ -18,6 +19,10 @@ import (
 
 // ErrNoKey: the device key is not the user's or no longer exists.
 var ErrNoKey = errors.New("photos: no such unlock key")
+
+// ErrKeyRevoked: the key was registered before the user's password changed; it will
+// never work again. (A stale or used challenge is ErrApproval: the device asks again.)
+var ErrKeyRevoked = errors.New("photos: unlock key revoked")
 
 // photosKeyChallengeTTL is how long a device has to sign a challenge (a Face ID prompt).
 const photosKeyChallengeTTL = 2 * time.Minute
@@ -71,6 +76,14 @@ func parsePhotosKeyChallenge(iss *TokenIssuer, token, userID, keyID string, chal
 	return c, nil
 }
 
+// trimKeyName keeps at most 100 characters, never cutting one in half.
+func trimKeyName(name string) string {
+	if utf8.RuneCountInString(name) <= 100 {
+		return name
+	}
+	return string([]rune(name)[:100])
+}
+
 // The challenge is not stored: the token carries its hash, and the client sends the
 // challenge back with its signature.
 
@@ -84,9 +97,7 @@ func (s *Service) RegisterPhotosKey(ctx context.Context, userID, approvalToken s
 	if !validPhotosKeySPKI(spki) {
 		return "", ErrApproval
 	}
-	if len(name) > 100 {
-		name = name[:100]
-	}
+	name = trimKeyName(name)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", err
@@ -146,7 +157,7 @@ func (s *Service) PhotosKeyChallenge(ctx context.Context, userID, keyID string) 
 		return nil, "", err
 	}
 	if k.TokenVersion != u.TokenVersion {
-		return nil, "", ErrApproval
+		return nil, "", ErrKeyRevoked
 	}
 	ch := make([]byte, 32)
 	if _, err := rand.Read(ch); err != nil {
@@ -172,8 +183,11 @@ func (s *Service) UnlockWithPhotosKey(ctx context.Context, userID, keyID, challe
 	if err != nil {
 		return "", time.Time{}, err
 	}
+	if k.TokenVersion != u.TokenVersion {
+		return "", time.Time{}, ErrKeyRevoked
+	}
 	c, err := parsePhotosKeyChallenge(s.issuer, challengeToken, userID, keyID, challenge)
-	if err != nil || c.Ver != u.TokenVersion || k.TokenVersion != u.TokenVersion || u.MustChangePassword {
+	if err != nil || c.Ver != u.TokenVersion || u.MustChangePassword {
 		return "", time.Time{}, ErrApproval
 	}
 	if !verifyP256(k.PublicKey, challenge, sig) {

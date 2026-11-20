@@ -96,6 +96,9 @@ func (s *Server) photosKeyError(w http.ResponseWriter, err error) bool {
 		return false
 	case errors.Is(err, auth.ErrNoKey):
 		writeError(w, http.StatusNotFound, "no such key")
+	case errors.Is(err, auth.ErrKeyRevoked):
+		// Gone for good (the password changed): the device forgets its key.
+		writeError(w, http.StatusGone, "key_revoked")
 	case errors.Is(err, auth.ErrApproval):
 		// 403, not 401: a 401 tells a client its session is over and it signs out.
 		writeError(w, http.StatusForbidden, "identity confirmation failed")

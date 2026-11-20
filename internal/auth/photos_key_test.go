@@ -9,8 +9,10 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -192,6 +194,10 @@ func TestPhotosKeyFlow(t *testing.T) {
 	if _, _, err := svc.UnlockWithPhotosKey(ctx, uid, kid, ct, ch, sig); !errors.Is(err, ErrApproval) {
 		t.Errorf("replay: %v", err)
 	}
+	// an expired or used challenge is not a revoked key
+	if _, _, err := svc.UnlockWithPhotosKey(ctx, uid, kid, ct, ch, sig); errors.Is(err, ErrKeyRevoked) {
+		t.Errorf("replayed challenge reported as revoked key")
+	}
 	// a wrong signature
 	ch, ct, _ = svc.PhotosKeyChallenge(ctx, uid, kid)
 	if _, _, err := svc.UnlockWithPhotosKey(ctx, uid, kid, ct, ch, signP256(t, k, append(ch, 1))); !errors.Is(err, ErrApproval) {
@@ -211,7 +217,8 @@ func TestPhotosKeyFlow(t *testing.T) {
 	if _, err := q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: u.ID, PasswordHash: newHash, PreviousPasswordHash: u.PasswordHash}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := unlock(); !errors.Is(err, ErrApproval) && !errors.Is(err, ErrNoKey) {
+	// revoked for good, told apart from a stale challenge
+	if _, err := unlock(); !errors.Is(err, ErrKeyRevoked) {
 		t.Errorf("after password change: %v", err)
 	}
 
@@ -234,4 +241,18 @@ func mustUUID(t *testing.T, s string) pgtype.UUID {
 		t.Fatal(err)
 	}
 	return id
+}
+
+func TestTrimKeyName(t *testing.T) {
+	long := strings.Repeat("я", 80) // 160 bytes
+	got := trimKeyName(long)
+	if !utf8.ValidString(got) || utf8.RuneCountInString(got) > 100 || len(got) > 200 {
+		t.Fatalf("trimmed badly: %d runes, valid=%v", utf8.RuneCountInString(got), utf8.ValidString(got))
+	}
+	if trimKeyName("iPhone") != "iPhone" {
+		t.Fatal("short name changed")
+	}
+	if n := utf8.RuneCountInString(trimKeyName(strings.Repeat("ж", 150))); n != 100 {
+		t.Fatalf("want 100 runes, got %d", n)
+	}
 }
