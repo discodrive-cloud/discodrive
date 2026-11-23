@@ -14,7 +14,7 @@ Your files are stored as ordinary files in ordinary folders on disk. If you ever
 
 Cross-platform by design: Apple, Windows, Linux and Android.
 
-**Get the apps:** desktop (macOS/Windows/Linux) and Android builds are on the [releases page](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); the iOS app is in [TestFlight beta](https://testflight.apple.com/join/Mzy8NRsP). See [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps) for all clients.
+**Get the apps:** desktop (macOS/Windows/Linux) and Android builds are on the [releases page](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); the iOS app is on the [App Store](https://apps.apple.com/us/app/discodrive-personal-cloud/id6821574934). See [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps) for all clients.
 
 ---
 
@@ -78,11 +78,13 @@ Cross-platform by design: Apple, Windows, Linux and Android.
 - **On this day** — photos taken on this date in earlier years.
 - **Favorites and filters** — mark your best shots, and show only favorites, only videos, only Live Photos or only RAW.
 - **Map** — every photo with a location on a map; zoom into an area and see just its photos.
+- **People** — faces are recognized on your own server: name people, merge entries that turn out to be the same person, hide the ones you don't want to see and add birthdays. Nothing goes to outside services.
+- **Duplicates** — finds the same shot stored as different files (RAW and JPEG, a re-compressed copy, a second upload) among photos and videos, shows the copies side by side and moves the extra ones to the trash in one tap.
 - **Fix the date and the place** — for one photo or a whole selection, or shift a batch by hours when the camera clock was wrong. The change stays with the file.
 - **Hidden** — move private photos out of the main timeline into a separate section that opens only after you confirm it's you. Deleted photos go to the trash and can be restored.
 - **Share** — open your whole gallery to your partner (they can mix it into their own timeline), make shared albums with other users, or send a public album link with an optional password, expiry date and original downloads.
 
-The gallery needs the default server image; the `-lite` image (`latest-lite`) is a smaller build without it.
+The gallery needs the default server image; the `-lite` image (`latest-lite`) is a smaller build without it. Face recognition runs in a separate optional service: add `COMPOSE_PROFILES=faces` and `PHOTOS_ML_URL=http://ml:3003` to `.env`.
 
 ### 🔖 Saved — bookmarks, articles and downloads
 

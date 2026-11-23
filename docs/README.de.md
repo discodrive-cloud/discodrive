@@ -14,7 +14,7 @@ Dateien werden als ganz normale Dateien in ganz normalen Ordnern auf der Festpla
 
 Plattformübergreifend von Grund auf: Apple, Windows, Linux und Android.
 
-**Apps herunterladen:** Desktop-Builds (macOS/Windows/Linux) und Android stehen auf der [Releases-Seite](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); die iOS-App gibt es als [TestFlight-Beta](https://testflight.apple.com/join/Mzy8NRsP). Alle Clients unter [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
+**Apps herunterladen:** Desktop-Builds (macOS/Windows/Linux) und Android stehen auf der [Releases-Seite](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); die iOS-App gibt es im [App Store](https://apps.apple.com/us/app/discodrive-personal-cloud/id6821574934). Alle Clients unter [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
 
 ---
 
@@ -78,11 +78,13 @@ Plattformübergreifend von Grund auf: Apple, Windows, Linux und Android.
 - **An diesem Tag** — Fotos, die an diesem Datum in früheren Jahren entstanden sind.
 - **Favoriten und Filter** — markiere deine besten Aufnahmen und zeige nur Favoriten, nur Videos, nur Live Photos oder nur RAW.
 - **Karte** — jedes Foto mit Ort auf der Karte; zoome in eine Gegend und sieh nur ihre Fotos.
+- **Personen** — Gesichter werden auf deinem eigenen Server erkannt: benenne Personen, führe Einträge zusammen, die sich als dieselbe Person herausstellen, blende aus, wen du nicht sehen willst, und trage Geburtstage ein. Nichts geht an fremde Dienste.
+- **Duplikate** — findet dieselbe Aufnahme in verschiedenen Dateien (RAW und JPEG, neu komprimierte Kopie, zweiter Upload) unter Fotos und Videos, zeigt die Kopien nebeneinander und verschiebt die überzähligen mit einem Tipp in den Papierkorb.
 - **Datum und Ort korrigieren** — für ein Foto oder eine ganze Auswahl, oder verschiebe eine Serie um Stunden, wenn die Kamerauhr falsch ging. Die Änderung bleibt bei der Datei.
 - **Ausgeblendet** — private Fotos verschwinden aus der Zeitleiste in einen eigenen Bereich, der sich erst nach erneuter Bestätigung öffnet. Gelöschte Fotos landen im Papierkorb und lassen sich wiederherstellen.
 - **Teilen** — öffne deine ganze Galerie für deinen Partner (er kann sie in seine Zeitleiste mischen), lege geteilte Alben mit anderen Nutzern an oder verschicke einen öffentlichen Albumlink mit optionalem Passwort, Ablaufdatum und Download der Originale.
 
-Die Galerie braucht das Standard-Server-Image; das `-lite`-Image (`latest-lite`) ist eine kleinere Variante ohne sie.
+Die Galerie braucht das Standard-Server-Image; das `-lite`-Image (`latest-lite`) ist eine kleinere Variante ohne sie. Die Gesichtserkennung läuft in einem separaten, optionalen Dienst: trage `COMPOSE_PROFILES=faces` und `PHOTOS_ML_URL=http://ml:3003` in `.env` ein.
 
 ### 🔖 Gespeichert — Lesezeichen, Artikel und Downloads
 

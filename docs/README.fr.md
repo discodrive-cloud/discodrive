@@ -14,7 +14,7 @@ Vos fichiers sont stockés comme des fichiers ordinaires, dans des dossiers ordi
 
 Multiplateforme par conception : Apple, Windows, Linux et Android.
 
-**Télécharger les applications :** les versions de bureau (macOS/Windows/Linux) et Android sont sur la [page des releases](https://github.com/discodrive-cloud/discodrive-apps/releases/latest) ; l'application iOS est disponible en [bêta TestFlight](https://testflight.apple.com/join/Mzy8NRsP). Tous les clients sur [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
+**Télécharger les applications :** les versions de bureau (macOS/Windows/Linux) et Android sont sur la [page des releases](https://github.com/discodrive-cloud/discodrive-apps/releases/latest) ; l'application iOS est sur l'[App Store](https://apps.apple.com/us/app/discodrive-personal-cloud/id6821574934). Tous les clients sur [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
 
 ---
 
@@ -78,11 +78,13 @@ Multiplateforme par conception : Apple, Windows, Linux et Android.
 - **Ce jour-là** — les photos prises à cette date les années précédentes.
 - **Favoris et filtres** — marquez vos meilleures photos et n'affichez que les favoris, que les vidéos, que les Live Photos ou que les RAW.
 - **Carte** — chaque photo localisée sur une carte ; zoomez sur une zone pour ne voir que ses photos.
+- **Personnes** — les visages sont reconnus sur votre propre serveur : nommez les personnes, fusionnez les entrées qui s'avèrent être la même personne, masquez celles que vous ne voulez pas voir et ajoutez des anniversaires. Rien ne part vers des services extérieurs.
+- **Doublons** — retrouve la même prise enregistrée dans des fichiers différents (RAW et JPEG, copie recompressée, second envoi) parmi les photos et les vidéos, affiche les copies côte à côte et met les superflues à la corbeille d'un geste.
 - **Corriger la date et le lieu** — pour une photo ou toute une sélection, ou décaler une série de quelques heures quand l'horloge de l'appareil se trompait. La modification reste avec le fichier.
 - **Masquées** — retirez vos photos privées de la frise principale vers une section à part, qui ne s'ouvre qu'après confirmation de votre identité. Les photos supprimées vont à la corbeille et peuvent être restaurées.
 - **Partager** — ouvrez toute votre galerie à votre partenaire (qui peut la mêler à sa propre frise), créez des albums partagés avec d'autres utilisateurs ou envoyez un lien public vers un album, avec mot de passe, date d'expiration et téléchargement des originaux en option.
 
-La galerie demande l'image serveur par défaut ; l'image `-lite` (`latest-lite`) est une version plus légère sans galerie.
+La galerie demande l'image serveur par défaut ; l'image `-lite` (`latest-lite`) est une version plus légère sans galerie. La reconnaissance des visages tourne dans un service séparé et facultatif : ajoutez `COMPOSE_PROFILES=faces` et `PHOTOS_ML_URL=http://ml:3003` au `.env`.
 
 ### 🔖 Enregistrés — signets, articles et téléchargements
 

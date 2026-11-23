@@ -14,7 +14,7 @@ Tus archivos se guardan como archivos normales, en carpetas normales del disco. 
 
 Multiplataforma desde el diseño: Apple, Windows, Linux y Android.
 
-**Descargar las apps:** las versiones de escritorio (macOS/Windows/Linux) y Android están en la [página de releases](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); la app de iOS está en [beta de TestFlight](https://testflight.apple.com/join/Mzy8NRsP). Todos los clientes en [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
+**Descargar las apps:** las versiones de escritorio (macOS/Windows/Linux) y Android están en la [página de releases](https://github.com/discodrive-cloud/discodrive-apps/releases/latest); la app de iOS está en la [App Store](https://apps.apple.com/us/app/discodrive-personal-cloud/id6821574934). Todos los clientes en [discodrive-apps](https://github.com/discodrive-cloud/discodrive-apps).
 
 ---
 
@@ -78,11 +78,13 @@ Multiplataforma desde el diseño: Apple, Windows, Linux y Android.
 - **Tal día como hoy** — fotos hechas en esta misma fecha en años anteriores.
 - **Favoritos y filtros** — marca tus mejores fotos y muestra solo favoritos, solo vídeos, solo Live Photos o solo RAW.
 - **Mapa** — cada foto con ubicación en un mapa; acerca una zona y ve solo sus fotos.
+- **Personas** — las caras se reconocen en tu propio servidor: pon nombre a las personas, une las entradas que resultan ser la misma persona, oculta a quien no quieras ver y añade cumpleaños. Nada sale hacia servicios externos.
+- **Duplicados** — encuentra la misma toma guardada en archivos distintos (RAW y JPEG, una copia recomprimida, una segunda subida) entre fotos y vídeos, muestra las copias lado a lado y manda las sobrantes a la papelera con un toque.
 - **Corrige la fecha y el lugar** — de una foto o de toda una selección, o desplaza una serie unas horas si el reloj de la cámara iba mal. El cambio se queda con el archivo.
 - **Ocultas** — saca tus fotos privadas de la línea de tiempo a una sección aparte que solo se abre tras confirmar que eres tú. Las fotos borradas van a la papelera y se pueden restaurar.
 - **Comparte** — abre toda tu galería a tu pareja (puede mezclarla en su propia línea de tiempo), crea álbumes compartidos con otros usuarios o envía un enlace público a un álbum con contraseña, caducidad y descarga de originales opcionales.
 
-La galería necesita la imagen de servidor por defecto; la imagen `-lite` (`latest-lite`) es una versión más ligera sin ella.
+La galería necesita la imagen de servidor por defecto; la imagen `-lite` (`latest-lite`) es una versión más ligera sin ella. El reconocimiento de caras funciona en un servicio aparte y opcional: añade `COMPOSE_PROFILES=faces` y `PHOTOS_ML_URL=http://ml:3003` al `.env`.
 
 ### 🔖 Guardado — marcadores, artículos y descargas
 
